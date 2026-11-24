@@ -1081,6 +1081,11 @@ describe("prerender path manifest", () => {
             routePattern: "/blog/:slug/opengraph-image",
             staticParams: [{ slug: "first" }, { slug: "with space" }],
           },
+          // Below `@modal/(.)[id]`, the head links `/feed/(.)7/...`.
+          {
+            routePattern: "/feed/(.):id/opengraph-image-abc",
+            staticParams: [{ id: "7" }, { id: "a b" }],
+          },
         ]);
       }
       return defaultFetch(input, init);
@@ -1099,6 +1104,8 @@ describe("prerender path manifest", () => {
       "/docs/opengraph-image/one",
       "/docs/opengraph-image/two",
       "/favicon.ico",
+      "/feed/(.)7/opengraph-image-abc",
+      "/feed/(.)a%20b/opengraph-image-abc",
       "/opengraph-image.png",
       "/shop/-/twitter-image.png",
       "/sitemap.xml",

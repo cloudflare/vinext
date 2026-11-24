@@ -91,6 +91,21 @@ describe("isPathKnownNotEdgeCached", () => {
     expect(isPathKnownNotEdgeCached("/dashboard")).toBe(true);
   });
 
+  it("purges when a metadata route below a marker-prefixed dynamic segment can serve the path", () => {
+    register([route("/[...slug]", true)], {
+      metadataRoutes: [
+        {
+          patternParts: routePatternParts("/feed/(.)[id]/opengraph-image-abc"),
+          routeSegments: ["feed", "@modal", "(.)[id]", "opengraph-image"],
+          servedUrl: "/feed/(.)[id]/opengraph-image-abc",
+        },
+      ],
+    });
+    expect(isPathKnownNotEdgeCached("/feed/(.)7/opengraph-image-abc")).toBe(false);
+    expect(isPathKnownNotEdgeCached("/feed/@modal/(.)[id]/opengraph-image")).toBe(false);
+    expect(isPathKnownNotEdgeCached("/feed/7/opengraph-image-abc")).toBe(true);
+  });
+
   it("purges paths that end in a derived page, route or layout tag", () => {
     register([route("/docs", false), route("/docs/page", true), route("/app/layout", true)]);
     expect(isPathKnownNotEdgeCached("/docs/page")).toBe(false);

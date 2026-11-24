@@ -5086,6 +5086,342 @@ describe("buildPageElements", () => {
       ]);
     });
 
+    // Next.js's intercepting tree renders every folder of the slot down to the
+    // intercepting page, its route groups, the marker's folder and the page's
+    // own, and the deepest file of each kind heads the route.
+    describe("the metadata files of the intercepting page's own path", () => {
+      const metadataFile = (
+        type: "opengraph-image" | "twitter-image",
+        routeSegments: string[],
+        options: { href?: string; servedUrl?: string } = {},
+      ): MetadataFileRoute => ({
+        contentType: "image/png",
+        filePath: `/app/${routeSegments.join("/")}/${type}.png`,
+        ...(options.href
+          ? {
+              headData: {
+                href: options.href,
+                kind: type === "twitter-image" ? "twitter" : "openGraph",
+              },
+            }
+          : {}),
+        isDynamic: !options.href,
+        ...(options.href ? {} : { module: {} }),
+        routePrefix: "/members",
+        routeSegments,
+        servedUrl: options.servedUrl ?? `/${type}.png`,
+        type,
+      });
+      const imageUrls = (metadata: unknown, kind: "openGraph" | "twitter"): string[] | undefined =>
+        (metadata as Record<string, { images?: readonly { url: unknown }[] }> | null)?.[
+          kind
+        ]?.images?.map((image) => String(image.url));
+      const interceptOpts = (
+        options: ReturnType<typeof createSourceFixture>["options"],
+        interceptSourcePageSegments: string[],
+      ) => ({
+        ...options.pageRequest,
+        opts: { ...options.pageRequest.opts, interceptSourcePageSegments },
+      });
+
+      it("heads the route by the deepest file down to the intercepting page", async () => {
+        const { options } = createSourceFixture({ sourcePageFirst: false });
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal"], { href: "/modal-og.png" }),
+            metadataFile("opengraph-image", ["members", "@modal", "(grp)", "(...)photos", "[id]"], {
+              href: "/(...)photos/-/opengraph-image.png",
+            }),
+            metadataFile("twitter-image", ["members", "@modal", "(grp)"], {
+              href: "/group-twitter.png",
+            }),
+            metadataFile("opengraph-image", ["members", "[id]"], { href: "/member-og.png" }),
+            metadataFile("twitter-image", ["photos", "[id]"], { href: "/photo-twitter.png" }),
+          ],
+          pageRequest: interceptOpts(options, [
+            "members",
+            "@modal",
+            "(grp)",
+            "(...)photos",
+            "[id]",
+          ]),
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual(["/(...)photos/-/opengraph-image.png"]);
+        expect(imageUrls(metadata, "twitter")).toEqual(["/group-twitter.png"]);
+      });
+
+      it("fills a dynamic file with the intercepting route's params", async () => {
+        const { options } = createSourceFixture({ sourcePageFirst: false });
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal", "(...)photos", "[id]"], {
+              servedUrl: "/members/(...)photos/[id]/opengraph-image-abc",
+            }),
+          ],
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/members/(...)photos/1/opengraph-image-abc",
+        ]);
+      });
+
+      // Next.js fills the param after the marker of a marker-prefixed dynamic
+      // segment and keeps the marker: `@modal/(...)[id]` heads by `/(...)1/`.
+      it("fills a dynamic file below a marker-prefixed dynamic segment", async () => {
+        const { options } = createSourceFixture({ sourcePageFirst: false });
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal", "(...)[id]"], {
+              servedUrl: "/members/(...)[id]/opengraph-image-abc",
+            }),
+          ],
+          pageRequest: interceptOpts(options, ["members", "@modal", "(...)[id]"]),
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual(["/members/(...)1/opengraph-image-abc"]);
+      });
+
+      // A source URL without a page of its own renders the route whole, where
+      // the intercept still heads the route.
+      it("fills the intercepting page's files when the route renders whole", async () => {
+        const { options } = createSourceFixture({ sourcePageFirst: false });
+        const { rendersInterceptionSource: _mark, ...opts } = options.pageRequest.opts as Record<
+          string,
+          unknown
+        >;
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal", "(...)photos", "[id]"], {
+              servedUrl: "/members/(...)photos/[id]/opengraph-image-abc",
+            }),
+          ],
+          pageRequest: { ...options.pageRequest, opts },
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/members/(...)photos/1/opengraph-image-abc",
+        ]);
+      });
+
+      it("recovers the intercepting head with the intercepting page's files", async () => {
+        const { options } = createSourceFixture({
+          interceptPage: { generateMetadata: () => notFound() },
+          sourcePageFirst: false,
+        });
+        const elements = await buildPageElements({
+          ...options,
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal"], { href: "/modal-og.png" }),
+            metadataFile("opengraph-image", ["members", "@modal", "(...)photos", "[id]"], {
+              servedUrl: "/members/(...)photos/[id]/opengraph-image-abc",
+            }),
+          ],
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/members/(...)photos/1/opengraph-image-abc",
+        ]);
+      });
+
+      // A sibling intercept's tree is the intercepting page's path, with a
+      // default in the owner's slots.
+      it("heads a sibling intercept by the files of the intercepting page's path", async () => {
+        const route = createSyntheticRoute({
+          page: createSyntheticPageModule(() => null),
+          pattern: "/members",
+          routeSegments: ["members"],
+          slots: {
+            modal: {
+              name: "modal",
+              default: createSyntheticPageModule(() => null),
+              layoutIndex: -1,
+              routeSegments: [],
+            },
+          },
+        });
+        const elements = await buildPageElements({
+          ...createBaseOptions({
+            route,
+            routePath: "/members/photo/1",
+            opts: {
+              interceptPage: {
+                default: () => null,
+                generateMetadata: () => ({ title: "Photo 1" }),
+              } as AppPageModule,
+              interceptParams: { id: "1" },
+              interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+              interceptSourcePageSegments: ["members", "(.)photo", "[id]"],
+            },
+          }),
+          applyFileBasedMetadata,
+          metadataRoutes: [
+            metadataFile("opengraph-image", ["members", "@modal"], { href: "/modal-og.png" }),
+            metadataFile("opengraph-image", ["members", "(.)photo", "[id]"], {
+              servedUrl: "/members/(.)photo/[id]/opengraph-image-abc",
+            }),
+          ],
+        } as Parameters<typeof buildPageElements>[0]);
+        const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+          .metadata;
+
+        expect(imageUrls(metadata, "openGraph")).toEqual([
+          "/members/(.)photo/1/opengraph-image-abc",
+        ]);
+      });
+
+      // Next.js's interception rewrite captures the params above the marker
+      // from the source URL, so `/en/feed` intercepting `/fr/photos/1` heads
+      // by `/en/feed/(..)photos/1/...`.
+      it.each([
+        {
+          kind: "slot",
+          opts: {
+            interceptSlotId: "slot:modal:/[lang]/feed",
+            interceptSlotKey: "modal",
+            interceptSourcePageSegments: ["[lang]", "feed", "@modal", "(..)photos", "[id]"],
+            rendersInterceptionSource: true,
+          },
+          file: ["[lang]", "feed", "@modal", "(..)photos", "[id]"],
+          expected: "/en/feed/@modal/(..)photos/1/opengraph-image-abc",
+        },
+        {
+          kind: "sibling",
+          opts: {
+            interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+            interceptSourcePageSegments: ["[lang]", "feed", "(..)photos", "[id]"],
+          },
+          file: ["[lang]", "feed", "(..)photos", "[id]"],
+          expected: "/en/feed/(..)photos/1/opengraph-image-abc",
+        },
+      ])(
+        "fills a $kind intercept's params above the marker from the source",
+        async ({ kind, opts, file, expected }) => {
+          const route = createSyntheticRoute({
+            layouts: [{ default: ({ children }) => children } as AppPageModule],
+            layoutTreePositions: [2],
+            // A source page of its own would keep the source's head.
+            page: kind === "slot" ? null : createSyntheticPageModule(() => null),
+            params: ["lang"],
+            pattern: "/:lang/feed",
+            routeSegments: ["[lang]", "feed"],
+            slots: {
+              modal: {
+                name: "modal",
+                default: createSyntheticPageModule(() => null),
+                layoutIndex: 0,
+                ownerTreePosition: 2,
+                routeSegments: [],
+              },
+            },
+          });
+          const elements = await buildPageElements({
+            ...createBaseOptions({
+              route,
+              params: { lang: "en" },
+              routePath: "/fr/photos/1",
+              opts: {
+                interceptionContext: "/en/feed",
+                interceptPage: {
+                  default: () => null,
+                  generateMetadata: () => ({ title: "Photo 1" }),
+                } as AppPageModule,
+                interceptParams: { id: "1", lang: "fr" },
+                interceptSourceMatchedUrl: "/en/feed",
+                ...opts,
+              },
+            }),
+            applyFileBasedMetadata,
+            metadataRoutes: [
+              metadataFile("opengraph-image", file, {
+                servedUrl: `/${file.join("/")}/opengraph-image-abc`,
+              }),
+            ],
+          } as Parameters<typeof buildPageElements>[0]);
+          const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+            .metadata;
+
+          expect(imageUrls(metadata, "openGraph")).toEqual([expected]);
+        },
+      );
+
+      // A static source route doesn't declare the slot's own dynamic folder
+      // above the marker, which the rewrite still captures from its URL.
+      // A dotted param name such as `[variant.id]` is filled the same way.
+      it.each(["team", "variant.id"])(
+        "fills a slot's dynamic folder [%s] above the marker from a static source's URL",
+        async (name) => {
+          const route = createSyntheticRoute({
+            layouts: [{ default: ({ children }) => children } as AppPageModule],
+            layoutTreePositions: [1],
+            page: null,
+            pattern: "/teams/acme",
+            routeSegments: ["teams", "acme"],
+            slots: {
+              modal: {
+                name: "modal",
+                default: createSyntheticPageModule(() => null),
+                layoutIndex: 0,
+                ownerTreePosition: 1,
+                routeSegments: [],
+              },
+            },
+          });
+          const file = ["teams", "@modal", `[${name}]`, "(.)pics", "[id]"];
+          const elements = await buildPageElements({
+            ...createBaseOptions({
+              route,
+              routePath: "/teams/bravo/pics/1",
+              opts: {
+                interceptionContext: "/teams/acme",
+                interceptPage: {
+                  default: () => null,
+                  generateMetadata: () => ({ title: "Pic 1" }),
+                } as AppPageModule,
+                interceptParams: { id: "1", [name]: "bravo" },
+                interceptSlotId: "slot:modal:/teams",
+                interceptSlotKey: "modal",
+                interceptSourceMatchedUrl: "/teams/acme",
+                interceptSourcePageSegments: file,
+                rendersInterceptionSource: true,
+              },
+            }),
+            applyFileBasedMetadata,
+            metadataRoutes: [
+              metadataFile("opengraph-image", file, {
+                servedUrl: `/teams/[${name}]/(.)pics/[id]/opengraph-image-abc`,
+              }),
+            ],
+          } as Parameters<typeof buildPageElements>[0]);
+          const metadata = await resolveEntryHead(elements, "__vinext_streaming_metadata_body:")
+            .metadata;
+
+          expect(imageUrls(metadata, "openGraph")).toEqual([
+            "/teams/acme/(.)pics/1/opengraph-image-abc",
+          ]);
+        },
+      );
+    });
+
     // Only the kept head's own render knew where it placed its streamed tags,
     // as a prerender of the source page puts them in the head.
     it("leaves the head's streamed body to the client whatever this render places", async () => {

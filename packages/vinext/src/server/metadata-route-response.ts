@@ -60,6 +60,7 @@ import {
 } from "./cache-control.js";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { interceptionMarkerPatternParam } from "../routing/route-pattern.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { VINEXT_METADATA_ROUTE_CACHE_HEADER } from "./headers.js";
 import {
@@ -786,6 +787,12 @@ function metadataRouteRawParams(
   const params: AppPageParams = Object.create(null);
   let urlIndex = 0;
   for (const part of route.patternParts ?? []) {
+    const markerParam = interceptionMarkerPatternParam(part);
+    if (markerParam) {
+      const value = urlParts[urlIndex++];
+      if (value !== undefined) params[markerParam.name] = value.slice(markerParam.marker.length);
+      continue;
+    }
     if (!part.startsWith(":")) {
       urlIndex++;
       continue;
