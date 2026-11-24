@@ -104,9 +104,11 @@ import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.j
 import { createAppRouteTree } from "./app-route-tree.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
+  ROUTE_MISS_DOCUMENT_NAVIGATION,
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
 } from "./app-browser-interception-context.js";
+import { getRouteMissInterceptionSourceHref } from "./app-interception-context-header.js";
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
@@ -154,6 +156,7 @@ import {
   readHistoryStatePreviousNextUrl,
   resolveActiveRoutePaths,
   resolveInterceptionContextFromPreviousNextUrl,
+  resolveNavigationInterceptionSource,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type HistoryTraversalIntent,
@@ -469,7 +472,13 @@ let clientNavigationCacheGeneration = 0;
 // the HMR handler to distinguish "still hydrating" (wait) from "was up, then
 // torn down by a render error" (full reload to recover).
 let browserRouterStateHasEverCommitted = false;
-let initialPrefetchRouterState: { pathAndSearch: string; routeId: string } | null = null;
+let initialPrefetchRouterState: {
+  pathAndSearch: string;
+  routeId: string;
+  routeMiss: boolean;
+  sourceInterceptionContext: null;
+  sourcePathname: null;
+} | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
 // Next.js loads every hard navigation through the router's MPA state, which
@@ -1250,9 +1259,17 @@ function clientNavigationSnapshotHref(snapshot: ClientNavigationRenderSnapshot):
 }
 
 type NavigationRequestState = {
+  /** Load the target's document, as Next.js does, instead of fetching it. */
+  documentNavigation?: true;
   interceptionContext: string | null;
   previousNextUrl: string | null;
 };
+
+// A render without a source page is the not-found page of a URL that matched
+// no route; a matched route's own notFound() keeps its route's segments.
+function isRouteMissRender(elements: AppElements): boolean {
+  return AppElementsWire.readMetadata(elements).sourcePage === null;
+}
 
 function getCurrentMatchedRoutePathname(): string | null {
   const routeKey = AppElementsWire.parseElementKey(getBrowserRouterState().routeId);
@@ -1283,27 +1300,49 @@ function getRequestState(
   // 3. otherwise, send no interception context.
   switch (navigationKind) {
     case "navigate": {
-      const currentPreviousNextUrl = getBrowserRouterState().previousNextUrl;
-      if (currentPreviousNextUrl !== null) {
-        return {
-          interceptionContext: resolveInterceptionContextFromPreviousNextUrl(
-            currentPreviousNextUrl,
-            __basePath,
-          ),
-          previousNextUrl: currentPreviousNextUrl,
-        };
+      const currentRouterState = getBrowserRouterState();
+      const navigationSource = resolveNavigationInterceptionSource(currentRouterState, __basePath);
+      const currentPreviousNextUrl = navigationSource.previousNextUrl;
+      const keptSource =
+        currentPreviousNextUrl === null
+          ? null
+          : {
+              interceptionContext: resolveInterceptionContextFromPreviousNextUrl(
+                currentPreviousNextUrl,
+                __basePath,
+              ),
+              previousNextUrl: currentPreviousNextUrl,
+            };
+      // An entry that renders an intercepting route's own tree sends the
+      // source it keeps only to the targets its tree path intercepts.
+      if (keptSource !== null && navigationSource.pathname === null) {
+        return keptSource;
       }
+      const currentPathname = navigationSource.pathname ?? window.location.pathname;
+      const currentRenderIsRouteMiss = isRouteMissRender(currentRouterState.elements);
+      // The source an intercepted state keeps, for its refreshes and
+      // traversals. An unmatched URL's not-found page sends /_not-found, as
+      // Next.js keeps that tree path as its `Next-Url`.
+      const currentSourceHref = currentRenderIsRouteMiss
+        ? getRouteMissInterceptionSourceHref(__basePath)
+        : window.location.pathname + window.location.search;
       const manifestInterceptionContext = resolveManifestNavigationInterceptionContext({
         basePath: __basePath,
-        currentPathname: window.location.pathname,
+        currentPathname,
+        currentRenderIsRouteMiss,
         routeManifest: getBrowserRouteManifest(),
         targetPathname,
       });
+      if (manifestInterceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION) {
+        return { documentNavigation: true, interceptionContext: null, previousNextUrl: null };
+      }
       if (manifestInterceptionContext !== null) {
-        return {
-          interceptionContext: manifestInterceptionContext,
-          previousNextUrl: window.location.pathname + window.location.search,
-        };
+        return (
+          keptSource ?? {
+            interceptionContext: manifestInterceptionContext,
+            previousNextUrl: currentSourceHref,
+          }
+        );
       }
       // Fallback: when the current page is a declared interception source and
       // the target URL still matches the declared target prefix, send the
@@ -1320,17 +1359,24 @@ function getRequestState(
       const middlewareRewriteInterceptionContext =
         resolveMiddlewareRewriteNavigationInterceptionContext({
           basePath: __basePath,
-          currentMatchedPathname: getCurrentMatchedRoutePathname(),
-          currentPathname: window.location.pathname,
+          // The intercepting route's tree path is the only one it navigates from.
+          currentMatchedPathname:
+            navigationSource.pathname === null ? getCurrentMatchedRoutePathname() : null,
+          currentPathname,
+          currentRenderIsRouteMiss,
           routeManifest: getBrowserRouteManifest(),
           targetPathname,
         });
+      if (middlewareRewriteInterceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION) {
+        return { documentNavigation: true, interceptionContext: null, previousNextUrl: null };
+      }
       if (middlewareRewriteInterceptionContext !== null) {
-        const currentHrefForFallback = window.location.pathname + window.location.search;
-        return {
-          interceptionContext: middlewareRewriteInterceptionContext,
-          previousNextUrl: currentHrefForFallback,
-        };
+        return (
+          keptSource ?? {
+            interceptionContext: middlewareRewriteInterceptionContext,
+            previousNextUrl: currentSourceHref,
+          }
+        );
       }
       return {
         interceptionContext: null,
@@ -2117,6 +2163,9 @@ function bootstrapHydration(
     initialPrefetchRouterState = {
       pathAndSearch: initialPathAndSearch,
       routeId: AppElementsWire.readMetadata(elements).routeId,
+      routeMiss: isRouteMissRender(elements),
+      sourceInterceptionContext: null,
+      sourcePathname: null,
     };
     return elements;
   });
@@ -2397,6 +2446,10 @@ function bootstrapHydration(
           currentPrevNextUrl,
           activeTraversalIntent?.historyState,
         );
+        if (requestState.documentNavigation === true) {
+          performHardNavigationForScrollIntent(currentHref);
+          return;
+        }
         const requestInterceptionContext = requestState.interceptionContext;
         const requestPreviousNextUrl = requestState.previousNextUrl;
         const shouldSupplementVisibleBranches =
@@ -2996,25 +3049,30 @@ function bootstrapHydration(
                 targetPathname: interception.targetPathname,
               }),
           );
+          const primaryPayload = Promise.resolve(rscPayload);
+          // A traversal learns from its payload whether it takes the source
+          // page; one that doesn't neither waits for nor fails with it.
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
-            supplemental.push(async (signal) => {
-              const elements = await fetchPersistedSourcePageRefresh({
-                // A traversal starts from another entry's state, whose mounted
-                // slots aren't the ones the intercepted payload leaves to it.
-                mountedSlotsHeader:
-                  navigationKind === "traverse" && requestInterceptionContext !== null
-                    ? null
-                    : mountedSlotsHeader,
-                signal,
-                targetPathname: persistedSourcePageRefresh,
-              });
-              return sourcePageRefreshMerge.track(persistedSourcePageRefresh, elements);
-            });
+            supplemental.push(
+              sourcePageRefreshMerge.load(persistedSourcePageRefresh, primaryPayload, (signal) =>
+                fetchPersistedSourcePageRefresh({
+                  // A traversal starts from another entry's state, whose
+                  // mounted slots aren't the ones the intercepted payload
+                  // leaves to it.
+                  mountedSlotsHeader:
+                    navigationKind === "traverse" && requestInterceptionContext !== null
+                      ? null
+                      : mountedSlotsHeader,
+                  signal,
+                  targetPathname: persistedSourcePageRefresh,
+                }),
+              ),
+            );
           }
           rscPayload = resolveSupplementalRefreshes({
             merge: sourcePageRefreshMerge.merge,
             mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
-            primary: Promise.resolve(rscPayload),
+            primary: primaryPayload,
             signal: navigationAbortHandle.signal,
             supplemental,
           })
@@ -3287,9 +3345,16 @@ function bootstrapHydration(
         return initialPrefetchRouterState;
       }
       const state = browserNavigationController.getBrowserRouterState();
+      const navigationSource = resolveNavigationInterceptionSource(state, __basePath);
       return {
         pathAndSearch: createSnapshotPathAndSearch(state.navigationSnapshot),
         routeId: state.routeId,
+        routeMiss: isRouteMissRender(state.elements),
+        sourceInterceptionContext: resolveInterceptionContextFromPreviousNextUrl(
+          navigationSource.previousNextUrl,
+          __basePath,
+        ),
+        sourcePathname: navigationSource.pathname,
       };
     },
     navigate: navigateRsc,

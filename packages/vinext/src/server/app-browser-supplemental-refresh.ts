@@ -11,8 +11,9 @@ import {
   type AppElements,
   type AppElementsSlotBinding,
 } from "./app-elements.js";
-import type { AppRouterState } from "./app-browser-state.js";
+import { rendersSiblingIntercept, type AppRouterState } from "./app-browser-state.js";
 import { resolveActiveRoutePaths } from "./app-history-state.js";
+import { isRouteMissInterceptionSource } from "./app-interception-context-header.js";
 import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
 import type {
   BrowserRouteManifest,
@@ -283,22 +284,67 @@ export function createInterceptionSourceRefreshMerge(options: {
   refreshUrl: URL;
 }): {
   merge: (current: AppElements, refreshed: AppElements) => AppElements;
+  /**
+   * Whether a payload takes the render fetched from this path. The source
+   * page's goes beneath an intercept the server proved only, so a payload
+   * without one, as a sibling intercept's, never waits for it.
+   */
+  takes: (pathAndSearch: string, primary: AppElements) => boolean;
   track: (pathAndSearch: string, elements: AppElements) => AppElements;
+  /**
+   * The fan-out's load of the branch fetched from this path, started beside
+   * the payload. A payload that doesn't take it cancels that request and
+   * merges nothing from it.
+   */
+  load: (
+    pathAndSearch: string,
+    primary: Promise<AppElements>,
+    fetch: (signal: AbortSignal) => Promise<AppElements>,
+  ) => (signal: AbortSignal) => Promise<AppElements>;
 } {
   const sourceUrl =
     options.previousNextUrl === null ? null : new URL(options.previousNextUrl, options.refreshUrl);
   const sourcePathAndSearch =
     sourceUrl === null ? null : `${sourceUrl.pathname}${sourceUrl.search}`;
   const sourceRenders = new WeakSet<AppElements>();
+  const takes = (pathAndSearch: string, primary: AppElements): boolean =>
+    pathAndSearch !== sourcePathAndSearch ||
+    AppElementsWire.readMetadata(primary).interception !== null;
+  const track = (pathAndSearch: string, elements: AppElements): AppElements => {
+    if (pathAndSearch === sourcePathAndSearch) sourceRenders.add(elements);
+    return elements;
+  };
   return {
+    load: (pathAndSearch, primary, fetch) => async (signal) => {
+      const controller = new AbortController();
+      const abort = () => controller.abort(signal.reason);
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+      const request = fetch(controller.signal);
+      void request.catch(() => {});
+      try {
+        let payload: AppElements;
+        try {
+          payload = await primary;
+        } catch (error) {
+          controller.abort();
+          throw error;
+        }
+        if (!takes(pathAndSearch, payload)) {
+          controller.abort();
+          return track(pathAndSearch, payload);
+        }
+        return track(pathAndSearch, await request);
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+    },
     merge: (current, refreshed) =>
       sourceRenders.has(refreshed)
         ? mergeInterceptionSourceRefresh(current, refreshed)
         : mergeRefreshedParallelSlot(current, refreshed),
-    track: (pathAndSearch, elements) => {
-      if (pathAndSearch === sourcePathAndSearch) sourceRenders.add(elements);
-      return elements;
-    },
+    takes,
+    track,
   };
 }
 
@@ -449,10 +495,16 @@ export function resolvePersistedSourcePageRefreshes(options: {
       normalizePathnameForRouteMatch(stripBasePath(options.refreshUrl.pathname, options.basePath)),
     ),
   );
-  // A state showing the whole intercepting route holds nothing of its source.
+  // A state showing the whole intercepting route holds nothing of its source,
+  // nor does one opened from an unmatched URL's not-found page, which renders
+  // that route whole, nor a sibling intercept's, the intercepting route's own
+  // page.
   if (
     options.state.previousNextUrl !== null &&
-    (options.state.elements === undefined || !rendersWholeInterceptingRoute(options.state.elements))
+    !isRouteMissInterceptionSource(options.state.previousNextUrl, options.basePath) &&
+    (options.state.elements === undefined ||
+      (!rendersWholeInterceptingRoute(options.state.elements) &&
+        !rendersSiblingIntercept(AppElementsWire.readMetadata(options.state.elements))))
   ) {
     const sourceUrl = new URL(options.state.previousNextUrl, options.refreshUrl);
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);

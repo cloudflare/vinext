@@ -46,6 +46,28 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual(["/refreshing?random=old"]);
   });
 
+  // An intercept opened from an unmatched URL's not-found page names
+  // /_not-found as its source, and renders the intercepting route whole: it
+  // keeps no page of that source to fetch.
+  it("fetches no source page for an intercept opened from a not-found page", () => {
+    for (const basePath of ["", "/docs"]) {
+      expect(
+        resolvePersistedSourcePageRefreshes({
+          basePath,
+          refreshUrl: new URL(`https://example.com${basePath}/photos/1`),
+          state: { previousNextUrl: `${basePath}/_not-found`, slotBindings: [] },
+        }),
+      ).toEqual([]);
+    }
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "/docs",
+        refreshUrl: new URL("https://example.com/docs/photos/1"),
+        state: { previousNextUrl: "/docs/feed", slotBindings: [] },
+      }),
+    ).toEqual(["/docs/feed"]);
+  });
+
   // The whole intercepting route renders for a source that shares none of its
   // tree. A refresh of its entry asks for that source's page too, as for an
   // intercepted entry, but none of it merges into the whole route, whose
@@ -1581,6 +1603,106 @@ describe("parallel route supplemental refreshes", () => {
         expect(fanOut.merge(photoPage, branch)).toEqual(
           mergeRefreshedParallelSlot(photoPage, branch),
         );
+      });
+
+      // A sibling intercept renders the intercepting route's own page, with no
+      // interception proof, so its entry's source page is never fetched for a
+      // refresh, and a traversal back to it neither waits for nor fails with
+      // one it started.
+      it("takes no source page for a sibling intercept's payload", () => {
+        const sibling: AppElements = {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: "/members/7",
+            layoutIds: ["layout:/"],
+            rootLayoutTreePath: "/",
+            routeId: "route:/photos/1",
+            sourcePage: "/members/(..)photos/[id]/page",
+          }),
+          "page:/photos/1": "photo modal page",
+        };
+        const state = { previousNextUrl: "/members/7", slotBindings: [] };
+        expect(
+          resolvePersistedSourcePageRefreshes({
+            basePath: "",
+            refreshUrl,
+            state: { ...state, elements: sibling },
+          }),
+        ).toEqual([]);
+        expect(
+          resolvePersistedSourcePageRefreshes({
+            basePath: "",
+            refreshUrl,
+            state: { ...state, elements: createIntercepted() },
+          }),
+        ).toEqual(["/members/7"]);
+
+        const fanOut = createInterceptionSourceRefreshMerge({
+          previousNextUrl: "/members/7",
+          refreshUrl,
+        });
+        expect(fanOut.takes("/members/7", sibling)).toBe(false);
+        expect(fanOut.takes("/members/7", createIntercepted())).toBe(true);
+        expect(fanOut.takes("/members/7/sidebar", sibling)).toBe(true);
+        expect(fanOut.merge(sibling, fanOut.track("/members/7", sibling))).toBe(sibling);
+      });
+
+      // The source page is fetched beside the payload. A payload that doesn't
+      // take it, as a sibling intercept's, cancels that request rather than
+      // leaving it running past the navigation.
+      it("cancels the source page's request for a payload that doesn't take it", async () => {
+        const sibling: AppElements = {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: "/members/7",
+            layoutIds: ["layout:/"],
+            rootLayoutTreePath: "/",
+            routeId: "route:/photos/1",
+            sourcePage: "/members/(..)photos/[id]/page",
+          }),
+        };
+        const fanOut = createInterceptionSourceRefreshMerge({
+          previousNextUrl: "/members/7",
+          refreshUrl,
+        });
+        const start = (primary: Promise<AppElements>, response: Promise<AppElements>) => {
+          const signals: AbortSignal[] = [];
+          const navigation = new AbortController();
+          const loaded = fanOut.load("/members/7", primary, (signal) => {
+            signals.push(signal);
+            return response;
+          })(navigation.signal);
+          return { loaded, navigation, signals };
+        };
+
+        // Fetched at once, before the payload arrives.
+        let resolvePrimary!: (elements: AppElements) => void;
+        const hanging = new Promise<AppElements>(() => {});
+        const skipped = start(
+          new Promise((resolve) => {
+            resolvePrimary = resolve;
+          }),
+          hanging,
+        );
+        expect(skipped.signals).toHaveLength(1);
+        resolvePrimary(sibling);
+        const skippedRender = await skipped.loaded;
+        expect(skipped.signals[0].aborted).toBe(true);
+        expect(fanOut.merge(sibling, skippedRender)).toBe(sibling);
+
+        // A payload with the intercept waits for it, and a later navigation
+        // still cancels it.
+        const intercepted = start(Promise.resolve(createIntercepted()), Promise.resolve(source));
+        expect(fanOut.merge(createIntercepted(), await intercepted.loaded)["page:/members/7"]).toBe(
+          "member page",
+        );
+        expect(intercepted.signals[0].aborted).toBe(false);
+        const pending = start(Promise.resolve(createIntercepted()), hanging);
+        pending.navigation.abort();
+        expect(pending.signals[0].aborted).toBe(true);
+
+        // A payload that fails cancels it too.
+        const failed = start(Promise.reject(new Error("payload failed")), hanging);
+        await expect(failed.loaded).rejects.toThrow("payload failed");
+        expect(failed.signals[0].aborted).toBe(true);
       });
     });
   });

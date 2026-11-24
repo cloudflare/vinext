@@ -1,4 +1,4 @@
-import { stripBasePath } from "../utils/base-path.js";
+import { restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   AppElementsWire,
@@ -727,6 +727,74 @@ type CreatePendingNavigationCommitOptions = {
   type: "navigate" | "replace" | "traverse";
 };
 
+// Next.js's interception markers, which only an intercepting route's
+// segments start with.
+const INTERCEPTION_MARKERS = ["(..)(..)", "(.)", "(..)", "(...)"] as const;
+
+function isInterceptionMarkerSegment(segment: string): boolean {
+  return INTERCEPTION_MARKERS.some((marker) => segment.startsWith(marker));
+}
+
+/** Whether a payload renders a sibling intercept, the intercepting route's own page. */
+export function rendersSiblingIntercept(metadata: {
+  interceptionContext: string | null;
+  sourcePage: string | null;
+}): boolean {
+  return (
+    metadata.interceptionContext !== null &&
+    metadata.sourcePage !== null &&
+    metadata.sourcePage.split("/").some(isInterceptionMarkerSegment)
+  );
+}
+
+export type NavigationInterceptionSource = {
+  /** The source the entry keeps, which its navigations send. */
+  previousNextUrl: string | null;
+  /**
+   * The path of the intercepting route's tree the entry renders, which decides
+   * whether a navigation intercepts, or null when the kept source decides.
+   */
+  pathname: string | null;
+};
+
+/**
+ * Where navigations and prefetches from an entry take their interception
+ * context. An intercepted entry sends the source it keeps. One that renders an
+ * intercepting route's own tree, a sibling intercept or a whole intercepting
+ * route, intercepts only the targets that tree's path intercepts, as Next.js's
+ * `nextUrl` stops at the interception marker: the path of the folders above
+ * the marker, with the source's values for their params. Those navigations
+ * still send the source it keeps, a page the server can check, and its
+ * refreshes and traversals send it whatever their target.
+ */
+export function resolveNavigationInterceptionSource(
+  state: Pick<AppRouterState, "elements" | "previousNextUrl">,
+  basePath: string,
+): NavigationInterceptionSource {
+  const source = resolveInterceptionContextFromPreviousNextUrl(state.previousNextUrl, basePath);
+  const metadata = AppElementsWire.readMetadata(state.elements);
+  const segments = metadata.sourcePage?.slice(1).split("/") ?? [];
+  const markerIndex = segments.findIndex(isInterceptionMarkerSegment);
+  // A whole intercepting route's source page runs through the slot's folders
+  // to the marker; one without a marker stops at the owner.
+  const ownerSegments =
+    source === null
+      ? null
+      : metadata.wholeInterceptionSource !== null
+        ? segments.slice(0, markerIndex === -1 ? -1 : markerIndex)
+        : rendersSiblingIntercept(metadata)
+          ? segments.slice(0, markerIndex)
+          : null;
+  if (source === null || ownerSegments === null) {
+    return { previousNextUrl: state.previousNextUrl, pathname: null };
+  }
+  const pathSegments = ownerSegments.filter((segment) => !/^\(.*\)$/.test(segment));
+  const ownerPath = pathSegments.some((segment) => /^\[{1,2}\.\.\./.test(segment))
+    ? source
+    : `/${source.split("/").filter(Boolean).slice(0, pathSegments.length).join("/")}`;
+  return { previousNextUrl: state.previousNextUrl, pathname: restoreBasePath(ownerPath, basePath) };
+}
+
 export function createPendingNavigationCommitFromElements(
   options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
 ): PendingNavigationCommit {
@@ -752,9 +820,13 @@ export function createPendingNavigationCommitFromElements(
       : options.currentState.previousNextUrl;
   // A payload of the whole intercepting route carries no interception proof,
   // but still renders for its source, so a refresh or traversal sends that
-  // source again, as Next.js re-sends `previousNextUrl`.
+  // source again, as Next.js re-sends `previousNextUrl`. So does a sibling
+  // intercept's, whose page is the intercepting route's own, as Next.js does
+  // while its tree holds an interception route.
   const previousNextUrl =
-    metadata.interception === null && metadata.wholeInterceptionSource === null
+    metadata.interception === null &&
+    metadata.wholeInterceptionSource === null &&
+    !rendersSiblingIntercept(metadata)
       ? null
       : requestedPreviousNextUrl;
 
