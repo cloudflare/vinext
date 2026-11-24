@@ -59,6 +59,7 @@ export {
   createHistoryStateWithTreeSnapshotId,
   createHistoryStateWithNavigationMetadata,
   createHistoryStateWithPreviousNextUrl,
+  hasRouterHistoryState,
   isExternalHistoryState,
   isHistoryStateBfcacheVersionCurrent,
   readHistoryStateBfcacheIds,
