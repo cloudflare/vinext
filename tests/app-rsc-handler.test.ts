@@ -1063,6 +1063,38 @@ describe("createAppRscHandler", () => {
     expect(pageRequest.headers.get("x-vinext-mounted-layouts")).toBe(mountedLayoutsHeader);
   });
 
+  it("renders a navigation whole when a next.config provider policy can store it", async () => {
+    // The policy can store an otherwise dynamic render under the shared key,
+    // so the render can't leave out the layouts one client holds.
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("rsc")),
+    );
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }],
+        },
+      ],
+    });
+    const headers = createRscRequestHeaders({
+      mountedLayoutsHeader: hashMountedLayoutIdentity("layout:/"),
+    });
+    const url = await createRscRequestUrl("/docs/about", headers);
+
+    await handler(
+      new Request(new URL(url, "https://example.test"), { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+    expect(options.cache).toBe("shared");
+    expect(props.cacheability.policyHeaders).toEqual([["Cache-Control", "public, s-maxage=60"]]);
+    expect(request.headers.get("x-vinext-mounted-layouts")).toBeNull();
+  });
+
   it("normalizes only eligible main-tree loading-shell RSC requests", async () => {
     const route = createPageRoute({ canUseCanonicalLoadingShell: true });
     const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);

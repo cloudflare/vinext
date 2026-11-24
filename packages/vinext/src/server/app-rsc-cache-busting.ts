@@ -380,7 +380,9 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
  * their bytes can legitimately differ from the destination's full route.
  *
  * The mounted layouts stay: they're in no cache key or Vary, and only a render
- * that's never stored reads them (see app-mounted-layouts.ts).
+ * that's never stored reads them (see app-mounted-layouts.ts). A shared
+ * dispatch that a next.config provider policy can store drops them before
+ * this runs (app-rsc-handler.ts).
  */
 export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): boolean {
   if (

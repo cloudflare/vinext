@@ -46,6 +46,7 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_ROUTE_MISS_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
@@ -1551,6 +1552,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.kind === "app-page"
               ? prepareSharedAppPageDispatch(stageRequest, cache)
               : stageRequest;
+          // A next.config provider policy can store a render vinext never
+          // stores itself, under a key every client shares, so that render
+          // stays whole rather than leaving out the layouts a navigation holds.
+          if (
+            cache === "shared" &&
+            props.kind === "app-page" &&
+            responseStagePolicy !== null &&
+            dispatchRequest.headers.has(VINEXT_MOUNTED_LAYOUTS_HEADER)
+          ) {
+            const headers = new Headers(dispatchRequest.headers);
+            headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
+            dispatchRequest = cloneRequestWithHeaders(dispatchRequest, headers);
+          }
           let dispatchProps = props;
           let canonicalRsc: { headers: Headers; navigation: boolean } | null = null;
           if (
