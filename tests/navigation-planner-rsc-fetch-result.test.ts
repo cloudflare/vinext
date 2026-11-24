@@ -132,6 +132,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
         previousNextUrl: "/feed",
         redirectDepth: 3,
       },
+      redirectSignal: "response-url",
       trace: {
         schemaVersion: NAVIGATION_TRACE_SCHEMA_VERSION,
         entries: [
@@ -158,6 +159,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
       discardBody: false,
       kind: "hardNavigate",
       reason: "externalRedirectTarget",
+      redirectSignal: "response-url",
       url: "https://idp.example/login",
     });
     expectSingleTraceEntry(decision, NavigationTraceReasonCodes.redirectTerminalExternal, {
@@ -205,6 +207,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
         previousNextUrl: "/feed",
         redirectDepth: 1,
       },
+      redirectSignal: "streamed-header",
       trace: {
         schemaVersion: NAVIGATION_TRACE_SCHEMA_VERSION,
         entries: [
@@ -231,6 +234,7 @@ describe("navigationPlanner RSC fetch-result classification", () => {
       discardBody: true,
       kind: "hardNavigate",
       reason: "externalRedirectTarget",
+      redirectSignal: "streamed-header",
       url: "https://idp.example/login#step",
     });
     expectSingleTraceEntry(decision, NavigationTraceReasonCodes.redirectTerminalExternal, {
