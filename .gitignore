@@ -11,9 +11,11 @@ tests/fixtures/cf-app-basic/node_modules/*
 !tests/fixtures/cf-app-basic/node_modules/module-identity-dependency/**
 !tests/fixtures/cf-app-basic/node_modules/pages-only-dependency/
 !tests/fixtures/cf-app-basic/node_modules/pages-only-dependency/**
+!tests/fixtures/optimize-imports-node-cjs/node_modules/
 dist/
 !packages/types/next/upstream/dist/
 !packages/types/next/upstream/dist/**
+!tests/fixtures/optimize-imports-node-cjs/node_modules/*/dist/
 out/
 *.tsbuildinfo
 .vite/

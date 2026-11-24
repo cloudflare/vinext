@@ -1,0 +1,5 @@
+{
+  "name": "optimize-imports-node-cjs",
+  "private": true,
+  "type": "module"
+}
