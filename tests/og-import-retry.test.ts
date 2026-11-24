@@ -4,8 +4,9 @@ import { runWithExecutionContext } from "../packages/vinext/src/shims/request-co
 
 const og = vi.hoisted(() => ({ imports: 0 }));
 
-// @vercel/og is a dependency of vinext, not of the repo root. The first
-// import fails, as a chunk that fails to load would.
+// @vercel/og is an optional peer (and vinext's own devDependency), not a
+// dependency of the repo root. The first import fails, as a chunk that fails
+// to load would.
 vi.mock("../packages/vinext/node_modules/@vercel/og", () => {
   og.imports += 1;
   if (og.imports === 1) throw new Error("failed to load @vercel/og");

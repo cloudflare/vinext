@@ -42,8 +42,22 @@ export class ImageResponse extends Response {
           // Lazily import @vercel/og so its ~800 KB runtime (satori + resvg +
           // embedded wasm/fonts) is code-split into its own chunk instead of
           // being inlined into the main worker entry, regardless of whether the
-          // app imports next/og statically or dynamically.
-          const loading = import("@vercel/og");
+          // app imports next/og statically or dynamically. @vercel/og is an
+          // optional peer: apps that use next/og must install it themselves.
+          const loading = import("@vercel/og").catch((cause: unknown) => {
+            const missing =
+              cause &&
+              typeof cause === "object" &&
+              "code" in cause &&
+              (cause as { code?: string }).code === "ERR_MODULE_NOT_FOUND";
+            if (missing) {
+              throw new Error(
+                'next/og requires the optional peer dependency "@vercel/og". Install it with your package manager (for example, `pnpm add @vercel/og`).',
+                { cause },
+              );
+            }
+            throw cause;
+          });
           vercelOg = loading;
           // Next.js imports @vercel/og for every image, so forget a failed
           // import and let the next image try again.

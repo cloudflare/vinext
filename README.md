@@ -633,7 +633,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `next/script`       | ✅  | All 4 strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`)                                                     |
 | `next/font/google`  | 🟡  | Runtime CDN loading. No self-hosting, font subsetting, or fallback metrics                                                             |
 | `next/font/local`   | 🟡  | Runtime `@font-face` injection. Not extracted at build time                                                                            |
-| `next/og`           | ✅  | OG image generation via `@vercel/og` (Satori + resvg)                                                                                  |
+| `next/og`           | ✅  | OG image generation via optional peer `@vercel/og` (install when you use `next/og`; Satori + resvg)                                    |
 | `next/cache`        | ✅  | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`, `"use cache"` with `cacheLife()` and `cacheTag()`       |
 | `next/form`         | ✅  | GET form interception + POST server action delegation                                                                                  |
 | `next/legacy/image` | ✅  | Translates legacy props to modern Image                                                                                                |
