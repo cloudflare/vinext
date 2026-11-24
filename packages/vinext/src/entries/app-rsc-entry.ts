@@ -370,6 +370,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
           slot.interceptingRoutes.flatMap((intercept) => [
             ...intercept.layoutPaths,
             intercept.pagePath,
+            intercept.ownerDefaultPath,
           ]),
         ),
         ...route.siblingIntercepts.flatMap((intercept) => [
@@ -670,6 +671,7 @@ const __requestHandler = createAppRscRequestHandler({
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
       interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
       interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,
@@ -1439,7 +1441,7 @@ function hasInterceptionId(interceptionId) {
 
 async function buildPageElements(route, params, routePath, pageRequest, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
-  await __ensureRouteLoaded(route);
+  await __ensureRouteLoaded(route, pageRequest.opts);
   const routeFonts = __getRouteFonts(
     await __getNavigationFontOwners(
       route,
@@ -1734,14 +1736,15 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           route,
         });
       },
-      renderErrorBoundaryPage(renderErr, errorOrigin) {
+      renderErrorBoundaryPage(renderErr, errorOrigin, renderParams = params, renderRoute = route, renderIsEdgeRuntime) {
         const __activeIntercept = findIntercept(
           interceptionPathname,
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
-          isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+        return __fallbackRenderer.renderErrorBoundary(renderRoute, renderErr, isRscRequest, request, renderParams, scriptNonce, middlewareContext, {
+          // The runtime dispatch resolved for the render: an interception's own.
+          isEdgeRuntime: renderIsEdgeRuntime ?? __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
@@ -1753,8 +1756,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
-          isEdgeRuntime: !opts.routeMiss && __isEdgeRuntime(__segmentConfig.runtime),
+        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : (opts.route ?? route), statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
+          isEdgeRuntime: !opts.routeMiss && (opts.isEdgeRuntime ?? __isEdgeRuntime(__segmentConfig.runtime)),
           routePathname: cleanPathname,
           sourcePageSegments: !opts.routeMiss && __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
@@ -2199,6 +2202,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
       interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
       interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,

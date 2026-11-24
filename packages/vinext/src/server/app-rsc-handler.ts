@@ -425,10 +425,16 @@ type AppRscRouteMatch<TRoute> = {
   interceptionRawRendersTargetLayouts?: boolean;
   interceptionSourceIsConcrete?: boolean;
   /**
-   * The source has no slot to render the intercept into. Only a source rewrite
-   * to a route that has the slot can still make the request intercept.
+   * The source has no slot to render the intercept into. Unless the request
+   * renders the whole intercepting route, only a source rewrite to a route
+   * that has the slot can still make the request intercept.
    */
   interceptionSourceLacksSlot?: boolean;
+  /**
+   * The source shares none of the intercepting route's tree, so the request
+   * renders that tree whole, from the slot owner's route.
+   */
+  interceptionRendersWholeInterceptingRoute?: boolean;
   params: AppPageParams;
   route: TRoute;
 };
@@ -1228,7 +1234,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     sourceMatch: AppRscRouteMatch<TRoute> | null,
     sourceContext: string | null = interceptionContextHeader,
   ): boolean => {
-    if (sourceMatch === null || sourceMatch.interceptionSourceLacksSlot === true) return false;
+    if (
+      sourceMatch === null ||
+      (sourceMatch.interceptionSourceLacksSlot === true &&
+        sourceMatch.interceptionRendersWholeInterceptingRoute !== true)
+    ) {
+      return false;
+    }
     if (sourceMatch.interceptionSourceIsConcrete !== undefined) {
       return sourceMatch.interceptionSourceIsConcrete;
     }
@@ -2028,6 +2040,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ? match?.interceptionRawRendersTargetLayouts === true
       : match?.interceptionRendersTargetLayouts === true;
   const rendersTargetLayouts = rendersTargetLayoutsFor(interceptionSourceMatch);
+  // A source without the intercepted slot never renders itself: the request
+  // renders the whole intercepting route instead, or the route with the slot
+  // that a source rewrite reaches. When authorization refuses such a source,
+  // the request renders the target directly, as one without an interception
+  // context does.
+  let droppedSourceWithoutSlot = false;
   if (
     interceptionSourceMatch !== null &&
     interceptionContextHeader !== null &&
@@ -2074,11 +2092,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch)
       );
     };
-    // A source without the intercepted slot intercepts only through a rewrite
-    // that reaches a route with it. When authorization refuses one instead,
-    // the request renders the target directly, as one without an interception
-    // context does, since that source never renders.
-    let droppedSourceWithoutSlot = false;
     const dropsSourceWithoutSlot = (): boolean => {
       if (interceptionSourceMatch?.interceptionSourceLacksSlot !== true) return false;
       interceptionSourceMatch = null;
@@ -2288,6 +2301,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }
     }
   }
+  if (droppedSourceWithoutSlot) {
+    // The proof that let the selector and shared caches through named the
+    // refused source.
+    if (interceptionIdHeader !== null) {
+      options.clearRequestContext();
+      setInterceptionResponseUncacheable(true);
+      return badRequestResponse();
+    }
+    hasVerifiedInterceptionSource = false;
+    bypassInterceptionContextCache = hasRawInterceptionContext;
+    setInterceptionResponseUncacheable(bypassInterceptionContextCache);
+  }
   if (interceptionSourceMatch !== null) {
     hasVerifiedInterceptionSource = provesConcreteInterceptionSource(
       interceptionSourceMatch,
@@ -2296,9 +2321,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (!hasVerifiedInterceptionSource) {
       // A slot-owner fallback stands in for a source with no route of its own,
       // so a direct request to that source renders no such tree, and a source
-      // without the intercepted slot has nowhere to render the intercept.
-      // Render the target as a direct request instead, as Next.js does when
-      // its interception rewrite does not apply.
+      // without the intercepted slot whose owner has no route of its own has
+      // nowhere to render the intercept. Render the target as a direct request
+      // instead, as Next.js does when its interception rewrite does not apply.
       if (interceptionIdHeader !== null) {
         options.clearRequestContext();
         setInterceptionResponseUncacheable(true);

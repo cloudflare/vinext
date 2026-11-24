@@ -50,6 +50,7 @@ import {
 import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import {
+  appIsrRscKey,
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
@@ -8607,6 +8608,136 @@ describe("createAppRscHandler", () => {
       expect(dispatchMatchedPage).toHaveBeenCalledWith(
         expect.objectContaining({ interceptionContext }),
       );
+    },
+  );
+
+  // A source without the slot beside the slot owner's own route renders the
+  // whole intercepting route, as Next.js's interception rewrite does. Source
+  // authorization still runs on it: a refused source renders the target
+  // directly, and a request selecting the intercept by id is refused.
+  it.each([
+    { sourceMiddleware: "next", interceptionId: null, interceptionContext: "/club/static" },
+    {
+      sourceMiddleware: "rewrite to /club/acme",
+      interceptionId: null,
+      interceptionContext: "/club/acme",
+    },
+    { sourceMiddleware: "deny", interceptionId: null, interceptionContext: null },
+    { sourceMiddleware: "deny", interceptionId: "club-modal", interceptionContext: null },
+  ])(
+    "renders the whole intercepting route from a source without the slot (source middleware: $sourceMiddleware, id: $interceptionId)",
+    async ({ sourceMiddleware, interceptionId, interceptionContext }) => {
+      const targetRoute = createPageRoute({
+        isDynamic: true,
+        params: ["slug", "id"],
+        pattern: "/club/:slug/pics/:id",
+        routeSegments: ["club", "[slug]", "pics", "[id]"],
+      });
+      const staticRoute = createPageRoute({
+        pattern: "/club/static",
+        routeSegments: ["club", "static"],
+      });
+      const clubRoute = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/club/:slug",
+        routeSegments: ["club", "[slug]"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        hasInterceptionId: (id) => id === "club-modal",
+        matchInterceptRoute: (_pathname, sourcePathname) => {
+          if (sourcePathname === "/club/static") {
+            return {
+              authorizationParams: {},
+              authorizationRoute: staticRoute,
+              interceptionRendersWholeInterceptingRoute: true,
+              interceptionSourceIsConcrete: true,
+              interceptionSourceLacksSlot: true,
+              params: { slug: "static" } as Record<string, string | string[]>,
+              route: clubRoute,
+            };
+          }
+          if (sourcePathname === "/club/acme") {
+            return {
+              params: { slug: "acme" } as Record<string, string | string[]>,
+              route: clubRoute,
+            };
+          }
+          return null;
+        },
+        matchRoute(pathname: string) {
+          if (pathname === "/club/static/pics/1") {
+            return {
+              params: { id: "1", slug: "static" } as Record<string, string | string[]>,
+              route: targetRoute,
+            };
+          }
+          if (pathname === "/club/static") {
+            return { params: {} as Record<string, string | string[]>, route: staticRoute };
+          }
+          if (pathname === "/club/acme") {
+            return {
+              params: { slug: "acme" } as Record<string, string | string[]>,
+              route: clubRoute,
+            };
+          }
+          return null;
+        },
+        middlewareModule: {
+          default(request: NextRequest) {
+            if (request.nextUrl.pathname !== "/club/static" || sourceMiddleware === "next") {
+              return new Response(null, { headers: { "x-middleware-next": "1" } });
+            }
+            if (sourceMiddleware === "deny") return new Response("denied", { status: 401 });
+            return new Response(null, {
+              headers: {
+                "x-middleware-rewrite": `https://example.test/docs${sourceMiddleware.slice("rewrite to ".length)}`,
+              },
+            });
+          },
+        },
+      });
+
+      const headers = createRscRequestHeaders({
+        interceptionContext: "/club/static",
+        interceptionId: interceptionId ?? undefined,
+      });
+      const rscUrl = await createRscRequestUrl("/docs/club/static/pics/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      if (interceptionId !== null) {
+        expect(response.status).toBe(400);
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+        return;
+      }
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: interceptionContext === null,
+          interceptionContext,
+        }),
+      );
+      if (interceptionContext !== null) {
+        // As for an ordinary intercept, the source keys every cache the
+        // response reaches apart from the target's own: the RSC URL shared
+        // caches store it under, and the entry the render reads.
+        const plainUrl = await createRscRequestUrl(
+          "/docs/club/static/pics/1",
+          createRscRequestHeaders(),
+        );
+        expect(rscUrl).not.toBe(plainUrl);
+        expect(appIsrRscKey("/club/static/pics/1", null, undefined, interceptionContext)).not.toBe(
+          appIsrRscKey("/club/static/pics/1"),
+        );
+      }
     },
   );
 

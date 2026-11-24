@@ -4,6 +4,8 @@ import React from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { renderAppPageHttpAccessFallback } from "../packages/vinext/src/server/app-page-boundary-render.js";
+import { resolveAppPageInterceptSegmentConfig } from "../packages/vinext/src/server/app-page-intercept-segment-config.js";
 import {
   tagAppPageLayoutError,
   tagAppPageSlotError,
@@ -155,10 +157,13 @@ type TestRoute = {
   loading?: { default?: unknown } | null;
   loadings?: readonly ({ default?: unknown } | null | undefined)[];
   loadingTreePositions?: readonly number[];
+  notFound?: { default?: unknown } | null;
+  notFoundTreePosition?: number | null;
   notFounds?: readonly ({ default?: unknown } | null | undefined)[];
   page?: { default?: unknown; dynamic?: unknown } | null;
   params: readonly string[];
   pattern: string;
+  rootParamNames?: readonly string[];
   routeSegments: readonly string[];
   slots?: Readonly<
     Record<
@@ -174,7 +179,7 @@ type TestRoute = {
         loadingTreePositions?: readonly number[] | null;
         name?: string;
         ownerTreePosition?: number | null;
-        page?: { default?: unknown; generateMetadata?: unknown } | null;
+        page?: { default?: unknown; dynamic?: unknown; generateMetadata?: unknown } | null;
         routeSegments?: readonly string[] | null;
         slotParamNames?: readonly string[] | null;
         slotPatternParts?: readonly string[] | null;
@@ -3326,7 +3331,7 @@ describe("app page dispatch", () => {
     expect(buildPageElement).not.toHaveBeenCalled();
     expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
       404,
-      { matchedParams: { slug: "hello" } },
+      { matchedParams: { slug: "hello" }, route: options.route },
       null,
     );
   });
@@ -3969,6 +3974,797 @@ describe("app page dispatch", () => {
     await productionResponse.text();
   });
 
+  // A source without the slot renders the whole intercepting route: the
+  // owner's default in its children and the other slots' defaults, whatever
+  // the owner's own pathname matches there. Their segment config is the
+  // interception's, and its response is never stored.
+  it("classifies a whole intercepting route by the segments it renders", async () => {
+    const dispatchWithOwnerDefault = async (ownerDefault: TestRoute["layouts"][number]) => {
+      const isrSet = vi.fn(async () => {});
+      const ensureRouteLoaded = vi.fn();
+      const ownerRoute = createRoute({
+        isDynamic: true,
+        layouts: [{ default: () => null }],
+        layoutTreePositions: [2],
+        page: { default: () => null, dynamic: "force-dynamic" },
+        params: ["slug"],
+        pattern: "/club/[slug]",
+        routeSegments: ["club", "[slug]"],
+        slots: {
+          "modal@app/club/[slug]/@modal": {
+            default: { default: () => null },
+            layoutIndex: 0,
+            ownerTreePosition: 2,
+          },
+          "sidebar@app/club/[slug]/@sidebar": {
+            default: { default: () => null },
+            layoutIndex: 0,
+            ownerTreePosition: 2,
+            page: { default: () => null, dynamic: "force-dynamic" },
+          },
+        },
+      });
+      const { options } = createDispatchOptions({
+        async buildPageElement(route) {
+          return route.pattern;
+        },
+        cleanPathname: "/club/static/pics/1",
+        ensureRouteLoaded,
+        findIntercept: () => ({
+          interceptBranchSegments: ["(.)pics", "[id]"],
+          matchedParams: { id: "1", slug: "static" },
+          ownerDefault,
+          page: {
+            default: "pic-modal",
+            generateStaticParams: async () => [{ slug: "static", id: "1" }],
+          },
+          rendersWholeInterceptingRoute: true,
+          slotKey: "modal@app/club/[slug]/@modal",
+          sourceMatchedParams: { slug: "static" },
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1 ? ownerRoute : undefined;
+        },
+        interceptionContext: "/club/static",
+        isProduction: false,
+        isRscRequest: true,
+        isrSet,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        route: createRoute({
+          isDynamic: true,
+          params: ["slug", "id"],
+          pattern: "/club/[slug]/pics/[id]",
+          routeSegments: ["club", "[slug]", "pics", "[id]"],
+        }),
+      });
+      const response = await dispatchAppPage(options);
+      await expect(response.text()).resolves.toBe("/club/[slug]");
+      expect(isrSet).not.toHaveBeenCalled();
+      // It loads only the modules it renders.
+      expect(ensureRouteLoaded).toHaveBeenCalledWith(
+        ownerRoute,
+        expect.objectContaining({ rendersWholeInterceptingRoute: true }),
+      );
+      return { options, response };
+    };
+
+    // The owner's page and its sidebar page aren't part of it.
+    const staticResponse = await dispatchWithOwnerDefault({ default: () => null });
+    expect(staticResponse.response.headers.get("cache-control")).toBeNull();
+
+    const { options, response } = await dispatchWithOwnerDefault({
+      default: () => null,
+      dynamic: "force-dynamic",
+    });
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    const productionResponse = await dispatchAppPage({ ...options, isProduction: true });
+    expect(productionResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await productionResponse.text();
+  });
+
+  // Next.js's interception rewrite renders the intercepting route under the
+  // values it captures from the source, root params included.
+  it("gives a whole intercepting route its source's root params", async () => {
+    let rendered: unknown = null;
+    const ownerRoute = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [3],
+      page: { default: () => null },
+      params: ["lang", "slug"],
+      pattern: "/[lang]/club/[slug]",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "club", "[slug]"],
+      slots: {
+        "modal@app/[lang]/club/[slug]/@modal": {
+          default: { default: () => null },
+          layoutIndex: 0,
+          ownerTreePosition: 3,
+        },
+      },
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement(route, params) {
+        rendered = { lang: await getRootParam("lang"), params, pattern: route.pattern };
+        return route.pattern;
+      },
+      cleanPathname: "/fr/club/static/pics/1",
+      findIntercept: () => ({
+        interceptBranchSegments: ["(.)pics", "[id]"],
+        matchedParams: { id: "1", lang: "en", slug: "static" },
+        page: { default: "pic-modal" },
+        rendersWholeInterceptingRoute: true,
+        slotKey: "modal@app/[lang]/club/[slug]/@modal",
+        sourceMatchedParams: { lang: "en", slug: "static" },
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? ownerRoute : undefined;
+      },
+      interceptionContext: "/en/club/static",
+      isRscRequest: true,
+      params: { id: "1", lang: "fr", slug: "static" },
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      route: createRoute({
+        isDynamic: true,
+        params: ["lang", "slug", "id"],
+        pattern: "/[lang]/club/[slug]/pics/[id]",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "club", "[slug]", "pics", "[id]"],
+      }),
+      rootParams: { lang: "fr" },
+    });
+    const response = await runWithRequestContext(
+      createRequestContext({ rootParams: { lang: "fr" } }),
+      () => dispatchAppPage(options),
+    );
+    await expect(response.text()).resolves.toBe("/[lang]/club/[slug]");
+    expect(rendered).toEqual({
+      lang: "en",
+      params: { lang: "en", slug: "static" },
+      pattern: "/[lang]/club/[slug]",
+    });
+  });
+
+  // A catch-all owner (`app/club/[...path]` beside `@modal/(.)pics/[id]`)
+  // also matches the target, so the whole intercepting route renders through
+  // the matched route's own render, under the config of what it renders.
+  it("classifies a whole intercepting route of the matched route by the segments it renders", async () => {
+    const dispatchWithOwnerDefault = async (
+      ownerDefault: TestRoute["layouts"][number],
+      isProduction: boolean,
+    ) => {
+      const isrSet = vi.fn(async () => {});
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => ({
+        "page:/club/[...path]": "page",
+      }));
+      const route = createRoute({
+        isDynamic: true,
+        layouts: [{ default: () => null }],
+        layoutTreePositions: [1],
+        page: { default: () => null },
+        params: ["path"],
+        pattern: "/club/[...path]",
+        routeSegments: ["club", "[...path]"],
+        slots: {
+          "modal@app/club/@modal": {
+            default: { default: () => null },
+            layoutIndex: 0,
+            ownerTreePosition: 1,
+          },
+        },
+      });
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/club/pics/1",
+        findIntercept: () => ({
+          interceptBranchSegments: ["(.)pics", "[id]"],
+          matchedParams: { id: "1" },
+          ownerDefault,
+          page: { default: "pic-modal", generateStaticParams: async () => [{ id: "1" }] },
+          rendersWholeInterceptingRoute: true,
+          slotKey: "modal@app/club/@modal",
+          sourceMatchedParams: {},
+          sourceRouteIndex: 0,
+        }),
+        getSourceRoute: () => route,
+        interceptionContext: "/club",
+        isProduction,
+        isRscRequest: true,
+        isrSet,
+        params: { path: ["pics", "1"] },
+        route,
+      });
+      const response = await dispatchAppPage(options);
+      await response.text();
+      expect(buildPageElement.mock.calls[0]?.[2]).toMatchObject({
+        rendersWholeInterceptingRoute: true,
+      });
+      return { cacheControl: response.headers.get("cache-control"), isrSet };
+    };
+
+    await expect(dispatchWithOwnerDefault({ default: () => null }, false)).resolves.toMatchObject({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+    });
+    await expect(
+      dispatchWithOwnerDefault({ default: () => null, dynamic: "force-dynamic" }, false),
+    ).resolves.toMatchObject({ cacheControl: "no-store, must-revalidate" });
+    const production = await dispatchWithOwnerDefault({ default: () => null, revalidate: 0 }, true);
+    expect(production.cacheControl).toBe("private, no-cache, no-store, max-age=0, must-revalidate");
+    expect(production.isrSet).not.toHaveBeenCalled();
+  });
+
+  // A whole intercepting route renders as its own tree: down to the slot
+  // owner's folder, with the owner's `default` as its page and the other
+  // slots' defaults. So none of a route group's files below the owner catches
+  // its errors or wraps its fallbacks, and neither the owner's page nor another
+  // slot's page heads them, even once an earlier render of the owner's own
+  // page loaded them. Here `club/[...path]/@modal` sits beside
+  // `club/[...path]/(group)/page.tsx`.
+  const dispatchWholeRouteOverGroup = async (
+    buildError: Error,
+    {
+      hasOwnerNotFound = false,
+      renderFallback,
+    }: {
+      hasOwnerNotFound?: boolean;
+      renderFallback?: DispatchOptions["renderHttpAccessFallbackPage"];
+    } = {},
+  ) => {
+    const ownerLayout = { default: () => null };
+    const groupLayout = { default: () => null };
+    const ownerNotFound = { default: () => null };
+    const groupNotFound = { default: () => null };
+    const ownerPage = { default: () => null, generateMetadata: vi.fn(() => ({ title: "Page" })) };
+    const sidePage = { default: () => null, generateMetadata: vi.fn(() => ({ title: "Side" })) };
+    const sideDefault = {
+      default: () => null,
+      generateMetadata: vi.fn(() => ({ title: "Side default" })),
+    };
+    const ownerDefault = {
+      default: () => null,
+      generateMetadata: vi.fn(() => ({ description: "Club", title: "Club default" })),
+    };
+    const interceptPage = {
+      default: () => null,
+      generateMetadata: vi.fn(() => ({ title: "Pic" })),
+    };
+    const route = createRoute({
+      errors: [null, { default: () => null }],
+      isDynamic: true,
+      layouts: [ownerLayout, groupLayout],
+      layoutTreePositions: [2, 3],
+      notFound: groupNotFound,
+      notFoundTreePosition: 3,
+      notFounds: [hasOwnerNotFound ? ownerNotFound : null, groupNotFound],
+      page: ownerPage,
+      params: ["path"],
+      pattern: "/club/[...path]",
+      routeSegments: ["club", "[...path]", "(group)"],
+      segmentNotFounds: hasOwnerNotFound ? [ownerNotFound, groupNotFound] : [groupNotFound],
+      segmentNotFoundTreePositions: hasOwnerNotFound ? [2, 3] : [3],
+      slots: {
+        "modal@app/club/[...path]/@modal": {
+          default: { default: () => null },
+          layoutIndex: 0,
+          ownerTreePosition: 2,
+        },
+        "side@app/club/[...path]/@side": {
+          default: sideDefault,
+          layoutIndex: 0,
+          ownerTreePosition: 2,
+          page: sidePage,
+        },
+      },
+    });
+    const renderErrorBoundaryPage = vi.fn<DispatchOptions["renderErrorBoundaryPage"]>(
+      async () => new Response("<html>error</html>", { status: 500 }),
+    );
+    const renderHttpAccessFallbackPage = vi.fn<DispatchOptions["renderHttpAccessFallbackPage"]>(
+      renderFallback ?? (async () => new Response("<html>not found</html>", { status: 404 })),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw buildError;
+      },
+      cleanPathname: "/club/a/pics/1",
+      findIntercept: () => ({
+        interceptBranchSegments: ["(.)pics", "[id]"],
+        matchedParams: { id: "1" },
+        ownerDefault,
+        page: interceptPage,
+        rendersWholeInterceptingRoute: true,
+        slotKey: "modal@app/club/[...path]/@modal",
+        sourceMatchedParams: { path: ["a"] },
+        sourceRouteIndex: 0,
+      }),
+      getSourceRoute: () => route,
+      interceptionContext: "/club/a",
+      isRscRequest: true,
+      params: { path: ["a", "pics", "1"] },
+      route,
+    });
+    options.renderErrorBoundaryPage = renderErrorBoundaryPage;
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+    const response = await dispatchAppPage(options);
+    return {
+      interceptPage,
+      ownerDefault,
+      ownerLayout,
+      ownerNotFound,
+      ownerPage,
+      renderErrorBoundaryPage,
+      renderHttpAccessFallbackPage,
+      response,
+      sideDefault,
+      sidePage,
+    };
+  };
+  const createNotFoundSignal = () =>
+    Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
+
+  it.each([
+    { name: "the owner's not-found", hasOwnerNotFound: true },
+    { name: "the built-in not-found", hasOwnerNotFound: false },
+  ])(
+    "renders a whole intercepting route's notFound() in $name, not a deeper group's",
+    async ({ hasOwnerNotFound }) => {
+      const { ownerLayout, ownerNotFound, renderHttpAccessFallbackPage, response } =
+        await dispatchWholeRouteOverGroup(createNotFoundSignal(), { hasOwnerNotFound });
+
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({
+          boundaryModule: hasOwnerNotFound ? ownerNotFound : DEFAULT_NOT_FOUND_MODULE,
+          headLayouts: [ownerLayout],
+          layouts: [ownerLayout],
+          route: expect.objectContaining({
+            layouts: [ownerLayout],
+            notFound: hasOwnerNotFound ? ownerNotFound : null,
+          }),
+        }),
+        null,
+      );
+    },
+  );
+
+  it("renders a whole intercepting route's error page without a deeper group's files", async () => {
+    const buildError = new Error("intercepting page failed");
+    const { ownerLayout, renderErrorBoundaryPage, response } =
+      await dispatchWholeRouteOverGroup(buildError);
+
+    expect(response.status).toBe(500);
+    expect(renderErrorBoundaryPage).toHaveBeenCalledWith(
+      buildError,
+      undefined,
+      { path: ["a"] },
+      expect.objectContaining({
+        errors: [null],
+        layouts: [ownerLayout],
+        routeSegments: ["club", "[...path]"],
+      }),
+      false,
+    );
+  });
+
+  // The render threw before its head started, so the fallback resolves the
+  // head as the whole intercepting route's render does: the owner's default
+  // and then the intercepting page head it, not the owner's page, a slot's
+  // page or another slot's default.
+  it("heads a whole intercepting route's fallback without the pages it doesn't render", async () => {
+    let payload: unknown = null;
+    const {
+      interceptPage,
+      ownerDefault,
+      ownerPage,
+      renderHttpAccessFallbackPage,
+      response,
+      sideDefault,
+      sidePage,
+    } = await dispatchWholeRouteOverGroup(createNotFoundSignal(), {
+      async renderFallback(statusCode, opts) {
+        return renderAppPageHttpAccessFallback({
+          boundaryModule: opts.boundaryModule ?? null,
+          buildFontLinkHeader: () => "",
+          clearRequestContext() {},
+          createRscOnErrorHandler: () => () => null,
+          getFontLinks: () => [],
+          getFontPreloads: () => [],
+          getFontStyles: () => [],
+          getNavigationContext: () => null,
+          headLayoutModules: opts.headLayouts ?? null,
+          intercept: opts.intercept ?? null,
+          isRscRequest: true,
+          layoutModules: opts.layouts ?? null,
+          loadSsrHandler: async () => ({ handleSsr: async (stream) => stream }),
+          makeThenableParams: (params) => params,
+          matchedParams: opts.matchedParams,
+          metadataRoutes: [],
+          middlewareContext: { headers: null, status: null },
+          renderToReadableStream: (element) => {
+            payload = element;
+            return createStream(["flight"]);
+          },
+          request: new Request("https://example.test/club/a/pics/1"),
+          requestUrl: "https://example.test/club/a/pics/1",
+          resolveChildSegments: () => [],
+          rootLayouts: [],
+          route: opts.route,
+          routeHead: opts.routeHead ?? null,
+          statusCode,
+        } as Parameters<typeof renderAppPageHttpAccessFallback>[0]);
+      },
+    });
+
+    expect(response.status).toBe(404);
+    await response.text();
+    expect(ownerDefault.generateMetadata).toHaveBeenCalled();
+    expect(interceptPage.generateMetadata).toHaveBeenCalled();
+    expect(ownerPage.generateMetadata).not.toHaveBeenCalled();
+    expect(sidePage.generateMetadata).not.toHaveBeenCalled();
+    expect(sideDefault.generateMetadata).not.toHaveBeenCalled();
+    // The intercepting page comes after the owner's default, so its title wins.
+    const findMetadata = (node: unknown): Record<string, unknown> | null => {
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          const metadata = findMetadata(child);
+          if (metadata) return metadata;
+        }
+        return null;
+      }
+      if (React.isValidElement<Record<string, unknown>>(node)) {
+        return isUnknownRecord(node.props.metadata)
+          ? node.props.metadata
+          : findMetadata(Object.values(node.props));
+      }
+      return isUnknownRecord(node) ? findMetadata(Object.values(node)) : null;
+    };
+    expect(findMetadata(payload)).toMatchObject({ description: "Club", title: "Pic" });
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({
+        route: expect.objectContaining({
+          page: ownerDefault,
+          slots: expect.objectContaining({
+            "side@app/club/[...path]/@side": expect.objectContaining({
+              default: sideDefault,
+              page: null,
+            }),
+          }),
+        }),
+        routeHead: expect.objectContaining({ prepared: null }),
+      }),
+      null,
+    );
+  });
+
+  // A matched page without a default export answers 500 before it renders,
+  // and so do the owner `default` a whole intercepting route renders in its
+  // place and its intercepting page, from another route or from the matched
+  // route itself.
+  it("answers a whole intercepting route's owner default or page without a default export as a page without one", async () => {
+    const ownerRoute = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [1],
+      page: { default: () => null },
+      params: ["path"],
+      pattern: "/club/[...path]",
+      routeSegments: ["club", "[...path]"],
+      slots: {
+        "modal@app/club/@modal": {
+          default: { default: () => null },
+          layoutIndex: 0,
+          ownerTreePosition: 1,
+        },
+      },
+    });
+    const dispatchWithOwnerDefault = async (
+      fromMatchedRoute: boolean,
+      ownerDefault: Record<string, unknown> | null = { revalidate: 60 },
+      page: Record<string, unknown> = {
+        default: "pic-modal",
+        generateStaticParams: async () => [{ id: "1" }],
+      },
+    ) => {
+      const isrSet = vi.fn(async () => {});
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => ({
+        "page:/club/[...path]": "page",
+      }));
+      const route = fromMatchedRoute
+        ? ownerRoute
+        : createRoute({
+            isDynamic: true,
+            params: ["id"],
+            pattern: "/club/pics/[id]",
+            routeSegments: ["club", "pics", "[id]"],
+          });
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/club/pics/1",
+        findIntercept: () => ({
+          interceptBranchSegments: ["(.)pics", "[id]"],
+          matchedParams: { id: "1" },
+          ownerDefault,
+          page,
+          rendersWholeInterceptingRoute: true,
+          slotKey: "modal@app/club/@modal",
+          sourceMatchedParams: { path: ["a"] },
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 1 ? ownerRoute : undefined),
+        interceptionContext: "/club/a",
+        isProduction: true,
+        isRscRequest: true,
+        isrSet,
+        params: fromMatchedRoute ? { path: ["pics", "1"] } : { id: "1" },
+        route,
+      });
+      const response = await dispatchAppPage(options);
+      // An owner without a `default` file renders nothing in its children.
+      if (ownerDefault === null && page.default) {
+        expect(response.status).toBe(200);
+        expect(buildPageElement).toHaveBeenCalledOnce();
+        return;
+      }
+      expect(response.status).toBe(500);
+      await expect(response.text()).resolves.toBe("Page has no default export");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(buildPageElement).not.toHaveBeenCalled();
+      expect(isrSet).not.toHaveBeenCalled();
+    };
+
+    await dispatchWithOwnerDefault(false);
+    await dispatchWithOwnerDefault(true);
+    await dispatchWithOwnerDefault(false, null);
+    await dispatchWithOwnerDefault(true, null);
+    const pageWithoutDefault = { generateStaticParams: async () => [{ id: "1" }] };
+    await dispatchWithOwnerDefault(false, { default: () => null }, pageWithoutDefault);
+    await dispatchWithOwnerDefault(true, { default: () => null }, pageWithoutDefault);
+    await dispatchWithOwnerDefault(false, null, pageWithoutDefault);
+  });
+
+  // Next.js's interception rewrite takes the source's captures for every
+  // interception, so a source render's root params are the source's.
+  it("gives a slot interception's source render the source's root params", async () => {
+    let rendered: unknown = null;
+    const sourceRoute = createRoute({
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [1],
+      params: ["lang"],
+      pattern: "/[lang]/feed",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "feed"],
+      slots: {
+        "modal@app/[lang]/feed/@modal": { layoutIndex: 0, ownerTreePosition: 2 },
+      },
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement(route, params) {
+        rendered = { lang: await getRootParam("lang"), params, pattern: route.pattern };
+        return route.pattern;
+      },
+      cleanPathname: "/fr/photos/1",
+      findIntercept: () => ({
+        matchedParams: { id: "1", lang: "fr" },
+        page: { default: "photo-modal" },
+        slotKey: "modal@app/[lang]/feed/@modal",
+        sourceMatchedParams: { lang: "en" },
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 1 ? sourceRoute : undefined),
+      interceptionContext: "/en/feed",
+      isRscRequest: true,
+      params: { id: "1", lang: "fr" },
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      rootParams: { lang: "fr" },
+      route: createRoute({
+        isDynamic: true,
+        params: ["lang", "id"],
+        pattern: "/[lang]/photos/[id]",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "photos", "[id]"],
+      }),
+    });
+    const response = await runWithRequestContext(
+      createRequestContext({ rootParams: { lang: "fr" } }),
+      () => dispatchAppPage(options),
+    );
+    await expect(response.text()).resolves.toBe("/[lang]/feed");
+    expect(rendered).toEqual({ lang: "en", params: { lang: "en" }, pattern: "/[lang]/feed" });
+  });
+
+  it("gives a same-route interception's source render the source's root params", async () => {
+    // app/[lang]/shots/[id]/@modal/(.)photos/[pid] intercepts from the route
+    // itself, under another root param.
+    const renders: unknown[] = [];
+    const route = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [1],
+      params: ["lang", "id"],
+      pattern: "/[lang]/shots/[id]",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "shots", "[id]"],
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement(_route, params) {
+        renders.push({ lang: await getRootParam("lang"), params });
+        return React.createElement("main", null, "page");
+      },
+      cleanPathname: "/fr/shots/2",
+      findIntercept: () => ({
+        matchedParams: { id: "2", lang: "fr" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/[lang]/shots/[id]/@modal",
+        sourceMatchedParams: { id: "1", lang: "en" },
+        sourceRouteIndex: 0,
+      }),
+      getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 0 ? route : undefined),
+      interceptionContext: "/en/shots/1",
+      isRscRequest: true,
+      params: { id: "2", lang: "fr" },
+      rootParams: { lang: "fr" },
+      route,
+    });
+    const response = await runWithRequestContext(
+      createRequestContext({ rootParams: { lang: "fr" } }),
+      () => dispatchAppPage(options),
+    );
+    await response.text();
+    expect(renders).toEqual([{ lang: "en", params: { id: "1", lang: "en" } }]);
+  });
+
+  it("renders a same-route interception source's error page under the source's params", async () => {
+    const route = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [1],
+      params: ["lang", "id"],
+      pattern: "/[lang]/shots/[id]",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "shots", "[id]"],
+    });
+    const errorPages: unknown[] = [];
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("page failed");
+      },
+      cleanPathname: "/fr/shots/2",
+      findIntercept: () => ({
+        matchedParams: { id: "2", lang: "fr" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/[lang]/shots/[id]/@modal",
+        sourceMatchedParams: { id: "1", lang: "en" },
+        sourceRouteIndex: 0,
+      }),
+      getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 0 ? route : undefined),
+      interceptionContext: "/en/shots/1",
+      isRscRequest: true,
+      params: { id: "2", lang: "fr" },
+      rootParams: { lang: "fr" },
+      route,
+    });
+    options.renderErrorBoundaryPage = async (_error, _origin, params) => {
+      errorPages.push({ lang: await getRootParam("lang"), params });
+      return new Response("error page");
+    };
+    const response = await runWithRequestContext(
+      createRequestContext({ rootParams: { lang: "fr" } }),
+      () => dispatchAppPage(options),
+    );
+    await expect(response.text()).resolves.toBe("error page");
+    // Its layouts and `next/root-params` agree on the source's values.
+    expect(errorPages).toEqual([{ lang: "en", params: { id: "1", lang: "en" } }]);
+  });
+
+  // Next.js visits children before the other slots, and the last value wins,
+  // so where only the parallel branches set a value, another slot's default
+  // overrides the owner's.
+  it("reads the other slots' defaults after a whole intercepting route's owner default", () => {
+    const config = resolveAppPageInterceptSegmentConfig(
+      {
+        layouts: [{ default: () => null }],
+        layoutTreePositions: [2],
+        routeSegments: ["club", "[slug]"],
+        slots: {
+          "modal@app/club/[slug]/@modal": { layoutIndex: 0, ownerTreePosition: 2 },
+          "sidebar@app/club/[slug]/@sidebar": {
+            default: { default: () => null, dynamic: "error", fetchCache: "auto" },
+            layoutIndex: 0,
+            ownerTreePosition: 2,
+          },
+        },
+      },
+      {
+        interceptBranchSegments: ["(.)pics", "[id]"],
+        interceptOwnerDefault: {
+          default: () => null,
+          dynamic: "force-static",
+          fetchCache: "default-cache",
+        },
+        interceptPage: { default: () => null },
+        interceptSlotKey: "modal@app/club/[slug]/@modal",
+        rendersWholeInterceptingRoute: true,
+      },
+    );
+    expect(config.dynamicConfig).toBe("error");
+    expect(config.fetchCacheMode).toBe("auto");
+  });
+
+  // club/(children)/page.tsx beside club/@modal: like Next.js's, the whole
+  // intercepting route's tree stops at club, whose default takes its children,
+  // so neither the group's layout nor the defaults of the slots it owns render,
+  // and their config doesn't apply.
+  it.each<{ name: string; layout: Record<string, unknown>; sideDefault: Record<string, unknown> }>([
+    {
+      name: "a dynamic layout",
+      layout: { dynamic: "force-dynamic", revalidate: 0 },
+      sideDefault: {},
+    },
+    { name: "a force-static layout", layout: { dynamic: "force-static" }, sideDefault: {} },
+    {
+      name: "an edge layout with static params",
+      layout: { generateStaticParams: () => [], runtime: "edge" },
+      sideDefault: {},
+    },
+    {
+      name: "a dynamic slot default",
+      layout: {},
+      sideDefault: { dynamic: "force-dynamic", revalidate: 0 },
+    },
+  ])(
+    "ignores $name of a route group below a whole intercepting route's owner",
+    ({ layout, sideDefault }) => {
+      const config = resolveAppPageInterceptSegmentConfig(
+        {
+          layouts: [
+            { default: () => null },
+            { default: () => null },
+            { default: () => null, ...layout },
+          ],
+          layoutTreePositions: [0, 1, 2],
+          routeSegments: ["club", "(children)"],
+          slots: {
+            "modal@app/club/@modal": { layoutIndex: 1, ownerTreePosition: 1 },
+            "side@app/club/(children)/@side": {
+              default: { default: () => null, ...sideDefault },
+              layoutIndex: 2,
+              ownerTreePosition: 2,
+            },
+          },
+        },
+        {
+          interceptBranchSegments: ["(.)pics"],
+          interceptOwnerDefault: { default: () => null },
+          interceptPage: { default: () => null },
+          interceptSlotKey: "modal@app/club/@modal",
+          rendersWholeInterceptingRoute: true,
+        },
+      );
+      expect(config.dynamicConfig).toBeUndefined();
+      expect(config.revalidateSeconds).toBeNull();
+      expect(config.isEdgeRuntime).toBe(false);
+      expect(config.isStaticGenerationEdgeRuntime).toBe(false);
+      expect(config.hasAnyGenerateStaticParams).toBe(false);
+      expect(config.isStaticEligible).toBe(true);
+    },
+  );
+
   it("keeps a source's layouts below the slot's owner out of a slot interception", async () => {
     // app/@modal/(.)photos/[id] intercepts from app/feed/page.tsx, whose
     // app/feed/layout.tsx sits below the root layout that owns @modal.
@@ -4234,6 +5030,54 @@ describe("app page dispatch", () => {
     ).resolves.toBeNull();
   });
 
+  // A sibling interception's page renders in the matched page's place, so
+  // without a default export it answers as a matched page without one.
+  it("answers a sibling interception's page without a default export as a page without one", async () => {
+    const isrSet = vi.fn(async () => {});
+    const buildPageElement = vi.fn(async (route: TestRoute) => route.pattern);
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/shots/123",
+      findIntercept: () => ({
+        interceptBranchSegments: ["[id]"],
+        matchedParams: { id: "123" },
+        page: { generateStaticParams: async () => [{ id: "123" }] },
+        slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+        sourcePageSegments: ["shots", "(.)[id]"],
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1
+          ? createRoute({
+              layouts: [{ default: () => null }],
+              layoutTreePositions: [0],
+              params: [],
+              pattern: "/shots",
+              routeSegments: ["shots"],
+            })
+          : undefined;
+      },
+      isProduction: true,
+      isRscRequest: true,
+      isrSet,
+      route: createRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/shots/[id]",
+        routeSegments: ["shots", "[id]"],
+      }),
+    });
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe("Page has no default export");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(buildPageElement).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   it("renders an interception from its own matched route under the interception's config", async () => {
     // app/shots/[id]/page.tsx beside app/shots/@modal/(.)[id]/page.tsx, from
     // /shots/1 to /shots/2: the interception's source is the matched route.
@@ -4350,6 +5194,99 @@ describe("app page dispatch", () => {
     await expect(
       dispatchCurrentRouteIntercept(undefined, { runtime: "edge" }),
     ).resolves.toMatchObject({ edgeRuntime: "1" });
+  });
+
+  // The fallbacks of an interception's render, its error page and its
+  // not-found, forbidden and unauthorized pages, run under the interception's
+  // runtime too, not the matched page's.
+  it.each([
+    { name: "an interception", wholeRoute: false },
+    { name: "a whole intercepting route", wholeRoute: true },
+  ])("renders the fallbacks of $name under the interception's runtime", async ({ wholeRoute }) => {
+    const dispatchFailingIntercept = async (
+      thrown: unknown,
+      isMatchedEdgeRuntime: boolean,
+      interceptPage: Record<string, unknown>,
+      routeOverrides: Partial<TestRoute> = {},
+    ) => {
+      const route = createRoute({
+        isDynamic: true,
+        layouts: [{ default: () => null }, { default: () => null }],
+        layoutTreePositions: [0, 1],
+        params: ["id"],
+        pattern: "/shots/[id]",
+        routeSegments: ["shots", "[id]"],
+        slots: {
+          "modal@app/shots/@modal": {
+            default: { default: () => null },
+            layoutIndex: 1,
+            name: "modal",
+            ownerTreePosition: 1,
+          },
+        },
+        ...routeOverrides,
+      });
+      const renderErrorBoundaryPage = vi.fn<DispatchOptions["renderErrorBoundaryPage"]>(
+        async () => new Response("error", { status: 500 }),
+      );
+      const renderHttpAccessFallbackPage = vi.fn<DispatchOptions["renderHttpAccessFallbackPage"]>(
+        async () => new Response("not found", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw thrown;
+        },
+        cleanPathname: "/shots/2",
+        findIntercept: () => ({
+          interceptBranchSegments: ["[id]"],
+          matchedParams: { id: "2" },
+          ...(wholeRoute && {
+            ownerDefault: { default: () => null },
+            rendersWholeInterceptingRoute: true,
+          }),
+          page: { default: "modal-page", ...interceptPage },
+          slotKey: "modal@app/shots/@modal",
+          sourceRouteIndex: 0,
+        }),
+        getSourceRoute: () => route,
+        isRscRequest: true,
+        route,
+      });
+      await dispatchAppPage({
+        ...options,
+        isEdgeRuntime: isMatchedEdgeRuntime,
+        renderErrorBoundaryPage,
+        renderHttpAccessFallbackPage,
+      });
+      return {
+        errorRuntime: renderErrorBoundaryPage.mock.calls[0]?.[4],
+        fallbackRuntime: renderHttpAccessFallbackPage.mock.calls[0]?.[1].isEdgeRuntime,
+      };
+    };
+    const segmentNotFound = { default: () => null };
+    for (const [thrown, routeOverrides] of [
+      // A page's error, and its notFound() without and with segment data.
+      [new Error("modal failed"), {}],
+      [createNotFoundSignal(), {}],
+      [
+        createNotFoundSignal(),
+        { segmentNotFounds: [segmentNotFound], segmentNotFoundTreePositions: [0] },
+      ],
+      // A layout's notFound().
+      [tagAppPageLayoutError(createNotFoundSignal(), 1), {}],
+    ] as const) {
+      const isError = !(thrown as { digest?: string }).digest;
+      const runtimeOf = (result: { errorRuntime: unknown; fallbackRuntime: unknown }) =>
+        isError ? result.errorRuntime : result.fallbackRuntime;
+      expect(runtimeOf(await dispatchFailingIntercept(thrown, true, {}, routeOverrides))).toBe(
+        false,
+      );
+      expect(
+        runtimeOf(
+          await dispatchFailingIntercept(thrown, false, { runtime: "edge" }, routeOverrides),
+        ),
+      ).toBe(true);
+    }
   });
 
   // app/shots/[id]/page.tsx is force-static with revalidate = 3600;
@@ -5995,6 +6932,97 @@ describe("app page dispatch", () => {
       }
     },
   );
+
+  it("regenerates a stale whole intercepting route under its source's root params", async () => {
+    const ownerRoute = createRoute({
+      isDynamic: true,
+      layouts: [{ default: () => null }],
+      layoutTreePositions: [3],
+      page: { default: () => null },
+      params: ["lang", "slug"],
+      pattern: "/[lang]/club/[slug]",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "club", "[slug]"],
+      slots: {
+        "modal@app/[lang]/club/[slug]/@modal": {
+          default: { default: () => null },
+          layoutIndex: 0,
+          ownerTreePosition: 3,
+        },
+      },
+    });
+    let scheduledRender: unknown = null;
+    const renderedLangs: unknown[] = [];
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        renderedLangs.push(await getRootParam("lang"));
+        return route.pattern;
+      },
+      cleanPathname: "/fr/club/static/pics/1",
+      findIntercept: () => ({
+        interceptBranchSegments: ["(.)pics", "[id]"],
+        matchedParams: { id: "1", lang: "en", slug: "static" },
+        page: {
+          default: "pic-modal",
+          generateStaticParams: async () => [{ id: "1", lang: "en", slug: "static" }],
+        },
+        rendersWholeInterceptingRoute: true,
+        slotKey: "modal@app/[lang]/club/[slug]/@modal",
+        sourceMatchedParams: { lang: "en", slug: "static" },
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? ownerRoute : undefined;
+      },
+      hasGenerateStaticParams: true,
+      interceptionContext: "/en/club/static",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          return createStream(["<html>modal</html>"]);
+        },
+      }),
+      params: { id: "1", lang: "fr", slug: "static" },
+      revalidateSeconds: 60,
+      rootParams: { lang: "fr" },
+      route: createRoute({
+        isDynamic: true,
+        params: ["lang", "slug", "id"],
+        pattern: "/[lang]/club/[slug]/pics/[id]",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "club", "[slug]", "pics", "[id]"],
+      }),
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(renderedLangs).toEqual(["en"]);
+  });
 
   it("stores an intercepted RSC regeneration whose shell ended in a 404", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });

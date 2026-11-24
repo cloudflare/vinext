@@ -3,7 +3,7 @@ import {
   matchRoutePatternPrefix,
   matchRoutePatternWithOptionalDynamicSegments,
 } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { normalizePathnameForRouteMatch, splitPathnameForRouteMatch } from "../routing/utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import type {
   BrowserRouteManifest,
@@ -36,6 +36,7 @@ import {
   type NavigationTraceFields,
   type NavigationTraceReasonCode,
 } from "./navigation-trace.js";
+import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
 import {
   verifyOperationTokenForCacheReuse,
   type OperationLane,
@@ -60,6 +61,8 @@ export type RouteSnapshot = {
   displayUrl: string;
   matchedUrl: string;
   slotBindings: readonly ParallelSlotBindingSnapshot[];
+  /** The source a payload renders the whole intercepting route for. */
+  wholeInterceptionSource: string | null;
 };
 
 export type InterceptionSnapshot = {
@@ -947,11 +950,46 @@ function resolveRouteManifestRootLayoutTreePath(
   return routeManifest.segmentGraph.rootBoundaries.get(route.rootBoundaryId)?.treePath ?? null;
 }
 
+/**
+ * The topology a payload of the whole intercepting route rendered: the slot
+ * owner's layouts and root layout, which the direct target route's need not
+ * share. Its root layout must head its layouts and be a root boundary the
+ * manifest knows, as its slot bindings name only its layouts.
+ */
+function resolveRenderedRouteTopologySnapshot(
+  routeManifest: BrowserRouteManifest,
+  snapshot: RouteSnapshot,
+): RouteTopologyResolution {
+  const rootLayoutTreePath = snapshot.rootBoundaryId;
+  if (
+    rootLayoutTreePath === null ||
+    snapshot.layoutIds[0] !== AppElementsWire.encodeLayoutId(rootLayoutTreePath)
+  ) {
+    return { kind: "unknown" };
+  }
+  for (const rootBoundary of routeManifest.segmentGraph.rootBoundaries.values()) {
+    if (rootBoundary.treePath !== rootLayoutTreePath) continue;
+    return {
+      kind: "known",
+      topology: {
+        layoutIds: snapshot.layoutIds,
+        rootBoundaryId: rootBoundary.id,
+        rootLayoutTreePath,
+        slotBindings: snapshot.slotBindings,
+      },
+    };
+  }
+  return { kind: "unknown" };
+}
+
 function resolveRouteTopologySnapshot(options: {
   routeManifest: BrowserRouteManifest | null;
   slotBindingSource: RouteTopologySlotBindingSource;
   snapshot: RouteSnapshot;
 }): RouteTopologyResolution {
+  if (options.routeManifest !== null && options.snapshot.wholeInterceptionSource !== null) {
+    return resolveRenderedRouteTopologySnapshot(options.routeManifest, options.snapshot);
+  }
   const route =
     options.routeManifest === null
       ? null
@@ -1285,12 +1323,24 @@ type InterceptedPreservationValidation =
 
 function getVisibleInterceptionSourceIdentity(
   snapshot: RouteSnapshot,
+  routeManifest: BrowserRouteManifest | null,
 ): VisibleInterceptionSourceIdentity {
   if (snapshot.interception) {
     return {
       matchedUrl: snapshot.interception.sourceMatchedUrl,
       routeId: snapshot.interception.sourceRouteId,
     };
+  }
+  // The whole intercepting route renders for its source too, though it carries
+  // no interception proof. A link in it intercepts from that same source, as
+  // Next.js keeps sending it as `Next-Url`, so it names the source the way an
+  // interception proof does, once the manifest knows a route for it.
+  const wholeSource = snapshot.wholeInterceptionSource;
+  if (wholeSource !== null && routeManifest !== null && isInterceptionMatchedUrlPath(wholeSource)) {
+    const matchedUrl = normalizePath(normalizePathnameForRouteMatch(wholeSource));
+    if (findRouteManifestRouteByMatchedUrl(routeManifest, matchedUrl) !== null) {
+      return { matchedUrl, routeId: AppElementsWire.encodeRouteId(matchedUrl, null) };
+    }
   }
   const concreteMatchedUrl = matchedUrlFromConcreteRouteId(snapshot.routeId);
   return {
@@ -1445,7 +1495,10 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  const sourceIdentity = getVisibleInterceptionSourceIdentity(options.currentSnapshot);
+  const sourceIdentity = getVisibleInterceptionSourceIdentity(
+    options.currentSnapshot,
+    options.routeManifest,
+  );
   if (
     !options.restoredHistorySnapshot &&
     (proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||

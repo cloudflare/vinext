@@ -1891,6 +1891,66 @@ describe("app browser entry state helpers", () => {
     expect(pending.action.previousNextUrl).toBe("/feed");
   });
 
+  // A payload of the whole intercepting route, for a source without the slot,
+  // carries no interception proof but still renders for that source, so a
+  // refresh or traversal of its entry sends the source again, as Next.js
+  // re-sends previousNextUrl.
+  it("keeps the source of a whole intercepting route for its entry", async () => {
+    const commit = async (
+      wholeInterceptionSource: string | undefined,
+      type: "navigate" | "traverse" = "navigate",
+      interceptionContext = "/club/static",
+    ) => {
+      const state = createState();
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState: state,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/club/static/pics/1", "/", interceptionContext, {
+            "page:/club/static/pics/1": React.createElement("main", null, "pic modal"),
+            ...(wholeInterceptionSource === undefined
+              ? {}
+              : { [AppElementsWire.keys.wholeInterceptionSource]: wholeInterceptionSource }),
+          }),
+        ),
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/club/static/pics/1",
+          {},
+        ),
+        operationLane: type === "traverse" ? "traverse" : "navigation",
+        previousNextUrl: "/club/static",
+        renderId: 1,
+        type,
+      });
+      return { pending, state };
+    };
+
+    for (const type of ["navigate", "traverse"] as const) {
+      const { pending, state } = await commit("/club/static", type);
+      expect(pending.interception).toBeNull();
+      expect(pending.previousNextUrl).toBe("/club/static");
+      expect(pending.action.previousNextUrl).toBe("/club/static");
+      // It commits as an ordinary navigation, under the target's own route.
+      const approval = approvePendingNavigationCommit({
+        activeNavigationId: 1,
+        currentState: state,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(state, pending),
+        startedNavigationId: 1,
+        targetHref: "https://example.com/club/static/pics/1",
+      });
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
+      expect(nextState.routeId).toBe("route:/club/static/pics/1");
+      expect(nextState.interception).toBeNull();
+      expect(nextState.previousNextUrl).toBe("/club/static");
+    }
+    // Without the mark, or with one naming another source, the payload is the
+    // target's own render.
+    expect((await commit(undefined)).pending.previousNextUrl).toBeNull();
+    expect((await commit("/club/other")).pending.previousNextUrl).toBeNull();
+  });
+
   it("mints fresh bfcache ids instead of reusing current ids when requested", async () => {
     const currentRootLayout = React.createElement("div", null, "current root");
     const nextRootLayout = React.createElement("div", null, "next root");

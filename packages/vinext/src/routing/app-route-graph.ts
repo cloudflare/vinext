@@ -83,6 +83,12 @@ type InterceptingRoute = {
   /** Parameter names for dynamic segments */
   params: string[];
   /**
+   * The `default` file of the directory holding a slot intercept's `@slot`
+   * directory, which a render of the whole intercepting route shows in the
+   * owner's children.
+   */
+  ownerDefaultPath?: string | null;
+  /**
    * Synthetic page-carrier slot id for sibling (slot-less) interception.
    * Set only when the marker has no `@slot` wrapper; undefined for slot intercepts.
    */
@@ -2574,6 +2580,10 @@ function discoverParallelSlots(
     const pagePath = findSlotRootPage(slotDir, matcher);
     const defaultPath = findFile(slotDir, "default", matcher);
     const interceptingRoutes = discoverInterceptingRoutes(slotDir, dir, appDir, matcher);
+    if (interceptingRoutes.length > 0) {
+      const ownerDefaultPath = findFile(dir, "default", matcher);
+      for (const intercept of interceptingRoutes) intercept.ownerDefaultPath = ownerDefaultPath;
+    }
     const hasNestedPages = includeNestedOnlySlots && findSlotSubPages(slotDir, matcher).length > 0;
 
     // A slot with only nested pages still owns URL sub-routes. Keeping it in

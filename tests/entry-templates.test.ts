@@ -665,6 +665,48 @@ describe("App Router generated manifest construction", () => {
       write("feed/@modal/(..)[name]/crossed/x/page.tsx");
       write("[name]/crossed/x/page.tsx", gsp);
       write("foo/[id]/x/page.tsx", gsp);
+      // A slot owner whose default renders dynamically.
+      write("deck/page.tsx");
+      write("deck/default.tsx", `${forceDynamic}${page}`);
+      write("deck/@modal/default.tsx");
+      write("deck/@modal/(..)slides/[id]/page.tsx", gsp);
+      write("slides/[id]/page.tsx", gsp);
+      // A slot beside the intercepted one whose default renders dynamically.
+      write("shelf/page.tsx");
+      write("shelf/@aside/page.tsx");
+      write("shelf/@aside/default.tsx", `${forceDynamic}${page}`);
+      write("shelf/@modal/default.tsx");
+      write("shelf/@modal/(..)books/[id]/page.tsx", gsp);
+      write("books/[id]/page.tsx", gsp);
+      // A slot owner whose default runs on the edge runtime.
+      write("rack/page.tsx");
+      write("rack/default.tsx", `export const runtime = "edge";\n${page}`);
+      write("rack/@modal/default.tsx");
+      write("rack/@modal/(..)crates/[id]/page.tsx", gsp);
+      write("crates/[id]/page.tsx", gsp);
+      // A slot whose default has generateStaticParams, beside an intercept
+      // with a dynamic segment below the owner and none.
+      write("tray/page.tsx");
+      write("tray/@zone/page.tsx");
+      write("tray/@zone/default.tsx", gsp);
+      write("tray/@modal/default.tsx");
+      write("tray/@modal/(..)cups/[id]/page.tsx");
+      write("cups/[id]/page.tsx", gsp);
+      // The same beside an intercept whose last dynamic segment is the owner's.
+      write("vault/[vid]/page.tsx", gsp);
+      write("vault/[vid]/@zone/page.tsx");
+      write("vault/[vid]/@zone/default.tsx", gsp);
+      write("vault/[vid]/@modal/default.tsx");
+      write("vault/[vid]/@modal/(.)coins/page.tsx");
+      write("vault/[vid]/coins/page.tsx", gsp);
+      // A slot default whose `dynamic` the walk visits after the owner's.
+      write("dock/page.tsx");
+      write("dock/default.tsx", `export const dynamic = "force-static";\n${page}`);
+      write("dock/@aside/page.tsx");
+      write("dock/@aside/default.tsx", `export const dynamic = "auto";\n${page}`);
+      write("dock/@modal/default.tsx");
+      write("dock/@modal/(..)boats/[id]/page.tsx");
+      write("boats/[id]/page.tsx", gsp);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const classifier = {
@@ -672,7 +714,8 @@ describe("App Router generated manifest construction", () => {
         intercept: (
           intercept: AppRoute["siblingIntercepts"][number],
           layoutPaths: readonly string[],
-        ) => isAppInterceptRenderedDynamically(intercept, layoutPaths, null),
+          slotDefaultPaths: readonly (string | null)[],
+        ) => isAppInterceptRenderedDynamically(intercept, layoutPaths, null, slotDefaultPaths),
       };
       const byPattern = new Map(
         toLinkPrefetchRoutes(graph.routes, classifier).map((route) => [
@@ -704,6 +747,24 @@ describe("App Router generated manifest construction", () => {
       // The intercepted response also renders the dynamic source route's branches.
       expect(summarize("cards/:id")).toEqual([undefined, [["board", "cards/:id", true]]]);
       expect(summarize("foo/:id/x")).toEqual([undefined, [["feed", ":name/crossed/x", true]]]);
+      // The intercepting route renders the owner's default in its children.
+      expect(summarize("slides/:id")).toEqual([undefined, [["deck", "slides/:id", true]]]);
+      expect(summarize("deck")).toEqual([undefined, undefined]);
+      // And every other slot's default beside the intercept.
+      expect(summarize("books/:id")).toEqual([undefined, [["shelf", "books/:id", true]]]);
+      expect(summarize("shelf")).toEqual([undefined, undefined]);
+      // Their runtime and generateStaticParams count too. Next.js walks the
+      // tree breadth-first, so a default beside the slot comes before the
+      // intercept's own deeper segments, and after the owner's.
+      expect(summarize("crates/:id")).toEqual([undefined, [["rack", "crates/:id", true]]]);
+      expect(summarize("cups/:id")).toEqual([undefined, [["tray", "cups/:id", true]]]);
+      expect(summarize("vault/:vid/coins")).toEqual([
+        undefined,
+        [["vault/:vid", "vault/:vid/coins", undefined]],
+      ]);
+      // Next.js visits children before the other slots, and the last value
+      // wins, so the other slot's default overrides the owner's.
+      expect(summarize("boats/:id")).toEqual([undefined, [["dock", "boats/:id", true]]]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
     } finally {
