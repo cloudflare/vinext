@@ -95,6 +95,36 @@ function createSyntheticLoadEvent(img: HTMLImageElement): React.SyntheticEvent<H
   };
 }
 
+const warnedMessages = new Set<string>();
+
+function warnOnce(message: string): void {
+  if (warnedMessages.has(message)) return;
+  warnedMessages.add(message);
+  console.warn(message);
+}
+
+/**
+ * Dev-only check that a loaded `fill` image without a narrower `sizes` is
+ * actually rendered close to the viewport width.
+ * Ported from Next.js `handleLoading` in packages/next/src/client/image-component.tsx.
+ */
+function warnFillImageSizes(img: HTMLImageElement, sizesInput: string | undefined): void {
+  if (sizesInput && sizesInput !== "100vw") return;
+  const widthViewportRatio = img.getBoundingClientRect().width / window.innerWidth;
+  if (widthViewportRatio >= 0.6) return;
+  const src = img.src;
+  const origSrc = new URL(src, "http://n").searchParams.get("url") || src;
+  if (sizesInput === "100vw") {
+    warnOnce(
+      `Image with src "${origSrc}" has "fill" prop and "sizes" prop of "100vw", but image is not rendered at full viewport width. Please adjust "sizes" to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes`,
+    );
+  } else {
+    warnOnce(
+      `Image with src "${origSrc}" has "fill" but is missing "sizes" prop. Please add it to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes`,
+    );
+  }
+}
+
 function preloadImageResource(input: {
   shouldPreload: boolean;
   src: string;
@@ -199,6 +229,18 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       ? loading
       : (loading ?? "lazy");
 
+  // Next.js treats these sources as unoptimized and skips the fill sizes check.
+  const isUnoptimized =
+    _unoptimized === true ||
+    __globallyUnoptimized ||
+    !src ||
+    isInlineSrc ||
+    (!loader && !__dangerouslyAllowSVG && isSvgUrl(src));
+  const checkFillSizes =
+    __isDev && fill && !isUnoptimized
+      ? (img: HTMLImageElement) => warnFillImageSizes(img, sizes)
+      : undefined;
+
   const [completedBlurSrc, setCompletedBlurSrc] = useState<string | undefined>(undefined);
   const blurComplete = completedBlurSrc === src;
 
@@ -239,6 +281,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
             currentOnLoadingComplete?.(img);
           }
         }
+        checkFillSizes?.(img);
       }
       didInsertRef.current = true;
     }
@@ -246,7 +289,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
-  const handleLoad = onLoadingComplete
+  const handleUserLoad = onLoadingComplete
     ? (e: React.SyntheticEvent<HTMLImageElement>) => {
         if (lastLoadedSrcRef.current === src) return;
         lastLoadedSrcRef.current = src;
@@ -268,6 +311,12 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
             markBlurComplete();
           }
         : undefined;
+  const handleLoad = checkFillSizes
+    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+        handleUserLoad?.(e);
+        checkFillSizes(e.currentTarget);
+      }
+    : handleUserLoad;
 
   const handleError = onError
     ? (e: React.SyntheticEvent<HTMLImageElement>) => {
