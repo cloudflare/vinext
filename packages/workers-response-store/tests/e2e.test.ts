@@ -75,9 +75,11 @@ beforeEach(async () => {
                 ResponseStoreBinding as BaseBinding,
               } from "./worker.js";
               export { ResponseStoreRevalidator } from "./worker.js";
+              const RATE_LIMITED = "put: Reduce your concurrent request rate for the same object. (10058)";
               let purgeMode;
               let metadataR2DelayMs = 0;
               let failMetadataR2Write = false;
+              let rateLimitedMetadataR2Writes = 0;
               let failAlarm = false;
               export class CacheMetadata extends BaseMetadata {
                 constructor(ctx, env) {
@@ -88,6 +90,10 @@ beforeEach(async () => {
                         const value = Reflect.get(bucket, key);
                         if (key === "put" && failMetadataR2Write) {
                           return () => Promise.reject(new Error("R2 rewrite failed"));
+                        }
+                        if (key === "put" && rateLimitedMetadataR2Writes > 0) {
+                          rateLimitedMetadataR2Writes--;
+                          return () => Promise.reject(new Error(RATE_LIMITED));
                         }
                         if (["get", "head", "put"].includes(key) && metadataR2DelayMs) {
                           return async (...args) => {
@@ -120,6 +126,7 @@ beforeEach(async () => {
               let exposeInvalidate = false;
               let edgeCalls = [];
               let failR2Write = false;
+              let rateLimitedR2Writes = 0;
               let delayFirstPurgeMs = 0;
               let acceptFirst = 0;
               export class ResponseStoreBinding extends BaseBinding {
@@ -132,6 +139,10 @@ beforeEach(async () => {
                           failR2Write = false;
                           throw new Error("R2 publication failed");
                         };
+                        if (key === "put" && rateLimitedR2Writes > 0) {
+                          rateLimitedR2Writes--;
+                          return () => Promise.reject(new Error(RATE_LIMITED));
+                        }
                         const value = Reflect.get(bucket, key);
                         return typeof value === "function" ? value.bind(bucket) : value;
                       },
@@ -167,6 +178,12 @@ beforeEach(async () => {
                     failR2Write = new URL(request.url).searchParams.has("fail-r2");
                     failAlarm = new URL(request.url).searchParams.has("fail-alarm");
                     failMetadataR2Write = new URL(request.url).searchParams.has("fail-metadata-r2");
+                    rateLimitedR2Writes = Number(
+                      new URL(request.url).searchParams.get("rate-limit-r2") ?? 0,
+                    );
+                    rateLimitedMetadataR2Writes = Number(
+                      new URL(request.url).searchParams.get("rate-limit-metadata-r2") ?? 0,
+                    );
                     metadataR2DelayMs = Number(
                       new URL(request.url).searchParams.get("metadata-r2-delay-ms") ?? 0,
                     );
@@ -3739,15 +3756,31 @@ test("writes with different purge requirements are not coalesced", async () => {
   });
   const firstResult = await first;
 
+  // The newer write stands in for the first, as one from another isolate would.
   assert.deepEqual(firstResult.json, {
-    backingStoreUpdated: false,
-    edgePurgeAccepted: false,
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
   });
   assert.deepEqual(second.json, {
     backingStoreUpdated: true,
     edgePurgeAccepted: true,
   });
   assert.equal(await (await read("/coalesced-purge")).text(), "second");
+});
+
+test("a newer write that didn't purge doesn't stand in for an overtaken write that must", async () => {
+  await put("/coalesced-purge-overtaken", "seed");
+  const first = put("/coalesced-purge-overtaken", "first", {
+    bodyDelayMs: 300,
+    coalesce: true,
+    purgeExisting: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = await put("/coalesced-purge-overtaken", "second", { coalesce: true });
+
+  assert.equal(second.json.backingStoreUpdated, true);
+  assert.deepEqual((await first).json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.equal(await (await read("/coalesced-purge-overtaken")).text(), "second");
 });
 
 test("a failed coalesced write does not suppress an immediate retry", async () => {
@@ -4669,4 +4702,37 @@ test("a 10 MiB response body is stored in and refilled from R2", async () => {
   assert.equal(returned.byteLength, size);
   assert.equal(returned[0], 97);
   assert.equal(returned.at(-1), 97);
+});
+
+test("a write that R2 rate-limits backs off and publishes", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&rate-limit-r2=2");
+  const write = await put("/r2-rate-limited", "first");
+  assert.deepEqual(write.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(await (await read("/r2-rate-limited")).text(), "first");
+});
+
+test("a write that R2 keeps rate-limiting fails after its last attempt", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&rate-limit-r2=5");
+  await assert.rejects(put("/r2-rate-limited-out", "first"), /R2 response publication failed/);
+  assert.equal((await read("/r2-rate-limited-out")).status, 404);
+});
+
+test("a purge whose R2 tombstone write is rate-limited backs off and completes", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/r2-rate-limited-purge", "first", { tags: ["r2-rate-limited-purge"] });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&rate-limit-metadata-r2=2");
+  const result = await purge({ tags: ["r2-rate-limited-purge"] });
+  assert.equal(result.response.status, 200, JSON.stringify(result.json));
+  assert.equal((await read("/r2-rate-limited-purge")).status, 404);
+});
+
+test("a coalesced write that a newer write from another isolate overtakes counts as stored", async () => {
+  // A write that doesn't coalesce stands in for one from another isolate: neither waits for the
+  // other, and the metadata DO drops the older one.
+  const older = put("/superseded-coalesced", "older", { bodyDelayMs: 300, coalesce: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const newer = await put("/superseded-coalesced", "newer");
+  assert.equal(newer.json.backingStoreUpdated, true);
+  assert.deepEqual((await older).json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(await (await read("/superseded-coalesced")).text(), "newer");
 });
