@@ -77,7 +77,7 @@ export const loadWidget = () =>
   }));
 ```
 
-Then call `loadWidget` from every place that loads the module, such as the hover handler and `dynamic(() => loadWidget(), { ssr: false })`.
+Then call `loadWidget` from every place that loads the module, such as `dynamic(() => loadWidget(), { ssr: false })` and a hover handler. A preload that nothing awaits should handle its own failure, so it doesn't become an unhandled rejection: `onMouseEnter={() => void loadWidget().catch(() => {})}`. `dynamic()` still sees the error when it loads the component.
 
 ## Caching
 
