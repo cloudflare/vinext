@@ -29586,14 +29586,17 @@ describe("next/image enhancements", () => {
     expect(result.props.srcSet).not.toContain("w=256");
   });
 
-  it("getImageProps does not generate srcSet for fill images", async () => {
+  it("getImageProps generates a device-size srcSet for fill images", async () => {
     const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
     const result = getImageProps({
       src: "/bg.jpg",
       alt: "Background",
       fill: true,
     });
-    expect(result.props.srcSet).toBeUndefined();
+    // Next.js getWidths(): no width means every deviceSize as a `w` descriptor.
+    expect(result.props.srcSet).toContain("w=640&q=75 640w");
+    expect(result.props.srcSet).toContain("w=3840&q=75 3840w");
+    expect(result.props.src).toContain("w=3840");
     expect(result.props.sizes).toBe("100vw"); // fill implies 100vw
   });
 
