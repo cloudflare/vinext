@@ -1,6 +1,7 @@
 import path from "pathslash";
 import type { Rollup } from "vite";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
 import { actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
 
 type FontOwnerRoute = Parameters<typeof actionOwnerRouteEntryIds>[0];
@@ -14,16 +15,27 @@ type ModuleGraphInfo = Pick<Rollup.ModuleInfo, "dynamicallyImportedIds" | "impor
  * `next-font-manifest`, which lists each app entry's fonts.
  */
 export type FontOwnerManifest = {
-  /** Owner keys by route pattern. A route that is missing has none. */
+  /** Owner keys of each route's documents, by route pattern. A route that is missing has none. */
   routes: Record<string, string[]>;
   /** Owner keys of a render without a matched route, such as a route-miss 404. */
   routeless: string[];
+  /**
+   * The server-module owners whose font rules each route's RSC payload carries
+   * for a client navigation, by route pattern: the route's own, and those of
+   * intercepting route it renders for a soft navigation, by interception ID
+   * (the `interceptionId` the request matched). Client
+   * components load their fonts in the browser themselves, so they are left
+   * out. A route that is missing has none.
+   */
+  navigation: Record<string, FontNavigationOwners>;
   /**
    * Owner keys of the standalone `app/global-not-found` render of a route-miss
    * 404, which skips the root layouts (Next.js' `/_global-not-found` entry).
    */
   globalNotFound: string[];
 };
+
+type FontNavigationOwners = { route?: string[]; intercepts?: Record<string, string[]> };
 
 /** The key a font owner module is recorded under: its path relative to the root. */
 export function fontOwnerKey(root: string, id: string): string {
@@ -48,6 +60,41 @@ export function fontRouteFiles(route: FontOwnerRoute): string[] {
     })),
     siblingIntercepts: [],
   });
+}
+
+/**
+ * The files of each intercepting route a route renders for a soft navigation,
+ * by the interception ID the request matcher gives it
+ * (`server/app-rsc-route-matching.ts`).
+ */
+export function fontInterceptFiles(route: FontOwnerRoute): Map<string, string[]> {
+  const own = new Set(fontRouteFiles(route));
+  // The entries of the route with only this intercept left in it.
+  const filesOf = (only: unknown) =>
+    actionOwnerRouteEntryIds({
+      ...route,
+      parallelSlots: route.parallelSlots.map((slot) => ({
+        ...slot,
+        interceptingRoutes: slot.interceptingRoutes.filter((intercept) => intercept === only),
+      })),
+      siblingIntercepts: route.siblingIntercepts.filter((intercept) => intercept === only),
+    }).filter((file) => !own.has(file));
+  const files = new Map<string, string[]>();
+  for (const slot of route.parallelSlots) {
+    if (typeof slot.id !== "string") continue;
+    for (const intercept of slot.interceptingRoutes) {
+      const id = createAppRouteGraphInterceptionId(
+        slot.id,
+        intercept.sourceMatchPattern,
+        intercept.targetPattern,
+      );
+      files.set(id, filesOf(intercept));
+    }
+  }
+  for (const intercept of route.siblingIntercepts) {
+    if (typeof intercept.id === "string") files.set(intercept.id, filesOf(intercept));
+  }
+  return files;
 }
 
 /** Each module of a build's graph with the modules it imports, statically or dynamically. */
@@ -112,17 +159,24 @@ export function buildFontOwnerManifest(options: {
   clientReferences: ReadonlyMap<string, string>;
   isOwner: (id: string) => boolean;
   ownerKey: (id: string) => string;
-  /** The canonical root files of each render, by route pattern. */
-  routes: ReadonlyMap<string, readonly string[]>;
+  /**
+   * The canonical root files of each route's documents, and of each
+   * intercepting route it renders (by interception ID), by route pattern.
+   */
+  routes: ReadonlyMap<
+    string,
+    { files: readonly string[]; interceptFiles: ReadonlyMap<string, readonly string[]> }
+  >;
   routelessFiles: readonly string[];
   globalNotFoundFiles: readonly string[];
 }): FontOwnerManifest {
-  // The owner keys each RSC module brings in: its own, or, for a client
-  // reference, those its SSR graph reaches.
+  // The owner keys each RSC module brings in: its own (a server owner), or,
+  // for a client reference, those its SSR graph reaches.
   const ownersByRscModule = new Map<string, Set<string>>();
-  const addOwner = (id: string, key: string) => {
-    let keys = ownersByRscModule.get(id);
-    if (!keys) ownersByRscModule.set(id, (keys = new Set()));
+  const serverOwnersByRscModule = new Map<string, Set<string>>();
+  const addOwner = (owners: Map<string, Set<string>>, id: string, key: string) => {
+    let keys = owners.get(id);
+    if (!keys) owners.set(id, (keys = new Set()));
     keys.add(key);
   };
 
@@ -137,42 +191,72 @@ export function buildFontOwnerManifest(options: {
     if (!options.isOwner(id)) continue;
     const key = options.ownerKey(id);
     for (const reaching of modulesReaching(ssrImporters, id)) {
-      for (const reference of referencesBySsrModule.get(reaching) ?? []) addOwner(reference, key);
+      for (const reference of referencesBySsrModule.get(reaching) ?? []) {
+        addOwner(ownersByRscModule, reference, key);
+      }
     }
   }
   // A client reference's RSC module is a proxy: its fonts load in the SSR graph.
   for (const id of options.rsc.keys()) {
     if (options.isOwner(id) && !options.clientReferences.has(id)) {
-      addOwner(id, options.ownerKey(id));
+      const key = options.ownerKey(id);
+      addOwner(ownersByRscModule, id, key);
+      addOwner(serverOwnersByRscModule, id, key);
     }
   }
 
-  const ownersByFile = new Map<string, Set<string>>();
-  const rootFiles = new Set(
-    [...options.routes.values(), options.routelessFiles, options.globalNotFoundFiles].flat(),
-  );
+  const rootFiles = new Set([
+    ...[...options.routes.values()].flatMap(({ files, interceptFiles }) => [
+      ...files,
+      ...[...interceptFiles.values()].flat(),
+    ]),
+    ...options.routelessFiles,
+    ...options.globalNotFoundFiles,
+  ]);
   const rscImporters = importersOf(options.rsc);
   const isClientReference = (id: string) => options.clientReferences.has(id);
-  for (const [id, keys] of ownersByRscModule) {
-    for (const reaching of modulesReaching(rscImporters, id, isClientReference)) {
-      if (!rootFiles.has(reaching)) continue;
-      let fileOwners = ownersByFile.get(reaching);
-      if (!fileOwners) ownersByFile.set(reaching, (fileOwners = new Set()));
-      for (const key of keys) fileOwners.add(key);
+  const reachingRoots = new Map<string, string[]>();
+  const rootsReaching = (id: string) => {
+    let roots = reachingRoots.get(id);
+    if (!roots) {
+      roots = [...modulesReaching(rscImporters, id, isClientReference)].filter((reaching) =>
+        rootFiles.has(reaching),
+      );
+      reachingRoots.set(id, roots);
     }
-  }
+    return roots;
+  };
+  const ownersByFile = (ownersByModule: ReadonlyMap<string, ReadonlySet<string>>) => {
+    const byFile = new Map<string, Set<string>>();
+    for (const [id, keys] of ownersByModule) {
+      for (const root of rootsReaching(id)) {
+        for (const key of keys) addOwner(byFile, root, key);
+      }
+    }
+    return (files: readonly string[]) =>
+      [...new Set(files.flatMap((file) => [...(byFile.get(file) ?? [])]))].sort();
+  };
+  const ownersOf = ownersByFile(ownersByRscModule);
+  const serverOwnersOf = ownersByFile(serverOwnersByRscModule);
 
-  const ownersOf = (files: readonly string[]) =>
-    [...new Set(files.flatMap((file) => [...(ownersByFile.get(file) ?? [])]))].sort();
   const manifest: FontOwnerManifest = {
     routes: {},
     routeless: ownersOf(options.routelessFiles),
     globalNotFound: ownersOf(options.globalNotFoundFiles),
+    navigation: {},
   };
-  for (const [pattern, files] of options.routes) {
+  // Most routes load no font of their own; leave them out.
+  for (const [pattern, { files, interceptFiles }] of options.routes) {
     const owners = ownersOf(files);
-    // Most routes load no font of their own; leave them out.
     if (owners.length > 0) manifest.routes[pattern] = owners;
+    const navigation: FontNavigationOwners = {};
+    const routeOwners = serverOwnersOf(files);
+    if (routeOwners.length > 0) navigation.route = routeOwners;
+    for (const [id, filesOfIntercept] of interceptFiles) {
+      const interceptOwners = serverOwnersOf(filesOfIntercept);
+      if (interceptOwners.length > 0) (navigation.intercepts ??= {})[id] = interceptOwners;
+    }
+    if (navigation.route || navigation.intercepts) manifest.navigation[pattern] = navigation;
   }
   return manifest;
 }

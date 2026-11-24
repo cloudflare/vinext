@@ -1075,22 +1075,47 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 ${devFontOwners ? "" : `import __vinextFontOwners from ${JSON.stringify(FONT_OWNER_MANIFEST_ID)};`}
 function _getSSRFontStyles(owners) { return [..._getSSRFontStylesGoogle(owners), ..._getSSRFontStylesLocal(owners)]; }
 function _getSSRFontPreloads(owners) { return [..._getSSRFontPreloadsGoogle(owners), ..._getSSRFontPreloadsLocal(owners)]; }
-// The modules whose fonts the render of \`route\` (or of no matched route, or
-// the standalone global-not-found render) carries; null carries every font.
+// The modules whose fonts the document of \`route\` (or of no matched route,
+// or the standalone global-not-found render) carries, and those whose rules
+// its RSC payload carries for a client navigation (with those of the
+// intercepting route it renders, by interception ID). null carries every font.
 ${
   devFontOwners
-    ? `function __getFontOwners(route, render) {
+    ? `function __loadDevFontOwners(route, render) {
   const query = render === "global-not-found"
     ? "global-not-found"
     : route?.pattern != null ? "route=" + encodeURIComponent(route.pattern) : "routeless";
   // The resolved virtual id's URL form: import analysis rewrites only literals.
   return import(/* @vite-ignore */ ${JSON.stringify(`/@id/__x00__${DEV_FONT_OWNERS_ID}?`)} + query).then((m) => m.default);
+}
+function __getFontOwners(route, render) {
+  return __loadDevFontOwners(route, render).then((owners) => owners ? owners.document : null);
+}
+function __getNavigationFontOwners(route, interceptionId) {
+  return __loadDevFontOwners(route).then((owners) => {
+    if (!owners) return null;
+    const intercept = interceptionId != null ? owners.intercepts[interceptionId] : undefined;
+    return intercept ? [...owners.route, ...intercept] : owners.route;
+  });
 }`
     : `function __getFontOwners(route, render) {
   if (!__vinextFontOwners) return null;
   if (render === "global-not-found") return __vinextFontOwners.globalNotFound;
   return route?.pattern != null ? (__vinextFontOwners.routes[route.pattern] ?? []) : __vinextFontOwners.routeless;
+}
+function __getNavigationFontOwners(route, interceptionId) {
+  if (!__vinextFontOwners) return null;
+  const owners = __vinextFontOwners.navigation[route.pattern];
+  if (!owners) return [];
+  const intercept = interceptionId != null ? owners.intercepts?.[interceptionId] : undefined;
+  return intercept ? [...(owners.route ?? []), ...intercept] : (owners.route ?? []);
 }`
+}
+function __getRouteFonts(owners) {
+  const styles = _getSSRFontStyles(owners);
+  const preloads = _getSSRFontPreloads(owners);
+  const links = _getSSRFontLinks(owners);
+  return styles.length > 0 || preloads.length > 0 || links.length > 0 ? { styles, preloads, links } : null;
 }
 ${
   hasPagesDir
@@ -1415,6 +1440,12 @@ function hasInterceptionId(interceptionId) {
 async function buildPageElements(route, params, routePath, pageRequest, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
+  const routeFonts = __getRouteFonts(
+    await __getNavigationFontOwners(
+      route,
+      pageRequest?.opts?.interceptPage != null ? (pageRequest.opts.interceptionId ?? null) : null,
+    ),
+  );
   return __buildPageElements({
     ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
     route,
@@ -1430,6 +1461,7 @@ async function buildPageElements(route, params, routePath, pageRequest, displayP
     basePath: __basePath,
     trailingSlash: __trailingSlash,
     htmlLimitedBots: __htmlLimitedBots,
+    routeFonts,
     scriptNonce,
   });
 }

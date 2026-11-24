@@ -7,6 +7,7 @@ import { safeJsonStringify } from "../server/html.js";
 import { rewriteOutputRootExternals } from "../build/output-root-externals.js";
 import {
   buildFontOwnerManifest,
+  fontInterceptFiles,
   fontOwnerKey,
   fontRouteFiles,
   snapshotModuleGraph,
@@ -21,8 +22,8 @@ import {
 export const FONT_OWNER_MANIFEST_ID = "virtual:vinext-font-owner-manifest";
 /**
  * Dev: `virtual:vinext-font-owners?route=<pattern>` (or `?routeless`, or
- * `?global-not-found`) exports
- * the owner keys of one render, read from the dev module graphs.
+ * `?global-not-found`) exports the owner keys of one render, read from the dev
+ * module graphs, as {@link DevFontOwners}.
  */
 export const DEV_FONT_OWNERS_ID = "virtual:vinext-font-owners";
 
@@ -34,13 +35,14 @@ const FONT_OWNER_MANIFEST_EXTERNALS: ReadonlyMap<string, string> = new Map([
 ]);
 const ROUTELESS = "\0routeless";
 const GLOBAL_NOT_FOUND = "\0global-not-found";
-const EMPTY_MANIFEST: FontOwnerManifest = { routes: {}, routeless: [], globalNotFound: [] };
+/** A render's files, and each intercepting route's it renders, by interception ID. */
+type RenderFiles = { files: string[]; interceptFiles: Map<string, string[]> };
 
 type RscBuildGraph = {
   graph: ModuleGraphSnapshot;
   /** Client reference module ids with the id the SSR graph imports them by. */
   clientReferenceImportIds: Map<string, string>;
-  routes: Map<string, string[]>;
+  routes: Map<string, RenderFiles>;
   routelessFiles: string[];
   globalNotFoundFiles: string[];
 };
@@ -57,6 +59,20 @@ function canonicalizeFontModuleId(
 ): string {
   return config.resolve.preserveSymlinks ? toSlash(id) : canonicalize(id);
 }
+
+/** A dev render's owner keys: its documents', and its RSC payload's as in `navigation`. */
+type DevFontOwners = {
+  document: string[];
+  route: string[];
+  intercepts: Record<string, string[]>;
+};
+
+const EMPTY_MANIFEST: FontOwnerManifest = {
+  routes: {},
+  routeless: [],
+  globalNotFound: [],
+  navigation: {},
+};
 
 export function createFontOwnerManifestPlugin(options: {
   canonicalizeModuleId: (id: string) => string;
@@ -87,20 +103,27 @@ export function createFontOwnerManifestPlugin(options: {
     canonicalizeFontModuleId(config, options.canonicalizeModuleId, id);
 
   // Each render's files: a route's own files, or a route-miss render's, plus
-  // the files that can show in either. The standalone global-not-found render
-  // shows no root layout or root boundary, so it is a render of its own.
-  const renderFiles = (): Map<string, string[]> => {
+  // the files that can show in either, and the intercepting routes' files. The
+  // standalone global-not-found render shows no root layout or root boundary,
+  // so it is a render of its own.
+  const renderFiles = (): Map<string, RenderFiles> => {
     const always = options.getAlwaysRenderedFiles();
     const globalNotFound = options.getGlobalNotFoundFiles();
-    const files = new Map<string, string[]>();
+    const files = new Map<string, RenderFiles>();
     for (const route of options.getRoutes() ?? []) {
-      files.set(route.pattern, [...fontRouteFiles(route), ...always]);
+      files.set(route.pattern, {
+        files: [...fontRouteFiles(route), ...always],
+        interceptFiles: fontInterceptFiles(route),
+      });
     }
-    files.set(ROUTELESS, [
-      ...options.getRoutelessFiles().filter((file) => !globalNotFound.includes(file)),
-      ...always,
-    ]);
-    files.set(GLOBAL_NOT_FOUND, [...globalNotFound]);
+    files.set(ROUTELESS, {
+      files: [
+        ...options.getRoutelessFiles().filter((file) => !globalNotFound.includes(file)),
+        ...always,
+      ],
+      interceptFiles: new Map(),
+    });
+    files.set(GLOBAL_NOT_FOUND, { files: [...globalNotFound], interceptFiles: new Map() });
     return files;
   };
 
@@ -167,24 +190,41 @@ export function createFontOwnerManifestPlugin(options: {
       // Unknown route or environments: every font, as before fonts were scoped.
       if (!files || !manager || !rsc || !ssr) return "export default null";
 
-      const owners = new Set<string>();
-      const clientReferences = new Set<string>();
-      const visit = (file: string | null | undefined, moduleId: string) => {
-        // Editing any module the walk read can change the render's fonts.
+      // Editing any module a walk read can change the render's fonts.
+      const watch = (file: string | null) => {
         if (file) this.addWatchFile(file);
-        if (isOwner(moduleId)) owners.add(fontOwnerKey(config.root, moduleId));
       };
-      await walkDevModuleGraph(rsc, files.map(canonicalizeModuleId), (id, file) => {
-        visit(file, id);
-        if (!manager.clientReferenceMetaMap[id]) return true;
-        clientReferences.add(id);
-        return false;
-      });
-      await walkDevModuleGraph(ssr, [...clientReferences], (id, file) => {
-        visit(file, id);
-        return true;
-      });
-      return `export default ${JSON.stringify([...owners].sort())};`;
+      const ownersOf = async (roots: readonly string[]) => {
+        const serverOwners = new Set<string>();
+        const clientOwners = new Set<string>();
+        const clientReferences: string[] = [];
+        await walkDevModuleGraph(rsc, roots.map(canonicalizeModuleId), (id, file) => {
+          watch(file);
+          if (manager.clientReferenceMetaMap[id]) {
+            clientReferences.push(id);
+            return false;
+          }
+          if (isOwner(id)) serverOwners.add(fontOwnerKey(config.root, id));
+          return true;
+        });
+        await walkDevModuleGraph(ssr, clientReferences, (id, file) => {
+          watch(file);
+          if (isOwner(id)) clientOwners.add(fontOwnerKey(config.root, id));
+          return true;
+        });
+        return { server: [...serverOwners].sort(), client: [...clientOwners] };
+      };
+      const own = await ownersOf(files.files);
+      const intercepts: Record<string, string[]> = {};
+      for (const [interceptionId, interceptFiles] of files.interceptFiles) {
+        intercepts[interceptionId] = (await ownersOf(interceptFiles)).server;
+      }
+      const owners: DevFontOwners = {
+        document: [...new Set([...own.server, ...own.client])].sort(),
+        route: own.server,
+        intercepts,
+      };
+      return `export default ${JSON.stringify(owners)};`;
     },
     outputOptions(output) {
       if (this.environment.name === "rsc" && output.dir) {
@@ -210,10 +250,21 @@ export function createFontOwnerManifestPlugin(options: {
           if (reference) clientReferenceImportIds.set(id, reference.importId);
         }
         const routes = new Map(
-          [...renderFiles()].map(([render, files]) => [render, files.map(canonicalizeModuleId)]),
+          [...renderFiles()].map(([render, { files, interceptFiles }]) => [
+            render,
+            {
+              files: files.map(canonicalizeModuleId),
+              interceptFiles: new Map(
+                [...interceptFiles].map(([interceptionId, files]) => [
+                  interceptionId,
+                  files.map(canonicalizeModuleId),
+                ]),
+              ),
+            },
+          ]),
         );
-        const routelessFiles = routes.get(ROUTELESS) ?? [];
-        const globalNotFoundFiles = routes.get(GLOBAL_NOT_FOUND) ?? [];
+        const routelessFiles = routes.get(ROUTELESS)?.files ?? [];
+        const globalNotFoundFiles = routes.get(GLOBAL_NOT_FOUND)?.files ?? [];
         routes.delete(ROUTELESS);
         routes.delete(GLOBAL_NOT_FOUND);
         rscBuild = { graph, clientReferenceImportIds, routes, routelessFiles, globalNotFoundFiles };

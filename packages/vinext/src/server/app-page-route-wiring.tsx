@@ -49,6 +49,7 @@ import {
   Slot,
 } from "vinext/shims/slot";
 import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
+import { RouteFontsInsertion, type AppRouteFonts } from "vinext/shims/route-fonts";
 import { fnv1a64 } from "vinext/internal/utils/hash";
 import { createBfcacheChildSegmentStateKey } from "./bfcache-identity.js";
 import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
@@ -306,6 +307,11 @@ type BuildAppPageRouteElementOptions<
    */
   resolveHead?: (() => AppPageRouteHead) | null;
   resolvedMetadataPathname?: string;
+  /**
+   * The route's server-component font rules and preloads, which the payload
+   * carries for the browser to add after a client navigation.
+   */
+  routeFonts?: AppRouteFonts | null;
   scriptNonce?: string;
   streamingMetadataOutletSuspended?: boolean;
   trailingSlash?: boolean;
@@ -2642,6 +2648,7 @@ export function buildAppPageElements<
   const routeElement = (
     <>
       <Slot id={routeHeadId} />
+      {options.routeFonts ? <RouteFontsInsertion {...options.routeFonts} /> : null}
       {routeChildren}
       {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>

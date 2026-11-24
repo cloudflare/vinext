@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildFontOwnerManifest,
+  fontInterceptFiles,
   fontRouteFiles,
 } from "../packages/vinext/src/build/font-owner-manifest.js";
 
@@ -12,7 +13,13 @@ describe("buildFontOwnerManifest", () => {
     "/app/b/client.tsx",
     "/app/c/lazy.ts",
     "/app/fonts.ts",
+    "/app/@modal/(.)photo/page.tsx",
+    "/app/@modal/(.)video/page.tsx",
   ]);
+  const files = (...paths: string[]) => ({
+    files: paths,
+    interceptFiles: new Map<string, string[]>(),
+  });
   const build = (overrides: Partial<Parameters<typeof buildFontOwnerManifest>[0]> = {}) =>
     buildFontOwnerManifest({
       rsc: new Map([
@@ -36,10 +43,10 @@ describe("buildFontOwnerManifest", () => {
       isOwner: (id) => owners.has(id),
       ownerKey: (id) => id.slice(1),
       routes: new Map([
-        ["/a", ["/app/a/page.tsx", "/app/a/layout.tsx", "/app/layout.tsx"]],
-        ["/b", ["/app/b/page.tsx", "/app/layout.tsx"]],
-        ["/c", ["/app/c/page.tsx", "/app/layout.tsx"]],
-        ["/empty", ["/app/layout.tsx"]],
+        ["/a", files("/app/a/page.tsx", "/app/a/layout.tsx", "/app/layout.tsx")],
+        ["/b", files("/app/b/page.tsx", "/app/layout.tsx")],
+        ["/c", files("/app/c/page.tsx", "/app/layout.tsx")],
+        ["/empty", files("/app/layout.tsx")],
       ]),
       routelessFiles: ["/app/layout.tsx"],
       globalNotFoundFiles: [],
@@ -56,6 +63,12 @@ describe("buildFontOwnerManifest", () => {
       },
       routeless: [],
       globalNotFound: [],
+      // The browser loads a client component's fonts itself, so the payload
+      // carries only server modules' fonts.
+      navigation: {
+        "/a": { route: ["app/a/fonts.ts"] },
+        "/c": { route: ["app/c/lazy.ts"] },
+      },
     });
   });
 
@@ -69,25 +82,58 @@ describe("buildFontOwnerManifest", () => {
       ssr: new Map(),
       clientReferences: new Map(),
       routes: new Map([
-        ["/a", ["/app/a/page.tsx", "/app/layout.tsx"]],
-        ["/", ["/app/layout.tsx"]],
+        ["/a", files("/app/a/page.tsx", "/app/layout.tsx")],
+        ["/", files("/app/layout.tsx")],
       ]),
     });
-    expect(manifest).toEqual({
-      routes: { "/a": ["app/fonts.ts"], "/": ["app/fonts.ts"] },
-      routeless: ["app/fonts.ts"],
-      globalNotFound: [],
-    });
+    expect(manifest.routes).toEqual({ "/a": ["app/fonts.ts"], "/": ["app/fonts.ts"] });
+    expect(manifest.routeless).toEqual(["app/fonts.ts"]);
+    expect(manifest.globalNotFound).toEqual([]);
   });
 
   it("reads a client reference that is itself a route file from the SSR graph", () => {
     const manifest = build({
       rsc: new Map([["/app/b/client.tsx", []]]),
       ssr: new Map([["/app/b/client.tsx", []]]),
-      routes: new Map([["/b", ["/app/b/client.tsx"]]]),
+      routes: new Map([["/b", files("/app/b/client.tsx")]]),
       routelessFiles: [],
     });
     expect(manifest.routes).toEqual({ "/b": ["app/b/client.tsx"] });
+    expect(manifest.navigation).toEqual({});
+  });
+
+  it("keeps each intercepting route's fonts out of the documents and apart in the payload", () => {
+    const manifest = build({
+      rsc: new Map([
+        ["/app/layout.tsx", []],
+        ["/app/page.tsx", []],
+        ["/app/@modal/(.)photo/page.tsx", []],
+        ["/app/@modal/(.)video/page.tsx", []],
+      ]),
+      ssr: new Map(),
+      clientReferences: new Map(),
+      routes: new Map([
+        [
+          "/",
+          {
+            files: ["/app/page.tsx", "/app/layout.tsx"],
+            interceptFiles: new Map([
+              ["photo", ["/app/@modal/(.)photo/page.tsx"]],
+              ["video", ["/app/@modal/(.)video/page.tsx"]],
+            ]),
+          },
+        ],
+      ]),
+    });
+    expect(manifest.routes).toEqual({});
+    expect(manifest.navigation).toEqual({
+      "/": {
+        intercepts: {
+          photo: ["app/@modal/(.)photo/page.tsx"],
+          video: ["app/@modal/(.)video/page.tsx"],
+        },
+      },
+    });
   });
 
   it("gives the standalone global-not-found render only its own fonts", () => {
@@ -156,5 +202,47 @@ describe("fontRouteFiles", () => {
     expect(files).toContain("/app/@modal/layout.tsx");
     expect(files).not.toContain("/app/@side/layout.tsx");
     expect(files.some((file) => file.includes("(.)item"))).toBe(false);
+  });
+});
+
+describe("fontInterceptFiles", () => {
+  const intercept = (name: string) => ({
+    convention: ".",
+    layoutPaths: [],
+    notFoundPath: null,
+    pagePath: `/app/@modal/(.)${name}/page.tsx`,
+    params: [],
+    sourceMatchPattern: "/",
+    targetPattern: `/${name}`,
+  });
+
+  // The request matcher names a slot's intercept by slot, source and target.
+  it("gives each intercepting route its own files, by interception ID", () => {
+    const files = fontInterceptFiles({
+      errorPath: null,
+      layouts: ["/app/layout.tsx"],
+      loadingPath: null,
+      notFoundPath: null,
+      pagePath: "/app/page.tsx",
+      parallelSlots: [
+        {
+          defaultPath: "/app/@modal/default.tsx",
+          id: "slot:modal:/",
+          interceptingRoutes: [intercept("photo"), intercept("video")],
+          key: "modal:/app/@modal",
+          layoutPath: null,
+          name: "modal",
+          pagePath: null,
+        },
+      ],
+      pattern: "/",
+      siblingIntercepts: [{ ...intercept("sibling"), id: "interception:sibling" }],
+      templates: [],
+    } as unknown as Parameters<typeof fontInterceptFiles>[0]);
+    expect(Object.fromEntries(files)).toEqual({
+      "interception:slot:modal:/:/->/photo": ["/app/@modal/(.)photo/page.tsx"],
+      "interception:slot:modal:/:/->/video": ["/app/@modal/(.)video/page.tsx"],
+      "interception:sibling": ["/app/@modal/(.)sibling/page.tsx"],
+    });
   });
 });
