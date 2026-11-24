@@ -336,24 +336,64 @@ function missResponse(revision?: number): Response {
   });
 }
 
-const ENTITY_TAG = /(?:W\/)?"([^"]*)"/g;
+const ENTITY_TAG = String.raw`(?:W/)?"[\x21\x23-\x7e\x80-\xff]*"`;
+const CURRENT_ENTITY_TAG = new RegExp(`^${ENTITY_TAG}$`);
+// A list may hold empty members (RFC 9110 5.6.1.2).
+const ENTITY_TAG_LIST = new RegExp(
+  `^[ \\t,]*${ENTITY_TAG}(?:[ \\t]*,[ \\t,]*${ENTITY_TAG})*[ \\t,]*$`,
+);
+const OPAQUE_TAG = /"([^"]*)"/g;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// IMF-fixdate and the obsolete RFC 850 and asctime formats (RFC 9110 5.6.7).
+const HTTP_DATES = [
+  /^(?<weekday>Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?<day>\d{2}) (?<month>[A-Z][a-z]{2}) (?<year>\d{4}) (?<time>\d{2}:\d{2}:\d{2}) GMT$/,
+  /^(?<weekday>Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (?<day>\d{2})-(?<month>[A-Z][a-z]{2})-(?<year>\d{2}) (?<time>\d{2}:\d{2}:\d{2}) GMT$/,
+  /^(?<weekday>Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?<month>[A-Z][a-z]{2}) (?<day>[ \d]\d) (?<time>\d{2}:\d{2}:\d{2}) (?<year>\d{4})$/,
+];
+
+function parseHttpDate(value: string | null): number {
+  const groups = HTTP_DATES.map((format) => format.exec(value ?? "")?.groups).find(Boolean);
+  if (!groups) return Number.NaN;
+  const month = MONTHS.indexOf(groups.month);
+  const day = Number(groups.day);
+  const [hours, minutes, seconds] = groups.time.split(":").map(Number);
+  let year = Number(groups.year);
+  // RFC 850's two-digit year is the latest one not more than 50 years ahead.
+  if (groups.year.length === 2) {
+    const now = new Date().getUTCFullYear();
+    year += now - (now % 100);
+    if (year > now + 50) year -= 100;
+  }
+  const date = new Date(Date.UTC(year, month, day, hours, minutes, seconds));
+  // Impossible dates and times, and the wrong weekday, are invalid rather than rolled over.
+  return month >= 0 &&
+    date.getUTCDate() === day &&
+    date.getUTCHours() === hours &&
+    date.getUTCMinutes() === minutes &&
+    date.getUTCSeconds() === seconds &&
+    date.toUTCString().startsWith(groups.weekday.slice(0, 3))
+    ? date.getTime()
+    : Number.NaN;
+}
 
 // Whether a revalidation's validators match the response the store would send, so Cloudflare
 // needs a 304 to keep its copy: a 200 repeating the cached ETag doesn't reliably replace it.
 // https://developers.cloudflare.com/cache/concepts/revalidation/#origin-requirements-for-revalidation
 // If-None-Match uses the weak comparison and, when present, decides alone (RFC 9110 13.1.2-3).
-// Preconditions only apply to a 2xx response (RFC 9110 13.2.1).
+// Preconditions only apply to a 2xx response (RFC 9110 13.2.1), and a malformed validator
+// leaves the response unchanged.
 function isNotModified(request: Request, response: Response): boolean {
   if (response.status < 200 || response.status > 299) return false;
   const ifNoneMatch = request.headers.get("If-None-Match");
   if (ifNoneMatch !== null) {
     if (ifNoneMatch.trim() === "*") return true;
-    const etag = [...(response.headers.get("ETag") ?? "").matchAll(ENTITY_TAG)];
-    if (etag.length !== 1) return false;
-    return [...ifNoneMatch.matchAll(ENTITY_TAG)].some(([, tag]) => tag === etag[0][1]);
+    const etag = response.headers.get("ETag") ?? "";
+    if (!CURRENT_ENTITY_TAG.test(etag) || !ENTITY_TAG_LIST.test(ifNoneMatch)) return false;
+    const [, current] = [...etag.matchAll(OPAQUE_TAG)][0];
+    return [...ifNoneMatch.matchAll(OPAQUE_TAG)].some(([, tag]) => tag === current);
   }
-  const ifModifiedSince = Date.parse(request.headers.get("If-Modified-Since") ?? "");
-  const lastModified = Date.parse(response.headers.get("Last-Modified") ?? "");
+  const ifModifiedSince = parseHttpDate(request.headers.get("If-Modified-Since"));
+  const lastModified = parseHttpDate(response.headers.get("Last-Modified"));
   return Number.isFinite(ifModifiedSince) && Number.isFinite(lastModified)
     ? lastModified <= ifModifiedSince
     : false;
@@ -362,7 +402,13 @@ function isNotModified(request: Request, response: Response): boolean {
 function notModifiedResponse(response: Response): Response {
   void response.body?.cancel().catch(() => {});
   const headers = new Headers(response.headers);
-  for (const name of ["Content-Encoding", "Content-Length", "Content-Type", "Transfer-Encoding"]) {
+  for (const name of [
+    "Content-Encoding",
+    "Content-Length",
+    "Content-Range",
+    "Content-Type",
+    "Transfer-Encoding",
+  ]) {
     headers.delete(name);
   }
   return new Response(null, { status: 304, statusText: "Not Modified", headers });

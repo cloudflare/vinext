@@ -30,6 +30,7 @@ type PutOptions = {
   cdnCacheControl?: string;
   cloudflareCacheControl?: string;
   coalesce?: boolean;
+  contentRange?: string;
   contentType?: string;
   etag?: string;
   expiryBehavior?: "regenerate" | "miss";
@@ -217,6 +218,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
       options.cacheControl ?? "public, max-age=60, stale-while-revalidate=60",
   });
   if (options.tags) headers.set("X-Response-Cache-Tag", options.tags.join(","));
+  if (options.contentRange) headers.set("X-Response-Content-Range", options.contentRange);
   if (options.etag) headers.set("X-Response-ETag", options.etag);
   if (options.lastModified) headers.set("X-Response-Last-Modified", options.lastModified);
   if (options.host) headers.set("X-Cache-Host", options.host);
@@ -2785,6 +2787,53 @@ test("a superseded conditional revalidation answers with the committed entry, st
   assert.equal(await (await conditionalRead(path)).text(), "fresh-body");
   assert.equal(await metadataRowCount("revalidation_claims"), 0);
   assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("a conditional revalidation that loses its claim answers 304 only for valid validators", async () => {
+  const path = "/conditional-claim-validators";
+  const lastModified = "Tue, 29 Sep 2026 00:00:00 GMT";
+  await put(path, "stale-part", {
+    status: 206,
+    contentRange: "bytes 0-9/100",
+    lastModified,
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 1000 },
+  });
+  const first = conditionalRead(path);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("revalidation_claims")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+  const raced = await conditionalRead(path);
+  assert.equal(raced.status, 206);
+  await raced.arrayBuffer();
+  const etag = raced.headers.get("ETag")!;
+  const tag = etag.replace(/^W\//, "");
+  for (const [header, value] of [
+    ["If-None-Match", `garbage, ${etag}`],
+    ["If-None-Match", `${tag} suffix`],
+    ["If-None-Match", `w/${tag}`],
+    ["If-None-Match", `*, ${etag}`],
+    ["If-Modified-Since", "2026-09-30"],
+    ["If-Modified-Since", "Wed, 31 Sep 2026 00:00:00 GMT"],
+  ]) {
+    const response = await conditionalRead(path, header, value);
+    assert.equal(response.status, 206, `${header}: ${value}`);
+    assert.equal(await response.text(), "stale-part", `${header}: ${value}`);
+  }
+  for (const [header, value] of [
+    ["If-None-Match", `"other", , W/${tag}`],
+    ["If-Modified-Since", lastModified],
+    ["If-Modified-Since", "Tuesday, 29-Sep-26 00:00:00 GMT"],
+    ["If-Modified-Since", "Tue Sep 29 00:00:00 2026"],
+  ]) {
+    const response = await conditionalRead(path, header, value);
+    assert.equal(response.status, 304, `${header}: ${value}`);
+    assert.equal(response.headers.get("Content-Range"), null, `${header}: ${value}`);
+    assert.equal(await response.text(), "", `${header}: ${value}`);
+  }
+  assert.equal(await (await first).text(), "fresh-body");
 });
 
 test("a conditional revalidation that loses its claim answers a stored non-2xx response as is", async () => {
