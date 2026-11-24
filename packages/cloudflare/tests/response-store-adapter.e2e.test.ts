@@ -764,9 +764,10 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(await prefetch.text(), /NEXT_HTTP_ERROR_FALLBACK;404/);
   });
 
-  // A Link's search-param prefetch of a static route renders the page with an
-  // empty query, as Next.js's static prefetch of a page segment never varies on
-  // search params (vary-path.ts). So every query shares the page's own entry.
+  // With Cache Components, a Link's search-param prefetch of a static route
+  // renders the page with an empty query, as Next.js's static prefetch of a
+  // page segment never varies on search params (vary-path.ts). So every query
+  // shares the page's own entry.
   test("serves a static page's dynamic-shell prefetch from its navigation entry", async () => {
     const pathname = "/static-default";
     const prefetch = async (search: string, nextUrl: string) => {

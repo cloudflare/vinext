@@ -449,6 +449,42 @@ test.describe("Next.js compat: client cache", () => {
     expect(body).not.toContain("App Basic");
   });
 
+  // Issue #4637: without PPR, Next.js's automatic prefetch never renders a
+  // page that may read searchParams (walkTreeWithFlightRouterState()), so a
+  // page that requires a query never runs before navigation, and never with
+  // an empty one.
+  for (const trigger of ["link", "router"] as const) {
+    test(`an automatic ${trigger} prefetch with search params never renders the page`, async ({
+      page,
+    }) => {
+      const record = "/nextjs-compat/client-cache-required-search/record";
+      const item = trigger === "link" ? "from-link" : "from-router";
+      const prefetch = page.waitForResponse((candidate) => {
+        const url = new URL(candidate.url());
+        return (
+          url.pathname === record &&
+          url.searchParams.get("item") === item &&
+          candidate.request().headers()["next-router-prefetch"] === "1"
+        );
+      });
+      await page.goto("/nextjs-compat/client-cache-required-search");
+      await waitForAppRouterHydration(page);
+      if (trigger === "router") await page.click("#required-search-prefetch");
+      const response = await prefetch;
+      const body = await response.text();
+      expect(response.status()).toBe(200);
+      expect(body).toContain(`route:${record}`);
+      // Neither the page nor generateMetadata ran: no page output, and no
+      // serialized error from a missing item.
+      expect(body).not.toContain("required-search-item");
+      expect(body).not.toMatch(/:E\{/);
+
+      await page.click(trigger === "link" ? "#required-search-link" : "#required-search-push");
+      await expect(page.locator("#required-search-item")).toHaveText(item);
+      await expect(page).toHaveTitle(`Record ${item}`);
+    });
+  }
+
   test("a pending prefetch that becomes dynamic uses the completed dynamic bound", async ({
     page,
   }) => {

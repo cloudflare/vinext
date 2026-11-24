@@ -251,9 +251,11 @@ describe("renderAppPageCacheArtifacts", () => {
           ? { headers: {}, html: caughtDocument.html, status: 404 }
           : null,
     );
+    const isStaticGenerationRscError = (error: unknown) => error === "access-error";
     const result = await renderAppPageCacheArtifacts({
       captureRscData: true,
       cleanPathname: "/team/missing",
+      isStaticGenerationRscError,
       element: React.createElement("div", null, "page"),
       getFontLinks: () => [],
       getFontPreloads: () => [],
@@ -264,6 +266,11 @@ describe("renderAppPageCacheArtifacts", () => {
           if (options?.sideStream && options.capturedRscDataRef) {
             options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
           }
+          // The regeneration takes the caught document's error shell, as a
+          // request render does.
+          expect(options?.fallbackToErrorDocumentOnCaughtShellError).toBe(true);
+          // A `dynamic = "error"` access error still fails it, not the shell.
+          expect(options?.isStaticGenerationError).toBe(isStaticGenerationRscError);
           return {
             htmlStream: createStream(["<html>caught</html>"]),
             metadataReady: Promise.resolve(),

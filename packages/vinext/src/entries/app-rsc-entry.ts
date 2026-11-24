@@ -30,6 +30,7 @@ import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
 import { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "../server/image-optimization.js";
 import { ACTION_OWNER_MANIFEST_ID } from "../plugins/action-owner-manifest.js";
+import { DEV_FONT_OWNERS_ID, FONT_OWNER_MANIFEST_ID } from "../plugins/font-owner-manifest.js";
 
 const DEFAULT_EXPIRE_TIME = 31_536_000;
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
@@ -162,6 +163,11 @@ type AppRouterConfig = {
   /** Register the application's direct OpenTelemetry ESM loader in Node builds. */
   nodeOpenTelemetryLoader?: boolean;
   actionOwners?: Record<string, string[]> | null;
+  /**
+   * Read each render's font owners from the dev module graph rather than the
+   * build's route font manifest.
+   */
+  devFontOwners?: boolean;
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
@@ -364,6 +370,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
           slot.interceptingRoutes.flatMap((intercept) => [
             ...intercept.layoutPaths,
             intercept.pagePath,
+            intercept.ownerDefaultPath,
           ]),
         ),
         ...route.siblingIntercepts.flatMap((intercept) => [
@@ -545,7 +552,7 @@ ${
   hasPagesDir
     ? `import { getDraftModeCookieHeader } from "next/headers";
 import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry";
-import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};
+import { matchPagesFallbackRoute as __matchPagesFallbackRoute, renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
 import { applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext } from ${JSON.stringify(appRouteHandlerMiddlewareContextPath)};`
     : ""
@@ -641,13 +648,14 @@ const __requestHandler = createAppRscRequestHandler({
   i18nConfig: ${JSON.stringify(config?.i18n ?? null)},
   imageConfig: ${JSON.stringify(config?.imageConfig)},
   isMetadataRoute: __isMetadataPath,
+  metadataRouteAnswersPath: __isMetadataPath,
   isDev: process.env.NODE_ENV !== "production",
   hasInterceptionId,
   matchRoute,
   matchRequestRoute,
   matchRawRequestRoute,
-  matchInterceptRoute(pathname, sourcePathname, interceptionId) {
-    const intercept = __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
+  matchInterceptRoute(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot) {
+    const intercept = __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot);
     if (!intercept) return null;
     const route = __routes[intercept.sourceRouteIndex];
     const authorizationRoute = __routes[intercept.authorizationSourceRouteIndex];
@@ -663,13 +671,18 @@ const __requestHandler = createAppRscRequestHandler({
       authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+      interceptionRendersRootOwnerFromRouteMiss: intercept.rendersRootOwnerFromRouteMiss,
+      interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
+      interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
+      interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,
       params: pickParams(route, intercept.sourceMatchedParams),
     };
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
+      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, proxyExternalRewrite, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
@@ -682,6 +695,7 @@ const __requestHandler = createAppRscRequestHandler({
       isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
       middlewareRequest,
       module: middlewareModule,
+      proxyExternalRewrite,
       request,
       restoreLocaleRootTrailingSlash,
       skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},
@@ -696,7 +710,10 @@ const __requestHandler = createAppRscRequestHandler({
   renderNotFound: async () => null,
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
+      ? `matchPagesRoute(pathname, request) {
+    return __matchPagesFallbackRoute(__pagesRequestEntry, pathname, request);
+  },
+  async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
     return __renderPagesFallback(
       { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url },
       {
@@ -790,6 +807,7 @@ export function generateRscEntry(
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
   const actionOwners = config?.actionOwners;
+  const devFontOwners = config?.devFontOwners === true;
   const hasAppRouteHandlers = routes.some((route) => route.routePath !== null);
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
@@ -1027,6 +1045,7 @@ ${
     : ""
 }
 import {
+  isAppPageStaticParamsOnly as __isAppPageStaticParamsOnly,
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
   validateAppPageRouteDynamicParams as __validateAppPageRouteDynamicParams,
 } from ${JSON.stringify(appPageRequestPath)};
@@ -1061,12 +1080,55 @@ import "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
-function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
-function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+${devFontOwners ? "" : `import __vinextFontOwners from ${JSON.stringify(FONT_OWNER_MANIFEST_ID)};`}
+function _getSSRFontStyles(owners) { return [..._getSSRFontStylesGoogle(owners), ..._getSSRFontStylesLocal(owners)]; }
+function _getSSRFontPreloads(owners) { return [..._getSSRFontPreloadsGoogle(owners), ..._getSSRFontPreloadsLocal(owners)]; }
+// The modules whose fonts the document of \`route\` (or of no matched route,
+// or the standalone global-not-found render) carries, and those whose rules
+// its RSC payload carries for a client navigation (with those of the
+// intercepting route it renders, by interception ID). null carries every font.
+${
+  devFontOwners
+    ? `function __loadDevFontOwners(route, render) {
+  const query = render === "global-not-found"
+    ? "global-not-found"
+    : route?.pattern != null ? "route=" + encodeURIComponent(route.pattern) : "routeless";
+  // The resolved virtual id's URL form: import analysis rewrites only literals.
+  return import(/* @vite-ignore */ ${JSON.stringify(`/@id/__x00__${DEV_FONT_OWNERS_ID}?`)} + query).then((m) => m.default);
+}
+function __getFontOwners(route, render) {
+  return __loadDevFontOwners(route, render).then((owners) => owners ? owners.document : null);
+}
+function __getNavigationFontOwners(route, interceptionId) {
+  return __loadDevFontOwners(route).then((owners) => {
+    if (!owners) return null;
+    const intercept = interceptionId != null ? owners.intercepts[interceptionId] : undefined;
+    return intercept ? [...owners.route, ...intercept] : owners.route;
+  });
+}`
+    : `function __getFontOwners(route, render) {
+  if (!__vinextFontOwners) return null;
+  if (render === "global-not-found") return __vinextFontOwners.globalNotFound;
+  return route?.pattern != null ? (__vinextFontOwners.routes[route.pattern] ?? []) : __vinextFontOwners.routeless;
+}
+function __getNavigationFontOwners(route, interceptionId) {
+  if (!__vinextFontOwners) return null;
+  const owners = __vinextFontOwners.navigation[route.pattern];
+  if (!owners) return [];
+  const intercept = interceptionId != null ? owners.intercepts?.[interceptionId] : undefined;
+  return intercept ? [...(owners.route ?? []), ...intercept] : (owners.route ?? []);
+}`
+}
+function __getRouteFonts(owners) {
+  const styles = _getSSRFontStyles(owners);
+  const preloads = _getSSRFontPreloads(owners);
+  const links = _getSSRFontLinks(owners);
+  return styles.length > 0 || preloads.length > 0 || links.length > 0 ? { styles, preloads, links } : null;
+}
 ${
   hasPagesDir
     ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.
-import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
+import { matchPagesFallbackRoute as __matchPagesFallbackRoute, renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
     : ""
 }
 
@@ -1332,6 +1394,7 @@ function __createFallbackRenderer() {
   },
   fontProviders: {
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
+    getFontOwners: __getFontOwners,
     getFontLinks: _getSSRFontLinks,
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
@@ -1374,8 +1437,8 @@ function matchRawRequestRoute(url) {
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
  */
-function findIntercept(pathname, sourcePathname = null, interceptionId = null) {
-  return __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
+function findIntercept(pathname, sourcePathname = null, interceptionId = null, acceptsSourceWithoutSlot = false) {
+  return __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot);
 }
 
 function hasInterceptionId(interceptionId) {
@@ -1384,7 +1447,13 @@ function hasInterceptionId(interceptionId) {
 
 async function buildPageElements(route, params, routePath, pageRequest, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
-  await __ensureRouteLoaded(route);
+  await __ensureRouteLoaded(route, pageRequest.opts);
+  const routeFonts = __getRouteFonts(
+    await __getNavigationFontOwners(
+      route,
+      pageRequest?.opts?.interceptPage != null ? (pageRequest.opts.interceptionId ?? null) : null,
+    ),
+  );
   return __buildPageElements({
     ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
     route,
@@ -1400,6 +1469,7 @@ async function buildPageElements(route, params, routePath, pageRequest, displayP
     basePath: __basePath,
     trailingSlash: __trailingSlash,
     htmlLimitedBots: __htmlLimitedBots,
+    routeFonts,
     scriptNonce,
   });
 }
@@ -1488,10 +1558,12 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
-  async isDynamicParamsMiss(route, params) {
+  async isDynamicParamsMiss(route, params, pathname) {
     if (!route.isDynamic) return false;
     const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
-    if (__segmentConfig.dynamicParamsConfig !== false) return false;
+    if (!__isAppPageStaticParamsOnly(__segmentConfig.dynamicParamsConfig, process.env.NODE_ENV === "production")) {
+      return false;
+    }
     return (await __validateAppPageRouteDynamicParams({
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
@@ -1500,6 +1572,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isDynamicRoute: route.isDynamic,
       isProduction: process.env.NODE_ENV === "production",
       params,
+      pathname,
+      routePattern: route.pattern,
       routeSegments: route.routeSegments,
     })) !== null;
   },
@@ -1522,7 +1596,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   isDev: process.env.NODE_ENV !== "production",
   draftModeSecret: __draftModeSecret,
   devForwardedMiddlewareContextKey: ${JSON.stringify(config?.devForwardedMiddlewareContextKey ?? null)},
-  dispatchMatchedPage({
+  async dispatchMatchedPage({
     bypassInterceptionContextCache,
     cachePathname,
     cleanPathname,
@@ -1559,6 +1633,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
     const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);
     const __generateStaticParams = __resolveRouteGenerateStaticParams(route);
+    const __fontOwners = await __getFontOwners(route);
     return __dispatchAppPage({
       basePath: __basePath,
       bypassInterceptionContextCache,
@@ -1608,9 +1683,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         );
       },
       generateStaticParams: __generateStaticParams,
-      getFontLinks: _getSSRFontLinks,
-      getFontPreloads: _getSSRFontPreloads,
-      getFontStyles: _getSSRFontStyles,
+      getFontLinks: () => _getSSRFontLinks(__fontOwners),
+      getFontPreloads: () => _getSSRFontPreloads(__fontOwners),
+      getFontStyles: () => _getSSRFontStyles(__fontOwners),
       getNavigationContext: _getNavigationContext,
       getSourceRoute(sourceRouteIndex) {
         return routes[sourceRouteIndex];
@@ -1667,14 +1742,15 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           route,
         });
       },
-      renderErrorBoundaryPage(renderErr, errorOrigin) {
+      renderErrorBoundaryPage(renderErr, errorOrigin, renderParams = params, renderRoute = route, renderIsEdgeRuntime) {
         const __activeIntercept = findIntercept(
           interceptionPathname,
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
-          isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+        return __fallbackRenderer.renderErrorBoundary(renderRoute, renderErr, isRscRequest, request, renderParams, scriptNonce, middlewareContext, {
+          // The runtime dispatch resolved for the render: an interception's own.
+          isEdgeRuntime: renderIsEdgeRuntime ?? __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
@@ -1686,8 +1762,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           interceptionContext,
           interceptionId,
         );
-        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
-          isEdgeRuntime: !opts.routeMiss && __isEdgeRuntime(__segmentConfig.runtime),
+        return __fallbackRenderer.renderHttpAccessFallback(opts.routeMiss ? null : (opts.route ?? route), statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
+          isEdgeRuntime: !opts.routeMiss && (opts.isEdgeRuntime ?? __isEdgeRuntime(__segmentConfig.runtime)),
           routePathname: cleanPathname,
           sourcePageSegments: !opts.routeMiss && __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
@@ -2072,10 +2148,14 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   ${
     (metadataRoutes?.length ?? 0) > 0
-      ? `async getPrerenderMetadataRoutePaths() {
-    const { getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths } =
-      await __loadMetadataRouteResponse();
-    return __getPrerenderableMetadataRoutePaths(metadataRoutes);
+      ? `async getPrerenderMetadataRoutePaths(request) {
+    const {
+      getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths,
+      getWarmableMetadataRoutes: __getWarmableMetadataRoutes,
+    } = await __loadMetadataRouteResponse();
+    return request.warm
+      ? __getWarmableMetadataRoutes(metadataRoutes, request)
+      : __getPrerenderableMetadataRoutePaths(metadataRoutes);
   },`
       : ""
   }
@@ -2085,6 +2165,11 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const { isMetadataRouteRequestPath: __isMetadataRouteRequestPath } =
       await __loadMetadataRouteResponse();
     return __isMetadataRouteRequestPath(metadataRoutes, cleanPathname);
+  },
+  async metadataRouteAnswersPath(pathname) {
+    const { metadataRouteAnswersRewrittenPath: __metadataRouteAnswersRewrittenPath } =
+      await __loadMetadataRouteResponse();
+    return __metadataRouteAnswersRewrittenPath(metadataRoutes, pathname);
   },`
       : ""
   }
@@ -2110,8 +2195,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   matchRequestRoute,
   matchRawRequestRoute,
   hasInterceptionId,
-  matchInterceptRoute(pathname, sourcePathname, interceptionId) {
-    const intercept = findIntercept(pathname, sourcePathname, interceptionId);
+  matchInterceptRoute(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot) {
+    const intercept = findIntercept(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot);
     if (!intercept) return null;
     const route = routes[intercept.sourceRouteIndex];
     const authorizationRoute = routes[intercept.authorizationSourceRouteIndex];
@@ -2127,13 +2212,18 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
       authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+      interceptionRendersRootOwnerFromRouteMiss: intercept.rendersRootOwnerFromRouteMiss,
+      interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+      interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
+      interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
+      interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
       route,
       params: pickParams(route, intercept.sourceMatchedParams),
     };
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
+      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, proxyExternalRewrite, request, restoreLocaleRootTrailingSlash, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
@@ -2146,6 +2236,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
       middlewareRequest,
       module: middlewareModule,
+      proxyExternalRewrite,
       request,
       restoreLocaleRootTrailingSlash,
       skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},
@@ -2162,7 +2253,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
+      ? `async matchPagesRoute(pathname, request) {
+    return __matchPagesFallbackRoute(await __ensureHybridPagesApplication(), pathname, request);
+  },
+  async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url }) {
     return __renderPagesFallback(
       { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, requestBasePath, sharedAcrossHosts, url },
       {

@@ -14,6 +14,11 @@ type SsrErrorMetaRenderOptions = {
 type SsrErrorMetaRenderer = {
   capture: (error: unknown) => void;
   flush: () => string;
+  /**
+   * Replaces the errors captured so far, before anything is flushed, for a
+   * render that takes the place of one whose output is discarded.
+   */
+  restart: (errors: readonly unknown[]) => void;
 };
 
 const PERMANENT_REDIRECT_STATUS = 308;
@@ -86,7 +91,7 @@ export function renderSsrErrorMetaTags(
 export function createSsrErrorMetaRenderer(
   options: SsrErrorMetaRenderOptions = {},
 ): SsrErrorMetaRenderer {
-  const capturedErrors: unknown[] = [];
+  let capturedErrors: unknown[] = [];
   let flushedUntil = 0;
 
   return {
@@ -99,6 +104,10 @@ export function createSsrErrorMetaRenderer(
       const html = renderSsrErrorMetaTags(capturedErrors.slice(flushedUntil), options);
       flushedUntil = capturedErrors.length;
       return html;
+    },
+    restart(errors) {
+      capturedErrors = [...errors];
+      flushedUntil = 0;
     },
   };
 }

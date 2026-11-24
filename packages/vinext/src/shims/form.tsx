@@ -35,6 +35,7 @@ import { useMergedRef } from "./use-merged-ref.js";
 import {
   getMountedSlotsHeader,
   getPrefetchInterceptionContext,
+  getPrefetchInterceptionSource,
   getPrefetchedUrls,
   hasPrefetchCacheEntryForNavigation,
   navigateClientSide,
@@ -329,7 +330,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               // (See link.tsx and app-router-navigation.ts.) The context
               // is captured now; the interception context, which reads the
               // RouteManifest, resolves from it once the manifest has loaded.
-              const currentPathname = window.location.pathname;
+              const interceptionSource = getPrefetchInterceptionSource();
               const resolvedAction = new URL(actionHref, window.location.href);
               const prefetchHref = resolvedAction.pathname + resolvedAction.search;
               const mountedSlotsHeader = getMountedSlotsHeader();
@@ -337,7 +338,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               if (routeManifestLoad !== null && !(await routeManifestLoad)) return;
               const interceptionContext = getPrefetchInterceptionContext(
                 prefetchHref,
-                currentPathname,
+                interceptionSource,
               );
               const headers = createRscRequestHeaders({
                 interceptionContext,

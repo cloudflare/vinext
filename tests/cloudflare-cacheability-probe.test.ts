@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { probeStagedWorkerCacheability } from "../packages/cloudflare/src/cacheability-probe.js";
+import {
+  probeStagedWorkerCacheability,
+  readPrerenderSecret,
+} from "../packages/cloudflare/src/cacheability-probe.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import type { CdnWarmTarget } from "../packages/cloudflare/src/cdn-warm.js";
 import {
@@ -86,6 +89,18 @@ describe("staged Worker cacheability probes", () => {
 
   afterEach(() => {
     for (const root of roots.splice(0)) fs.rmSync(root, { force: true, recursive: true });
+  });
+
+  it("reads the prerender secret from a custom build.outDir's server directory", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-probe-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, "out", "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "out", "server", "vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "out-secret" }),
+    );
+
+    expect(readPrerenderSecret(root, path.join(root, "out", "server"))).toBe("out-secret");
   });
 
   it("retries stale Worker builds until routing reaches the staged version", async () => {

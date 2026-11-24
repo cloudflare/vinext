@@ -359,6 +359,125 @@ test.describe("Not Found", () => {
     ).toBe(true);
   });
 
+  test("a page's own not-found stays beneath a modal opened from it", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-not-found/notes/missing`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-source-not-found-nf")).toBeVisible();
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    // Like Next.js, the note's segment keeps its own not-found under the modal.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-nf")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-photo")).toHaveCount(0);
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("a page's not-found file that renders nothing stays beneath a modal opened from it", async ({
+    page,
+  }) => {
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/intercept-source-not-found/notes/empty`,
+    );
+    expect(response?.status()).toBe(404);
+    await waitForAppRouterHydration(page);
+    // The segment's own not-found catches the signal, so the root's never shows.
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.getByText("404 - Page Not Found")).toHaveCount(0);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+    await expect(page.getByText("404 - Page Not Found")).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  for (const { kind, path, status, selector } of [
+    {
+      kind: "not-found",
+      path: "gone",
+      status: 404,
+      selector: "#intercept-source-not-found-gone-nf",
+    },
+    {
+      kind: "forbidden",
+      path: "denied",
+      status: 403,
+      selector: "#intercept-source-not-found-denied",
+    },
+  ]) {
+    test(`a page's own ${kind} document stays beneath a modal opened from it`, async ({ page }) => {
+      // Without a loading UI the page's signal sets the document's status.
+      const response = await page.goto(
+        `${BASE}/nextjs-compat/intercept-source-not-found/notes/${path}`,
+      );
+      expect(response?.status()).toBe(status);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator(selector)).toBeVisible();
+      await page.evaluate(() => {
+        (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+      });
+
+      // Like Next.js, the note's segment keeps its own fallback under the modal.
+      await page.getByRole("link", { name: "Photo 1" }).click();
+      await expect(page).toHaveURL(/\/intercept-source-not-found\/photos\/1$/);
+      await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+      await expect(page.locator(selector)).toBeVisible();
+      await expect(page.locator("#intercept-source-not-found-layout")).toBeVisible();
+      await expect(page.locator("#intercept-source-not-found-photo")).toHaveCount(0);
+
+      expect(
+        await page.evaluate(
+          () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+        ),
+      ).toBe(true);
+    });
+  }
+
+  test("a page's loading UI stays beneath a modal opened while it streams", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-not-found/notes/1`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await page.getByRole("link", { name: "Slow note" }).click();
+    await expect(page.locator("#intercept-source-not-found-loading")).toBeVisible();
+    await expect(page).toHaveURL(/\/intercept-source-not-found\/notes\/slow$/);
+
+    // Like Next.js, the still-streaming note keeps its loading UI under the
+    // modal until it arrives.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#intercept-source-not-found-loading")).toBeVisible();
+    await expect(page.locator("#intercept-source-not-found-note")).toHaveText(/Note: slow/, {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#intercept-source-not-found-modal")).toHaveText("Photo modal: 1");
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
   test("a sibling intercepting page's notFound() renders the not-found beside it", async ({
     page,
   }) => {
@@ -824,5 +943,195 @@ test.describe("Forbidden & Unauthorized", () => {
   test("unauthorized() returns 401 status", async ({ page }) => {
     const response = await page.goto(`${BASE}/unauthorized-test`);
     expect(response?.status()).toBe(401);
+  });
+});
+
+test.describe("Access boundaries beside parallel slots", () => {
+  // Next.js wraps only a segment's `children` in its access boundaries, so the
+  // layout's @sidebar slot keeps rendering beside the boundary that catches
+  // the page's notFound(), forbidden() or unauthorized(), in the document and
+  // on navigation, and stays mounted with its state.
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  const SIBLING_SLOTS = `${BASE}/notfound-sibling-slots`;
+  const cases = [
+    { path: "missing", link: "Missing", status: 404, boundaryId: "notfound-sibling-slots-nf" },
+    {
+      path: "denied",
+      link: "Denied",
+      status: 403,
+      boundaryId: "notfound-sibling-slots-forbidden",
+    },
+    {
+      path: "unauth",
+      link: "Unauth",
+      status: 401,
+      boundaryId: "notfound-sibling-slots-unauthorized",
+    },
+  ];
+
+  // A Server Component the page renders throws to the page's boundary too,
+  // as Next.js wraps the whole children subtree in it.
+  const nestedCases = [
+    { path: "nested-missing", status: 404, boundaryId: "notfound-sibling-slots-nf" },
+    { path: "nested-denied", status: 403, boundaryId: "notfound-sibling-slots-forbidden" },
+    { path: "nested-unauth", status: 401, boundaryId: "notfound-sibling-slots-unauthorized" },
+  ];
+
+  for (const { path, status, boundaryId } of [...cases, ...nestedCases]) {
+    test(`the ${path} document keeps the sidebar slot beside the boundary`, async ({
+      page,
+      request,
+    }) => {
+      const response = await request.get(`${SIBLING_SLOTS}/${path}`);
+      expect(response.status()).toBe(status);
+      const html = await response.text();
+      expect(html).toContain('id="notfound-sibling-slots-layout"');
+      expect(html).toContain(`id="${boundaryId}"`);
+      expect(html).toContain('id="notfound-sibling-slots-sidebar"');
+      expect(html).toContain("SIDEBAR");
+
+      const errors: string[] = [];
+      page.on("console", (message) => {
+        // The browser logs the document's own status.
+        if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+          errors.push(message.text());
+        }
+      });
+      page.on("pageerror", (error) => errors.push(error.message));
+      const pageResponse = await page.goto(`${SIBLING_SLOTS}/${path}`);
+      expect(pageResponse?.status()).toBe(status);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator(`#notfound-sibling-slots-children #${boundaryId}`)).toBeVisible();
+      await expect(page.locator("#notfound-sibling-slots-nested")).toHaveCount(0);
+      const sidebar = page.locator(
+        "#notfound-sibling-slots-layout #notfound-sibling-slots-sidebar",
+      );
+      await expect(sidebar).toContainText("SIDEBAR");
+      // The slot hydrated, so its state updates.
+      const counter = page.locator("#notfound-sibling-slots-sidebar-count");
+      await expect(counter).toHaveText("Count: 0");
+      await counter.click();
+      await expect(counter).toHaveText("Count: 1");
+      // The boundary hydrates caught, so React doesn't recover by client rendering.
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test("a layout's notFound() keeps what renders below it out of the document", async ({
+    page,
+    request,
+  }) => {
+    const response = await request.get(`${SIBLING_SLOTS}/sub`);
+    expect(response.status()).toBe(404);
+    const html = await response.text();
+    expect(html).toContain('id="notfound-sibling-slots-nf"');
+    // Not in the markup, nor in the inline payload.
+    expect(html).not.toContain("Sub page");
+
+    const pageResponse = await page.goto(`${SIBLING_SLOTS}/sub`);
+    expect(pageResponse?.status()).toBe(404);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#notfound-sibling-slots-nf")).toBeVisible();
+    await expect(page.locator("#notfound-sibling-slots-sub")).toHaveCount(0);
+  });
+
+  test("navigating to each boundary keeps the sidebar slot and its state", async ({ page }) => {
+    await page.goto(SIBLING_SLOTS);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#notfound-sibling-slots-home")).toBeVisible();
+    await page.evaluate(() => {
+      (window as Window & { __siblingSlotsMarker?: boolean }).__siblingSlotsMarker = true;
+    });
+    const counter = page.locator("#notfound-sibling-slots-sidebar-count");
+    await counter.click();
+    await expect(counter).toHaveText("Count: 1");
+    const nav = page.locator("#notfound-sibling-slots-layout nav");
+
+    for (const { path, link, boundaryId } of cases) {
+      await nav.getByRole("link", { name: link, exact: true }).click();
+      await expect(page).toHaveURL(new RegExp(`/notfound-sibling-slots/${path}$`));
+      await expect(page.locator(`#notfound-sibling-slots-children #${boundaryId}`)).toBeVisible();
+      await expect(page.locator("#notfound-sibling-slots-sidebar")).toContainText("SIDEBAR");
+      await expect(counter).toHaveText("Count: 1");
+
+      await nav.getByRole("link", { name: "Home", exact: true }).click();
+      await expect(page.locator("#notfound-sibling-slots-home")).toBeVisible();
+      await expect(counter).toHaveText("Count: 1");
+    }
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __siblingSlotsMarker?: boolean }).__siblingSlotsMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("navigating to a layout's notFound() never shows what renders below it", async ({
+    page,
+    request,
+  }) => {
+    // The navigation's own payload carries nothing below the layout either.
+    const payload = await request.get(`${SIBLING_SLOTS}/sub`, { headers: { RSC: "1" } });
+    expect(payload.status()).toBe(404);
+    expect(await payload.text()).not.toContain("Sub page");
+
+    await page.goto(SIBLING_SLOTS);
+    await waitForAppRouterHydration(page);
+    const nav = page.locator("#notfound-sibling-slots-layout nav");
+    await nav.getByRole("link", { name: "Sub", exact: true }).click();
+    await expect(page).toHaveURL(/\/notfound-sibling-slots\/sub$/);
+    await expect(page.locator("#notfound-sibling-slots-nf")).toBeVisible();
+    await expect(page.locator("#notfound-sibling-slots-sub")).toHaveCount(0);
+    expect(await page.content()).not.toContain("Sub page");
+  });
+});
+
+test.describe("The page's and a slot's signals beside each other", () => {
+  // The page's forbidden() or unauthorized() and a slot's notFound() are each
+  // caught by their own boundary, beside the route's other slot. Next.js
+  // 16.2.7 Turbopack answers the page's status, webpack the slot's 404.
+  for (const { path, status, boundaryId } of [
+    { path: "denied", status: 403, boundaryId: "mixed-signals-forbidden" },
+    { path: "unauth", status: 401, boundaryId: "mixed-signals-unauthorized" },
+    { path: "nested-denied", status: 403, boundaryId: "mixed-signals-forbidden" },
+    { path: "delayed-denied", status: 404, boundaryId: "mixed-signals-forbidden" },
+  ]) {
+    test(`the ${path} document hydrates both boundaries beside the sidebar`, async ({ page }) => {
+      const errors: string[] = [];
+      page.on("console", (message) => {
+        // The browser logs the document's own status.
+        if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+          errors.push(message.text());
+        }
+      });
+      page.on("pageerror", (error) => errors.push(error.message));
+      const response = await page.goto(`${BASE}/notfound-mixed-signals/${path}`);
+      expect(response?.status()).toBe(status);
+      await waitForAppRouterHydration(page);
+      const layout = page.locator(`#mixed-signals-${path}-layout`);
+      await expect(layout.locator(`main #${boundaryId}`)).toBeVisible();
+      await expect(layout.locator("section #mixed-signals-team-nf")).toBeVisible();
+      await expect(layout.locator("aside #mixed-signals-sidebar")).toHaveText("SIDEBAR");
+      // Both boundaries hydrate caught, so React doesn't recover by client rendering.
+      expect(errors).toEqual([]);
+    });
+  }
+});
+
+// Next.js 16.2.7 answers a document whose caught slot not-found file fails with
+// its 404 error shell, and the browser renders the payload, where that file
+// runs.
+test.describe("A slot's not-found file that fails in the document", () => {
+  test("follows its redirect in the browser", async ({ page }) => {
+    const response = await page.goto(`${BASE}/notfound-replay-fallback/slot-redirect`);
+    expect(response?.status()).toBe(404);
+    await expect(page).toHaveURL(/\/notfound-sibling-slots$/);
+    await expect(page.locator("#notfound-sibling-slots-home")).toBeVisible();
+  });
+
+  test("shows its error in the browser", async ({ page }) => {
+    const response = await page.goto(`${BASE}/notfound-replay-fallback/slot-throw`);
+    expect(response?.status()).toBe(404);
+    await expect(page.getByTestId("global-error")).toBeVisible();
+    await expect(page.locator("#replay-fallback-slot-throw-page")).toHaveCount(0);
   });
 });

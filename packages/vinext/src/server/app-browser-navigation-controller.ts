@@ -46,6 +46,7 @@ import {
   type ServerActionRevalidationKind,
 } from "./app-browser-action-result.js";
 import type { AppElements } from "./app-elements.js";
+import type { InterceptionSourceIdentity } from "./navigation-planner.js";
 import type { NavigationRuntimeVisibleCommitMode } from "../client/navigation-runtime.js";
 import {
   clearAppNavigationFailureTarget,
@@ -142,6 +143,7 @@ type BrowserNavigationPayloadOptions = {
   restoredBfcacheIds?: Readonly<Record<string, string>> | null;
   reuseCurrentBfcacheIds?: boolean;
   scrollIntent?: AppRouterScrollIntent | null;
+  suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHistoryIndex?: number | null;
   targetHref: string;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
@@ -1054,6 +1056,7 @@ export function createAppBrowserNavigationController(
         renderId,
         restoredBfcacheIds: options.restoredBfcacheIds,
         reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
+        suppliedInterceptionSource: options.suppliedInterceptionSource,
         type: options.actionType,
       };
       const pending =
@@ -1084,7 +1087,11 @@ export function createAppBrowserNavigationController(
         }
         pendingNavigationCommits.delete(renderId);
         resolveCommitted?.(false);
-        consumeAppRouterScrollIntent(options.scrollIntent ?? null);
+        // A detached shell shares its navigation's scroll intent, which the
+        // navigation's own payload commits or consumes.
+        if (options.navigationCommitKind !== "detached") {
+          consumeAppRouterScrollIntent(options.scrollIntent ?? null);
+        }
         return "no-commit";
       }
 

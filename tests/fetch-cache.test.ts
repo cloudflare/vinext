@@ -1313,6 +1313,19 @@ describe("fetch cache shim", () => {
     expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
   });
 
+  it("a miss passes the token its read was given to the write filling it", async () => {
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const get = vi.spyOn(handler, "get");
+    const set = vi.spyOn(handler, "set");
+
+    await fetch("https://api.example.com/miss-fill", { next: { revalidate: 60 } });
+    await vi.waitFor(() => expect(set).toHaveBeenCalledOnce());
+
+    const cacheRead = get.mock.calls[0]?.[1]?.cacheRead;
+    expect(cacheRead).toBeTypeOf("object");
+    expect(set.mock.calls[0]?.[2]?.cacheRead).toBe(cacheRead);
+  });
+
   it("foreground fetch refresh treats a shorter current revalidate as stale", async () => {
     const res1 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
       next: { revalidate: 60 },

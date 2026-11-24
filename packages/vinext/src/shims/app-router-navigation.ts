@@ -37,7 +37,11 @@ import {
 } from "../client/app-nav-failure-handler.js";
 import { INITIAL_BFCACHE_ID } from "../server/app-bfcache-id.js";
 import { AppElementsWire, type AppElements } from "../server/app-elements.js";
-import { resolveManifestNavigationInterceptionContext } from "../server/app-browser-interception-context.js";
+import {
+  ROUTE_MISS_DOCUMENT_NAVIGATION,
+  canInterceptNavigationTarget,
+  resolveManifestNavigationInterceptionContext,
+} from "../server/app-browser-interception-context.js";
 import {
   createExternalHistoryStatePreservingMetadata,
   createHashOnlyHistoryStatePreservingNavigationMetadata,
@@ -272,9 +276,34 @@ export function getCurrentInterceptionContext(): string | null {
   return stripBasePath(window.location.pathname, __basePath);
 }
 
+type PrefetchInterceptionSource = {
+  pathname: string;
+  resolvesFromTreePath: boolean;
+  routeMiss: boolean;
+  sourceInterceptionContext: string | null;
+};
+
+/**
+ * The page a prefetch originates from, as its navigations see it: the path
+ * that decides whether they intercept, whether that is an intercepting route's
+ * tree path, whether the committed render is an unmatched URL's not-found
+ * page, and the context its entry keeps from the source an intercept was
+ * opened from.
+ */
+export function getPrefetchInterceptionSource(): PrefetchInterceptionSource {
+  const routerState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
+  const treePath = routerState?.sourcePathname ?? null;
+  return {
+    pathname: treePath ?? window.location.pathname,
+    resolvesFromTreePath: treePath !== null,
+    routeMiss: routerState?.routeMiss === true,
+    sourceInterceptionContext: routerState?.sourceInterceptionContext ?? null,
+  };
+}
+
 export function getPrefetchInterceptionContext(
   targetHref: string,
-  currentPathname?: string,
+  source?: PrefetchInterceptionSource,
 ): string | null {
   if (isServer) {
     return null;
@@ -287,12 +316,39 @@ export function getPrefetchInterceptionContext(
     return null;
   }
 
-  return resolveManifestNavigationInterceptionContext({
+  const currentSource = source ?? getPrefetchInterceptionSource();
+  const routeManifest = getNavigationRuntime()?.bootstrap.routeManifest ?? null;
+  // An entry that keeps its source sends it on its navigations, so its
+  // prefetches to a target an intercept can match do too, as Next.js
+  // prefetches with the `Next-Url` it navigates with. Next.js's server drops
+  // that header on a request to any other path, so a prefetch there stays a
+  // plain one that shared caches answer. Its navigation still sends the
+  // source, since a redirect or middleware rewrite can still reach an
+  // intercept, so it renders without this prefetch. One that renders an
+  // intercepting route's own tree sends it only to the targets its tree path
+  // intercepts.
+  if (currentSource.sourceInterceptionContext !== null && !currentSource.resolvesFromTreePath) {
+    return canInterceptNavigationTarget({
+      basePath: __basePath,
+      routeManifest,
+      targetPathname: targetUrl.pathname,
+    })
+      ? currentSource.sourceInterceptionContext
+      : null;
+  }
+  const interceptionContext = resolveManifestNavigationInterceptionContext({
     basePath: __basePath,
-    currentPathname: currentPathname ?? window.location.pathname,
-    routeManifest: getNavigationRuntime()?.bootstrap.routeManifest ?? null,
+    currentPathname: currentSource.pathname,
+    currentRenderIsRouteMiss: currentSource.routeMiss,
+    routeManifest,
     targetPathname: targetUrl.pathname,
   });
+  // A navigation to that target loads its document, so it never uses this
+  // prefetch, which stays a plain one without a context.
+  if (interceptionContext === null || interceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION) {
+    return null;
+  }
+  return currentSource.sourceInterceptionContext ?? interceptionContext;
 }
 
 export function getCurrentNextUrl(): string {
@@ -310,12 +366,16 @@ export function createAppPrefetchRequestHeaders(options: {
   prefetchKind?: "auto" | "full";
   renderMode?: AppRscRenderMode;
 }): Headers {
-  const prefetchRouterState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
+  const routerState = getNavigationRuntime()?.functions.getPrefetchRouterState?.() ?? null;
   return createRscRequestHeaders({
     ...options,
     nextUrl: getCurrentNextUrl(),
     includePrefetchHeader: options.prefetchKind !== "full",
-    prefetchRouterState,
+    // The source fields only steer the interception context.
+    prefetchRouterState: routerState && {
+      pathAndSearch: routerState.pathAndSearch,
+      routeId: routerState.routeId,
+    },
   });
 }
 
@@ -2504,8 +2564,8 @@ const _appRouter: AppRouterInstance = {
     // must not make this prefetch look as though it originated from the target
     // route, and an intervening route change must not change its interception
     // or mounted-slot key.
-    const currentPathname = window.location.pathname;
-    let interceptionContext = getPrefetchInterceptionContext(fullHref, currentPathname);
+    const interceptionSource = getPrefetchInterceptionSource();
+    let interceptionContext = getPrefetchInterceptionContext(fullHref, interceptionSource);
     const mountedSlotsHeader = getMountedSlotsHeader();
     const headers = createAppPrefetchRequestHeaders({
       fetchPriority: "low",
@@ -2521,9 +2581,11 @@ const _appRouter: AppRouterInstance = {
       if (routeManifestLoad !== null) {
         // Without the manifest the prefetch would miss its interception context.
         if (!(await routeManifestLoad) || setup.cancelled) return;
-        interceptionContext = getPrefetchInterceptionContext(fullHref, currentPathname);
+        interceptionContext = getPrefetchInterceptionContext(fullHref, interceptionSource);
         if (interceptionContext !== null) {
           headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
+        } else {
+          headers.delete(VINEXT_INTERCEPTION_CONTEXT_HEADER);
         }
       }
       // Hybrid ownership: when a Pages route owns the URL, the App Router
@@ -2597,9 +2659,16 @@ const _appRouter: AppRouterInstance = {
       if (!reusable && kind === "auto") {
         headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
         headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+        // Only the Cache Components dynamic shell renders the page, with empty
+        // search params. Without them, Next.js's automatic prefetch never
+        // renders a page that may read searchParams
+        // (walkTreeWithFlightRouterState()), as for a route that renders
+        // dynamically, so the href fetches the loading shell.
         headers.set(
           VINEXT_RSC_RENDER_MODE_HEADER,
-          hasSearchParams && policy.rendersDynamically !== true
+          hasSearchParams &&
+            String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
+            policy.rendersDynamically !== true
             ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
             : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         );

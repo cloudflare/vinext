@@ -6,6 +6,8 @@ import baseConfig from "./vite.config";
 export default mergeConfig(
   baseConfig,
   defineConfig({
+    // A custom build.outDir, so the Worker build covers one end to end.
+    build: { outDir: "out" },
     plugins: [
       cloudflare({
         configPath: "./wrangler.cloudflare.jsonc",

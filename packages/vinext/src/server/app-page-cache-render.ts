@@ -53,6 +53,8 @@ export type RenderAppPageCacheArtifactsOptions = {
   mirrorNextFlight?: () => boolean;
   navigationParams: Record<string, unknown>;
   isCapturedRscError?: (error: unknown) => boolean;
+  /** Whether the RSC render threw the error as a `dynamic = "error"` access. */
+  isStaticGenerationRscError?: (error: unknown) => boolean;
   onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
   onSsrError?: (error: unknown) => unknown;
   reactMaxHeadersLength?: number;
@@ -65,8 +67,11 @@ export type RenderAppPageCacheArtifactsOptions = {
     /** The page's own document, in which parallel slot boundaries caught it. */
     caughtDocument?: { html: string; linkHeader?: string },
   ) => Promise<AppPageCacheSpecialErrorDocument | null>;
-  /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
-  resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+  /** The slot or route boundaries that catch a shell error. See handleSsr. */
+  resolveCaughtNotFoundBoundaries?: (
+    error: unknown,
+    countPageRejections: (rendered: unknown) => number,
+  ) => readonly string[] | null;
   renderToReadableStream: (
     element: AppPageRenderableElement,
     options: { onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown },
@@ -149,6 +154,8 @@ async function renderAppPageCacheArtifactsImpl(
         mirrorNextFlight: options.mirrorNextFlight,
         isStaticGeneration: true,
         isForceStatic: options.isForceStatic,
+        fallbackToErrorDocumentOnCaughtShellError: true,
+        isStaticGenerationError: options.isStaticGenerationRscError,
         preloadRoutePattern: options.route.pattern,
         resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
         onSsrError:

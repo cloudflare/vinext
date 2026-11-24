@@ -376,7 +376,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(requestedPaths).toContain("/docs");
@@ -442,7 +442,7 @@ describe("prerenderApp — RSC extraction", () => {
         ],
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(requestedPaths).toContain("/docs/robots.txt");
@@ -534,7 +534,7 @@ describe("prerenderApp — RSC extraction", () => {
           ],
           outDir,
           config,
-          _prodServer: { server, port },
+          _prodServer: { port },
         });
 
         for (const route of ["/manifest.webmanifest", "/icon"]) {
@@ -600,7 +600,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
@@ -671,7 +671,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
@@ -738,7 +738,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
@@ -802,7 +802,7 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       const route = findRoute(prerenderResult.routes, "/");
@@ -855,7 +855,7 @@ describe("prerenderApp — special errors that escape the shell", () => {
         routes: await appRouter(appDir),
         outDir,
         config: await resolveNextConfig({}),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
       const read = (file: string) =>
         fs.existsSync(path.join(outDir, file))
@@ -1010,7 +1010,7 @@ describe("prerenderPages — basePath export", () => {
         pagesDir,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(requestedPaths).toEqual(expect.arrayContaining(["/docs", "/docs/about"]));
@@ -1418,9 +1418,10 @@ describe("prerenderApp — default mode (app-basic)", () => {
   let outDir: string;
   let results: PrerenderRouteResult[];
   let nextPhaseAfterPrerender: string | undefined;
+  let rscBundlePath: string;
 
   beforeAll(async () => {
-    const rscBundlePath = await buildAppFixture(APP_FIXTURE);
+    rscBundlePath = await buildAppFixture(APP_FIXTURE);
     outDir = tmpDir("vinext-prerender-app-");
 
     const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
@@ -1452,6 +1453,56 @@ describe("prerenderApp — default mode (app-basic)", () => {
   afterAll(() => {
     fs.rmSync(outDir, { recursive: true, force: true });
   });
+
+  it("discovers the metadata routes Next.js prerenders as CDN warm targets", async () => {
+    // Next.js builds every static metadata file, and a code-generated one
+    // unless it is dynamic: one under a dynamic segment only for its own
+    // generateStaticParams, generated sitemaps per generateSitemaps id.
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: APP_FIXTURE,
+      rscBundlePath,
+      pagesDir: null,
+    });
+    const metadataRoutes = Object.fromEntries(
+      Object.entries(manifest?.routePatterns ?? {}).flatMap(([pathname, route]) =>
+        route.metadataRoute ? [[pathname, route.pattern]] : [],
+      ),
+    );
+
+    expect(manifest?.routeHandlerPaths).toEqual(
+      expect.arrayContaining(Object.keys(metadataRoutes)),
+    );
+    expect(metadataRoutes).toMatchObject({
+      "/favicon.ico": "/favicon.ico",
+      "/about/opengraph-image.png": "/about/opengraph-image.png",
+      "/metadata-dynamic-static/-/opengraph-image.png":
+        "/metadata-dynamic-static/-/opengraph-image.png",
+      "/sitemap.xml": "/sitemap.xml",
+      "/robots.txt": "/robots.txt",
+      "/icon": "/icon",
+      "/products/sitemap/0.xml": "/products/sitemap.xml",
+      "/products/sitemap/featured.xml": "/products/sitemap.xml",
+      "/metadata-invalid-id-sibling/icon/good": "/metadata-invalid-id-sibling/icon",
+      "/metadata-static-params/public-post/opengraph-image":
+        "/metadata-static-params/:slug/opengraph-image",
+      "/metadata-storage/force-static/opengraph-image":
+        "/metadata-storage/force-static/opengraph-image",
+    });
+    // No generateStaticParams of its own, so Next.js renders it on request.
+    expect(Object.values(metadataRoutes)).not.toContain("/blog/:slug/opengraph-image");
+    // Generated sitemaps replace the base sitemap URL.
+    expect(metadataRoutes).not.toHaveProperty("/products/sitemap.xml");
+    // Image routes are warmed at the URL the rendered page links them with.
+    const html = fs.readFileSync(path.join(outDir, "index.html"), "utf8");
+    for (const pathname of ["/favicon.ico", "/icon"]) {
+      const search = manifest?.routePatterns?.[pathname]?.metadataSearch;
+      expect(search).toMatch(/^\?[0-9a-f]{16}$/);
+      expect(html).toContain(`href="${pathname}${search}"`);
+    }
+    expect(manifest?.routePatterns?.["/sitemap.xml"]?.metadataSearch).toBeUndefined();
+  }, 60_000);
 
   // As in Next.js, whose build fails on a prerender error, a page that throws
   // is not stored, even when an error.tsx catches the error (#4394).
@@ -1980,6 +2031,43 @@ describe("runPrerender — hybrid app+pages (app-basic)", () => {
   });
 });
 
+describe("prerenderApp — prerender server health", () => {
+  it("fails the build when the prerender server drops connections", async () => {
+    const outDir = tmpDir("vinext-prerender-server-health-");
+    // Stands in for a forked prerender server that died mid-build.
+    const server = createServer((req) => req.socket.destroy());
+    const port = await listen(server);
+    const transportErrors: unknown[] = [];
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const appDir = path.resolve(import.meta.dirname, "fixtures/app-prerender-open-handle/app");
+
+      await expect(
+        prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(outDir, "dist", "server", "index.js"),
+          routes: await appRouter(appDir),
+          outDir,
+          config: await resolveNextConfig({}),
+          _prodServer: {
+            port,
+            recordRenderError: (err) => transportErrors.push(err),
+            assertHealthy: () => {
+              if (transportErrors.length > 0) throw new Error("prerender server exited");
+            },
+          },
+        }),
+      ).rejects.toThrow("prerender server exited");
+      expect(transportErrors.length).toBeGreaterThan(0);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () => {
   // Ported from Next.js: test/production/app-dir/generate-static-params-errors/generate-static-params-errors.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/production/app-dir/generate-static-params-errors/generate-static-params-errors.test.ts
@@ -2035,7 +2123,7 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       const route = result.routes.find((r) => r.route.includes("slug"));
@@ -2095,7 +2183,7 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
         routes,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       const route = result.routes.find((r) => r.route.includes("slug"));
@@ -2142,7 +2230,7 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
         routes,
         outDir,
         config: await resolveNextConfig({}),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(result.routes).toContainEqual({
@@ -2199,7 +2287,7 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
         pagesDir,
         outDir,
         config,
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       const route = result.routes.find((r) => r.route.includes("posts"));
@@ -2382,7 +2470,7 @@ describe("prerenderApp — layout generateStaticParams", () => {
         routes: await appRouter(appDir),
         outDir,
         config: await resolveNextConfig({ output: "export" }),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(findRoute(result.routes, "/en/news/details")).toMatchObject({
@@ -2450,7 +2538,7 @@ describe("prerenderApp — layout generateStaticParams", () => {
         routes: await appRouter(appDir),
         outDir,
         config: await resolveNextConfig({ output: "export" }),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
 
       expect(result.routes.find((route) => route.route === "/:id/details")).toMatchObject({
@@ -2528,7 +2616,7 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
         routes: await appRouter(appDir),
         outDir: path.join(root, "out"),
         config: await resolveNextConfig({}),
-        _prodServer: { server, port },
+        _prodServer: { port },
       });
       return { result, renderedPaths, staticParamRequests };
     } finally {
@@ -2872,7 +2960,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
           routes,
           outDir,
           config,
-          _prodServer: { server, port },
+          _prodServer: { port },
         });
       } finally {
         if (previousExperimentalFallbackShells === undefined) {

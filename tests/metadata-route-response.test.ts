@@ -6,10 +6,17 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   getPrerenderableMetadataRoutePaths,
+  getWarmableMetadataRoutes,
   handleMetadataRouteRequest,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+import { routePatternParts } from "../packages/vinext/src/routing/route-pattern.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import {
+  DefaultCdnCacheAdapter,
+  getCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 import { addCollectedRequestTags } from "../packages/vinext/src/shims/fetch-cache.js";
 import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
@@ -116,6 +123,292 @@ describe("handleMetadataRouteRequest", () => {
         routeSegments: [],
       },
     ]);
+  });
+
+  it("lists the metadata routes a Next.js build prerenders for CDN warming", async () => {
+    // Probed on next@16.2.7 (webpack and Turbopack): `next build` prerenders
+    // app/sitemap.js and app/robots.js, app/blog/[slug]/opengraph-image.js per
+    // its own generateStaticParams, app/gallery/opengraph-image.js per
+    // generateImageMetadata id and app/products/sitemap.js per
+    // generateSitemaps id. It leaves force-dynamic routes, an opengraph-image
+    // whose only params come from its page's generateStaticParams, and
+    // generateImageMetadata below a dynamic segment to request time.
+    const route = (
+      servedUrl: string,
+      type: string,
+      module: Record<string, unknown>,
+      patternParts?: string[],
+    ): MetadataFileRoute => ({
+      type,
+      isDynamic: true,
+      filePath: `/tmp/app${servedUrl}.tsx`,
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl,
+      contentType: type === "sitemap" ? "application/xml" : "image/png",
+      module,
+      ...(patternParts ? { patternParts } : {}),
+    });
+    const image = async () => new Response("image");
+    const generateSitemaps = vi.fn(async () => [{ id: 0 }, { id: "one" }]);
+    const generateImageMetadata = vi.fn(() => [{ id: "small" }, { id: "large" }, { id: "a/b" }]);
+    const generateStaticParams = vi.fn(() => [{ slug: "first" }, { slug: "second" }]);
+    const routes = [
+      {
+        ...route("/shop/-/icon.png", "icon", {}),
+        contentHash: "built-icon-hash",
+        isDynamic: false,
+      },
+      route("/sitemap.xml", "sitemap", { default: () => [] }),
+      route("/robots.txt", "robots", { default: () => ({}), revalidate: 60 }),
+      route("/twitter-image", "twitter-image", { default: image, dynamic: "force-dynamic" }),
+      route("/icon", "icon", { default: image, revalidate: 0 }),
+      route("/products/sitemap.xml", "sitemap", { default: () => [], generateSitemaps }),
+      {
+        ...route("/gallery/opengraph-image", "opengraph-image", {
+          default: image,
+          generateImageMetadata,
+        }),
+        contentHash: "gallery-hash",
+      },
+      route(
+        "/blog/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams },
+        ["blog", ":slug", "opengraph-image"],
+      ),
+      route("/docs/[slug]/opengraph-image", "opengraph-image", { default: image }, [
+        "docs",
+        ":slug",
+        "opengraph-image",
+      ]),
+      route(
+        "/news/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams: () => undefined },
+        ["news", ":slug", "opengraph-image"],
+      ),
+      route(
+        "/shop/[id]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateImageMetadata },
+        ["shop", ":id", "opengraph-image"],
+      ),
+    ];
+
+    await expect(
+      getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: true }),
+    ).resolves.toEqual([
+      // A static file is linked with the hash of the file this build embeds.
+      { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
+      { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+      { paths: ["/robots.txt"], routePattern: "/robots.txt" },
+      {
+        paths: ["/products/sitemap/0.xml", "/products/sitemap/one.xml"],
+        routePattern: "/products/sitemap.xml",
+      },
+      {
+        paths: ["/gallery/opengraph-image/small", "/gallery/opengraph-image/large"],
+        routePattern: "/gallery/opengraph-image",
+        // Pages link an image with its content hash.
+        search: "?gallery-hash",
+      },
+      {
+        routePattern: "/blog/:slug/opengraph-image",
+        staticParams: [{ slug: "first" }, { slug: "second" }],
+      },
+      // Discovery reports that generateStaticParams must return an array.
+      { routePattern: "/news/:slug/opengraph-image", staticParams: null },
+    ]);
+    expect(generateImageMetadata).toHaveBeenCalledTimes(1);
+    expect(generateImageMetadata).toHaveBeenCalledWith({ params: {} });
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+
+    generateSitemaps.mockClear();
+    generateImageMetadata.mockClear();
+    generateStaticParams.mockClear();
+    // Without enumeration (traffic-aware warming), only one-URL routes are
+    // listed and no generator runs.
+    await expect(
+      getWarmableMetadataRoutes(routes, { enumerateDynamicPaths: false }),
+    ).resolves.toEqual([
+      { paths: ["/shop/-/icon.png"], routePattern: "/shop/-/icon.png", search: "?built-icon-hash" },
+      { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+      { paths: ["/robots.txt"], routePattern: "/robots.txt" },
+    ]);
+    expect(generateSitemaps).not.toHaveBeenCalled();
+    expect(generateImageMetadata).not.toHaveBeenCalled();
+    expect(generateStaticParams).not.toHaveBeenCalled();
+  });
+
+  it("runs discovery generators without the discovery request's headers", async () => {
+    // No Next.js test port applies: Next.js runs these generators at build
+    // time through the generateStaticParams its metadata loader adds, where
+    // request APIs throw.
+    const readHeaders = async () => {
+      await headers();
+      return [{ id: "a", slug: "a" }];
+    };
+    const route = (
+      servedUrl: string,
+      type: string,
+      module: Record<string, unknown>,
+      patternParts?: string[],
+    ): MetadataFileRoute => ({
+      type,
+      isDynamic: true,
+      filePath: `/tmp/app${servedUrl}.tsx`,
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl,
+      contentType: type === "sitemap" ? "application/xml" : "image/png",
+      module,
+      ...(patternParts ? { patternParts } : {}),
+    });
+    const image = async () => new Response("image");
+    const routes = [
+      route("/sitemap.xml", "sitemap", {
+        default: markUseCache(async () => []),
+        generateSitemaps: readHeaders,
+      }),
+      route("/gallery/opengraph-image", "opengraph-image", {
+        default: image,
+        generateImageMetadata: readHeaders,
+      }),
+      route(
+        "/blog/[slug]/opengraph-image",
+        "opengraph-image",
+        { default: image, generateStaticParams: readHeaders },
+        ["blog", ":slug", "opengraph-image"],
+      ),
+    ];
+    const discover = (fn: () => Promise<unknown>) =>
+      runWithRequestContext(
+        createRequestContext({
+          headersContext: {
+            cookies: new Map(),
+            headers: new Headers({ "x-vinext-prerender-secret": "secret" }),
+          },
+        }),
+        fn,
+      );
+
+    for (const listed of routes) {
+      await expect(
+        discover(() => getWarmableMetadataRoutes([listed], { enumerateDynamicPaths: true })),
+      ).rejects.toThrow("used a request API such as `headers()`");
+    }
+    await expect(discover(() => getPrerenderableMetadataRoutePaths([routes[0]!]))).rejects.toThrow(
+      "used a request API such as `headers()`",
+    );
+  });
+
+  it("fails discovery when a generator result isn't iterable", async () => {
+    // No Next.js test port applies: the generateStaticParams Next.js' metadata
+    // loader adds iterates these results, so `next build` fails on them.
+    const route = (servedUrl: string, type: string, module: Record<string, unknown>) =>
+      ({
+        type,
+        isDynamic: true,
+        filePath: `/tmp/app${servedUrl}.tsx`,
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl,
+        contentType: type === "sitemap" ? "application/xml" : "image/png",
+        module,
+      }) satisfies MetadataFileRoute;
+    const sitemap = route("/sitemap.xml", "sitemap", {
+      default: markUseCache(async () => []),
+      generateSitemaps: async () => ({ id: "a" }),
+    });
+    const image = route("/opengraph-image", "opengraph-image", {
+      default: async () => new Response("image"),
+      generateImageMetadata: () => undefined,
+    });
+
+    await expect(
+      getWarmableMetadataRoutes([sitemap], { enumerateDynamicPaths: true }),
+    ).rejects.toThrow("generateSitemaps() must return an array");
+    await expect(getPrerenderableMetadataRoutePaths([sitemap])).rejects.toThrow(
+      "generateSitemaps() must return an array",
+    );
+    await expect(
+      getWarmableMetadataRoutes([image], { enumerateDynamicPaths: true }),
+    ).rejects.toThrow("generateImageMetadata() must return an array");
+    // An iterable result is read like Next.js' for...of.
+    await expect(
+      getWarmableMetadataRoutes(
+        [
+          {
+            ...sitemap,
+            module: { ...sitemap.module, generateSitemaps: async () => new Set([{ id: "a" }]) },
+          },
+        ],
+        { enumerateDynamicPaths: true },
+      ),
+    ).resolves.toEqual([{ paths: ["/sitemap/a.xml"], routePattern: "/sitemap.xml" }]);
+  });
+
+  it("serves the sitemap children an iterable generateSitemaps result lists", async () => {
+    // Next.js' generated sitemap GET reads generateSitemaps() with for...of,
+    // as its generateStaticParams does.
+    const route = {
+      type: "sitemap",
+      isDynamic: true,
+      filePath: "/tmp/app/sitemap.ts",
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl: "/sitemap.xml",
+      contentType: "application/xml",
+      module: {
+        default: () => [{ url: "https://example.com/a" }],
+        generateSitemaps: async () => new Set([{ id: "a" }, { id: "b" }]),
+      },
+    } satisfies MetadataFileRoute;
+    const request = (cleanPathname: string) =>
+      handleMetadataRouteRequest({ cleanPathname, makeThenableParams, metadataRoutes: [route] });
+
+    expect((await request("/sitemap/b.xml"))?.status).toBe(200);
+    expect((await request("/sitemap/c.xml"))?.status).toBe(404);
+    await expect(
+      handleMetadataRouteRequest({
+        cleanPathname: "/sitemap/a.xml",
+        makeThenableParams,
+        metadataRoutes: [
+          { ...route, module: { ...route.module, generateSitemaps: async () => ({ id: "a" }) } },
+        ],
+      }),
+    ).rejects.toThrow("generateSitemaps() must return an array");
+  });
+
+  it("stamps the adapter's build identity on metadata route responses", async () => {
+    // No Next.js test port applies: deploy warm-up checks this vinext header
+    // against the staged Worker version, as it does for Route Handlers.
+    const previousAdapter = getCdnCacheAdapter();
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter("build-a"));
+    try {
+      const response = await handleMetadataRouteRequest({
+        cleanPathname: "/robots.txt",
+        makeThenableParams,
+        metadataRoutes: [
+          {
+            type: "robots",
+            isDynamic: true,
+            filePath: "/tmp/app/robots.ts",
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/robots.txt",
+            contentType: "text/plain",
+            module: { default: () => ({ rules: { userAgent: "*" } }) },
+          },
+        ],
+      });
+
+      expect(response?.status).toBe(200);
+      expect(response?.headers.get("X-Vinext-Build-Id")).toBe("build-a");
+    } finally {
+      setCdnCacheAdapter(previousAdapter);
+    }
   });
 
   it("publishes collected cache tags and cache life for prerender seeding", async () => {
@@ -1323,6 +1616,62 @@ describe("handleMetadataRouteRequest", () => {
     expect(receivedSyncId).toBe("post-small");
     expect(receivedSlug).toBe("post");
     expect(await response?.text()).toBe("image:post-small");
+  });
+
+  // Next.js serves a metadata file below a marker-prefixed dynamic segment at
+  // the URL that keeps the marker, its param the rest of the URL segment.
+  it("serves a dynamic image below a marker-prefixed dynamic segment", async () => {
+    const route = {
+      type: "opengraph-image",
+      isDynamic: true,
+      filePath: "/tmp/app/feed/@modal/(.)[id]/opengraph-image.tsx",
+      routePrefix: "/feed/(.)[id]",
+      routeSegments: ["feed", "@modal", "(.)[id]"],
+      servedUrl: "/feed/(.)[id]/opengraph-image-abc",
+      patternParts: routePatternParts("/feed/(.)[id]/opengraph-image-abc"),
+      contentType: "image/png",
+      module: {
+        default: async ({ params }: { params: Promise<{ id: string }> }) =>
+          new Response(`image:${(await params).id}`, {
+            headers: { "Content-Type": "image/png" },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+    const request = (cleanPathname: string) =>
+      handleMetadataRouteRequest({ metadataRoutes: [route], cleanPathname, makeThenableParams });
+
+    const response = await request("/feed/(.)a%20b/opengraph-image-abc");
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toBe("image:a b");
+    expect(await request("/feed/a%20b/opengraph-image-abc")).toBeNull();
+  });
+
+  it("serves only generated params below a marker-prefixed dynamic segment with dynamicParams = false", async () => {
+    const route = {
+      type: "opengraph-image",
+      isDynamic: true,
+      filePath: "/tmp/app/feed/@modal/(.)[id]/opengraph-image.tsx",
+      routePrefix: "/feed/(.)[id]",
+      routeSegments: ["feed", "@modal", "(.)[id]"],
+      servedUrl: "/feed/(.)[id]/opengraph-image-abc",
+      patternParts: routePatternParts("/feed/(.)[id]/opengraph-image-abc"),
+      contentType: "image/png",
+      module: {
+        dynamicParams: false,
+        generateStaticParams: () => [{ id: "1" }],
+        default: async ({ params }: { params: Promise<{ id: string }> }) =>
+          new Response(`image:${(await params).id}`, {
+            headers: { "Content-Type": "image/png" },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+    const request = (cleanPathname: string) =>
+      handleMetadataRouteRequest({ metadataRoutes: [route], cleanPathname, makeThenableParams });
+
+    const generated = await request("/feed/(.)1/opengraph-image-abc");
+    expect(generated?.status).toBe(200);
+    expect(await generated?.text()).toBe("image:1");
+    expect((await request("/feed/(.)999/opengraph-image-abc"))?.status).toBe(404);
   });
 
   it("uses framework cache control for a raw metadata Response without authored policy", async () => {

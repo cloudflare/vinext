@@ -13,6 +13,11 @@ import {
   deferUntilStreamConsumed,
   observeStreamConsumption,
 } from "../packages/vinext/src/server/defer-until-stream-consumed.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import { runWithHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import { hasFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 
@@ -215,6 +220,47 @@ describe("app page stream helpers", () => {
 
     // Now that the stream is fully consumed, context must have been cleared.
     expect(contextCleared).toHaveLength(1);
+  });
+
+  it("keeps the request context of a document cancelled inside a unified request scope", async () => {
+    // Issue #4789: the RSC render isn't stopped when the client cancels the
+    // document, so Server Components that resume afterwards still need
+    // cookies() and headers(). The scope's context belongs to this request
+    // alone; outside a scope the state is module-level and is still cleared.
+    const render = (clearRequestContext: () => void) =>
+      renderAppPageHtmlResponse({
+        clearRequestContext,
+        fontData: { links: [], preloads: [], styles: [] },
+        navigationContext: null,
+        rscStream: createStream(["flight"]),
+        ssrHandler: {
+          async handleSsr() {
+            return createStream(["<html>shell</html>", "<p>late</p>"]);
+          },
+        },
+        status: 200,
+      });
+    const readShellThenCancel = async (response: Response) => {
+      const reader = response.body!.getReader();
+      await reader.read();
+      await reader.cancel(new Error("client went away"));
+    };
+
+    const scopedClear = vi.fn();
+    await runWithRequestContext(createRequestContext(), async () => {
+      await readShellThenCancel(await render(scopedClear));
+    });
+    expect(scopedClear).not.toHaveBeenCalled();
+
+    const scopedReadClear = vi.fn();
+    await runWithRequestContext(createRequestContext(), async () => {
+      await (await render(scopedReadClear)).text();
+    });
+    expect(scopedReadClear).toHaveBeenCalledTimes(1);
+
+    const unscopedClear = vi.fn();
+    await readShellThenCancel(await render(unscopedClear));
+    expect(unscopedClear).toHaveBeenCalledTimes(1);
   });
 
   it("calls onFlush when the upstream stream errors mid-consumption", async () => {
@@ -1202,6 +1248,48 @@ describe("app page stream helpers", () => {
     });
     expect(tracker.getCapturedSpecialErrors(decoded)).toEqual([metadataNotFound, pageNotFound]);
     expect(tracker.getCapturedSpecialErrors(new Error("no digest"))).toEqual([]);
+  });
+
+  it('classifies a `dynamic = "error"` access error by identity and by its decoded digest', async () => {
+    const accessError = new Error("dynamic = error");
+    const tracker = createAppPageRscErrorTracker((error) =>
+      error === accessError ? "access-digest" : "other-digest",
+    );
+    const otherError = new Error("other");
+    await runWithHeadersContext(
+      { headers: new Headers(), cookies: new Map(), accessError },
+      async () => {
+        tracker.onRenderError(accessError, null, null);
+        tracker.onRenderError(otherError, null, null);
+      },
+    );
+
+    expect(tracker.isStaticGenerationError(accessError)).toBe(true);
+    // SSR decodes the rejected chunk into a new error carrying the digest.
+    expect(
+      tracker.isStaticGenerationError(
+        Object.assign(new Error("decoded"), { digest: "access-digest" }),
+      ),
+    ).toBe(true);
+    expect(tracker.isStaticGenerationError(otherError)).toBe(false);
+    expect(
+      tracker.isStaticGenerationError(
+        Object.assign(new Error("decoded"), { digest: "other-digest" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("collects every access signal the RSC render threw, whatever its status", () => {
+    const tracker = createAppPageRscErrorTracker((error) => (error as { digest: string }).digest);
+    const forbidden = { digest: "NEXT_HTTP_ERROR_FALLBACK;403" };
+    const notFound = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const redirect = { digest: "NEXT_REDIRECT;replace;/target;307;" };
+    tracker.onRenderError(forbidden, null, null);
+    tracker.onRenderError(redirect, null, null);
+    tracker.onRenderError(notFound, null, null);
+    tracker.onRenderError(new Error("boom"), null, null);
+
+    expect(tracker.getCapturedAccessFallbackErrors()).toEqual([forbidden, notFound]);
   });
 
   it("correlates re-created RSC errors by digest and keeps custom-digest SSR errors reportable", () => {

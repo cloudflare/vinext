@@ -20,7 +20,6 @@
 
 import path from "pathslash";
 import fs from "node:fs";
-import type { Server as HttpServer } from "node:http";
 import type { PrerenderResult, PrerenderRouteResult } from "./prerender.js";
 import {
   prerenderApp,
@@ -34,7 +33,8 @@ import { appRouter } from "../routing/app-router.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
-import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
+import { rememberCurrentServerEntryImportMtime } from "../server/prod-server.js";
+import { startPrerenderProdServer, type PrerenderProdServer } from "./prerender-server-pool.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { resolveBuiltPagesEntryPath, resolveBuiltRscEntryPath } from "./server-entry.js";
@@ -175,19 +175,19 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   // Framework manifests and prerendered routes have one canonical location,
   // independent of where an adapter asks Vite to emit the executable RSC
-  // graph. Consumers such as cache prewarming always resolve these artifacts
-  // from dist/server.
-  const manifestDir = path.resolve(root, "dist", "server");
-  const buildOutDir = path.resolve(root, "dist");
+  // graph: <outDir>/server, where outDir is Vite's `build.outDir` ("dist" by
+  // default). Consumers such as cache prewarming read them from there.
+  const buildOutDir = path.resolve(root, options.routeRootConfig?.outDir ?? "dist");
+  const manifestDir = path.join(buildOutDir, "server");
   const configuredRscServerDir = path.resolve(
     root,
-    options.routeRootConfig?.rscOutDir ?? path.join("dist", "server"),
+    options.routeRootConfig?.rscOutDir ?? manifestDir,
   );
   const rscBundlePath = options.rscBundlePath ?? resolveBuiltRscEntryPath(configuredRscServerDir);
   const pagesBundlePath =
     options.pagesBundlePath ??
     resolveBuiltPagesEntryPath(
-      path.resolve(root, options.routeRootConfig?.ssrOutDir ?? path.join("dist", "server")),
+      path.resolve(root, options.routeRootConfig?.ssrOutDir ?? manifestDir),
     );
   // The emitted entry may live below its server root (for example
   // entries/app.js). Keep adjacent build metadata rooted at the configured
@@ -243,13 +243,16 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // (dist/client/ unless clientOutDir moves it) alongside the client assets.
   const outDir =
     mode === "export"
-      ? path.resolve(root, options.routeRootConfig?.clientOutDir ?? path.join("dist", "client"))
+      ? path.resolve(
+          root,
+          options.routeRootConfig?.clientOutDir ?? path.join(buildOutDir, "client"),
+        )
       : path.join(manifestDir, "prerendered-routes");
 
   // For hybrid builds (both app/ and pages/ present), start a single shared
   // prod server and pass it to both phases. This avoids spinning up two servers
   // and ensures both phases render against the same built bundle.
-  let sharedProdServer: { server: HttpServer; port: number } | null = null;
+  let sharedProdServer: PrerenderProdServer | null = null;
   let sharedPrerenderSecret: string | undefined;
   // Match Next's static-worker phase while user modules execute. This wider
   // scope also covers shared-server startup; the nested router helpers restore
@@ -261,14 +264,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       // Hybrid build: start a single shared prod server.
       // The App Router bundle (dist/server/index.js) handles both App Router and
       // Pages Router routes in a hybrid build, so we only need one server.
-      sharedProdServer = await startProdServer({
-        port: 0,
-        host: "127.0.0.1",
-        outDir: buildOutDir,
+      sharedProdServer = await startPrerenderProdServer(buildOutDir, {
         rscEntryPath: rscBundlePath,
         serverDir,
-        noCompression: true,
-        purpose: "prerender",
       });
 
       // Read the prerender secret from vinext-server.json so it can be passed
@@ -353,9 +351,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   } finally {
     try {
       // Close the shared prod server if we started one.
-      if (sharedProdServer) {
-        await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
-      }
+      if (sharedProdServer) await sharedProdServer.close();
     } finally {
       restorePrerenderPhase();
     }

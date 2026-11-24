@@ -2,7 +2,37 @@ import { decodeMatchedParams } from "./utils";
 
 export type RoutePatternParams = Record<string, string | string[]>;
 
+// Longest first, so `(..)(..)[id]` isn't read as `(..)` before `(..)[id]`.
+const INTERCEPTION_MARKERS = ["(..)(..)", "(...)", "(..)", "(.)"] as const;
+
+type InterceptionMarkerParam = { marker: string; name: string };
+
+/**
+ * The interception marker and param of a dynamic segment the marker prefixes,
+ * `(.)[id]`. Next.js keeps the marker in the URL of a metadata file below one:
+ * `@modal/(.)[id]/opengraph-image.tsx` is served at
+ * `/(.)1/opengraph-image-<hash>`, its param the rest of the URL segment.
+ */
+function interceptionMarkerSegmentParam(segment: string): InterceptionMarkerParam | null {
+  const marker = INTERCEPTION_MARKERS.find((prefix) => segment.startsWith(prefix));
+  const name = marker && segment.slice(marker.length).match(/^\[(?!\[|\.\.\.)([^\]]+)\]$/)?.[1];
+  return marker && name ? { marker, name } : null;
+}
+
+/** The marker and param of a pattern part such a segment normalizes to, `(.):id`. */
+export function interceptionMarkerPatternParam(
+  patternPart: string,
+): InterceptionMarkerParam | null {
+  const marker = INTERCEPTION_MARKERS.find((prefix) => patternPart.startsWith(prefix));
+  const name = marker && patternPart.slice(marker.length).match(/^:(.*[^+*])$/)?.[1];
+  return marker && name ? { marker, name } : null;
+}
+
 function routePatternPart(segment: string): string {
+  const markerParam = interceptionMarkerSegmentParam(segment);
+  if (markerParam) {
+    return `${markerParam.marker}:${markerParam.name}`;
+  }
   if (segment.startsWith("[[...") && segment.endsWith("]]")) {
     return `:${segment.slice(5, -2)}*`;
   }
@@ -65,20 +95,29 @@ export function fillRoutePatternSegments(
       continue;
     }
 
-    if (segment.startsWith("[") && segment.endsWith("]")) {
-      const paramName = segment.slice(1, -1);
+    const markerParam = interceptionMarkerSegmentParam(segment);
+    if (markerParam || (segment.startsWith("[") && segment.endsWith("]"))) {
+      const paramName = markerParam ? markerParam.name : segment.slice(1, -1);
       const value = params[paramName];
-      if (typeof value === "string") {
-        resolvedSegments.push(value);
-        continue;
+      const resolved =
+        typeof value === "string"
+          ? value
+          : Array.isArray(value) && value.length === 1
+            ? value[0]
+            : undefined;
+      if (resolved === undefined) {
+        return null;
       }
-      if (Array.isArray(value) && value.length > 0) {
-        if (value.length > 1) {
-          return null;
-        }
-        resolvedSegments.push(value[0]);
-        continue;
-      }
+      resolvedSegments.push(markerParam ? `${markerParam.marker}${resolved}` : resolved);
+      continue;
+    }
+
+    // A catch-all behind a marker, `(...)[...slug]`, has no URL that serves
+    // it (Next.js fails the build on a metadata file below one).
+    if (
+      segment.includes("[") &&
+      INTERCEPTION_MARKERS.some((marker) => segment.startsWith(marker))
+    ) {
       return null;
     }
 
@@ -137,6 +176,24 @@ export function matchRoutePatternRaw(
         return true;
       }
       delete params[paramName];
+      return false;
+    }
+
+    const markerParam = interceptionMarkerPatternParam(patternPart);
+    if (markerParam) {
+      const urlPart = urlParts[urlIndex];
+      if (
+        urlPart === undefined ||
+        urlPart.length <= markerParam.marker.length ||
+        !urlPart.startsWith(markerParam.marker)
+      ) {
+        return false;
+      }
+      params[markerParam.name] = urlPart.slice(markerParam.marker.length);
+      if (matchFrom(urlIndex + 1, patternIndex + 1)) {
+        return true;
+      }
+      delete params[markerParam.name];
       return false;
     }
 
@@ -201,6 +258,18 @@ export function matchRoutePatternPrefix(
     }
     if (pathIndex >= pathParts.length) return false;
     if (patternPart.startsWith(":")) {
+      pathIndex++;
+      continue;
+    }
+    const markerParam = interceptionMarkerPatternParam(patternPart);
+    if (markerParam) {
+      const pathPart = pathParts[pathIndex];
+      if (
+        pathPart.length <= markerParam.marker.length ||
+        !pathPart.startsWith(markerParam.marker)
+      ) {
+        return false;
+      }
       pathIndex++;
       continue;
     }
