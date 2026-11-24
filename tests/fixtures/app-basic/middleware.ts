@@ -156,6 +156,13 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.rewrite(target);
   }
 
+  // No App route matches this href, so only the server can resolve it. A
+  // default <Link> to it must still be prefetched, as in Next.js.
+  // Coverage: tests/e2e/app-router-prod/middleware-rewrite-prefetch.spec.ts
+  if (pathname === "/middleware-rewrite-prefetch-target") {
+    return NextResponse.rewrite(new URL("/about", request.url));
+  }
+
   if (pathname.startsWith("/encoded-parity/middleware/")) {
     const target = request.nextUrl.clone();
     target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
@@ -712,6 +719,7 @@ export const config = {
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
     "/middleware-rewrite-unprefixed/:path*",
+    "/middleware-rewrite-prefetch-target",
     "/middleware-blocked",
     "/internal-header-secret.txt",
     "/static-file-header-collision.txt",
