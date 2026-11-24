@@ -346,7 +346,11 @@ describe("parallel route supplemental refreshes", () => {
       signal: new AbortController().signal,
       supplemental: [
         sourceMerge.load("/club/alpha", primaryPromise, failing),
-        sourceMerge.loadIntercepted("/club/static/pics/2", primaryPromise, failing),
+        sourceMerge.loadIntercepted(
+          { slotId: "slot:sidebar:/", targetPathname: "/club/static/pics/2" },
+          primaryPromise,
+          failing,
+        ),
         sourceMerge.load("/club/static", primaryPromise, async () => staticRender),
       ],
     });
@@ -420,7 +424,18 @@ describe("parallel route supplemental refreshes", () => {
         primary: panelPromise,
         signal: new AbortController().signal,
         supplemental: [
-          panelMerge.loadIntercepted("/club/photos/3", panelPromise, async () => panelRender),
+          panelMerge.loadIntercepted(
+            { slotId: "slot:panel:/", targetPathname: "/club/photos/3" },
+            panelPromise,
+            async () => panelRender,
+          ),
+          // Another slot's intercept at the same URL fills nothing, so it is
+          // cancelled before it can fail the refresh.
+          panelMerge.loadIntercepted(
+            { slotId: "slot:drawer:/", targetPathname: "/club/photos/3" },
+            panelPromise,
+            failing,
+          ),
         ],
       }).then((result) => result.value["slot:panel:/"]),
     ).resolves.toBe("photo panel");
@@ -549,6 +564,7 @@ describe("parallel route supplemental refreshes", () => {
       {
         interception,
         interceptionContext: "/docs/feed",
+        slotId: "slot:modal:/",
         targetPathname: "/docs/docs/guide?tab=new",
       },
     ]);
@@ -610,6 +626,7 @@ describe("parallel route supplemental refreshes", () => {
       {
         interception,
         interceptionContext: "/feed",
+        slotId: "slot:modal:/",
         targetPathname: "/docs/p/%25C3%25A9?tab=new",
       },
     ]);

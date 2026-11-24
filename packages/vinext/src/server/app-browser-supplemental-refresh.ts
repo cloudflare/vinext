@@ -395,11 +395,11 @@ export function createInterceptionSourceRefreshMerge(options: {
   ) => (signal: AbortSignal) => Promise<AppElements>;
   /**
    * The load of a persisted intercept's render, fetched from the URL it was
-   * intercepted at. The whole intercepting route takes it only to fill a slot
-   * it left that shows that intercept.
+   * intercepted at. The whole intercepting route takes it only when it left
+   * the slot that shows that intercept, kept from that URL.
    */
   loadIntercepted: (
-    targetPathAndSearch: string,
+    interception: Pick<PersistedRefreshInterception, "slotId" | "targetPathname">,
     primary: Promise<AppElements>,
     fetch: (signal: AbortSignal) => Promise<AppElements>,
   ) => (signal: AbortSignal) => Promise<AppElements>;
@@ -418,11 +418,15 @@ export function createInterceptionSourceRefreshMerge(options: {
   const fillsLeftSlot = (
     pathAndSearch: string,
     primary: AppElements,
-    intercepted = false,
+    interceptedSlotId: string | null = null,
   ): boolean => {
-    const leftSlotIds = leftMountedSlotIds(primary);
+    const leftSlotIds = leftMountedSlotIds(primary).filter(
+      (slotId) => interceptedSlotId === null || slotId === interceptedSlotId,
+    );
     if (leftSlotIds.length === 0) return false;
-    if (keptSlotPathnames === null) return !intercepted && pathAndSearch === sourcePathAndSearch;
+    if (keptSlotPathnames === null) {
+      return interceptedSlotId === null && pathAndSearch === sourcePathAndSearch;
+    }
     const pathname = stripBasePath(new URL(pathAndSearch, options.refreshUrl).pathname, basePath);
     return leftSlotIds.some((slotId) => keptSlotPathnames.get(slotId) === pathname);
   };
@@ -474,11 +478,11 @@ export function createInterceptionSourceRefreshMerge(options: {
         primary,
         fetch,
       ),
-    loadIntercepted: (targetPathAndSearch, primary, fetch) =>
+    loadIntercepted: (interception, primary, fetch) =>
       loadIf(
         (payload) =>
           !rendersWholeInterceptingRoute(payload) ||
-          fillsLeftSlot(targetPathAndSearch, payload, true),
+          fillsLeftSlot(interception.targetPathname, payload, interception.slotId),
         (elements) => elements,
         primary,
         fetch,
@@ -706,6 +710,8 @@ function isDescendantPathname(pathname: string, ancestor: string): boolean {
 export type PersistedRefreshInterception = {
   interception: BrowserRouteManifestInterception;
   interceptionContext: string;
+  /** The slot of the state that shows the intercept. */
+  slotId: string;
   targetPathname: string;
 };
 
@@ -764,6 +770,7 @@ export function resolvePersistedRefreshInterceptions(options: {
       interception: match,
       interceptionContext:
         retainedInterception?.sourceMatchedUrl ?? binding.interceptionSourceMatchedUrl,
+      slotId: binding.slotId,
       targetPathname: `${targetUrl.pathname}${targetUrl.search}`,
     });
   }
