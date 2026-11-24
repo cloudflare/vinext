@@ -514,6 +514,124 @@ describe("Next.js compat: not-found", () => {
     },
   );
 
+  // Next.js wraps only a segment's `children` in its access boundaries, so the
+  // layout's named slots keep rendering beside the boundary that catches the
+  // page's notFound(), forbidden() or unauthorized().
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  it.each([
+    ["missing", 404, "notfound-sibling-slots-nf"],
+    ["denied", 403, "notfound-sibling-slots-forbidden"],
+    ["unauth", 401, "notfound-sibling-slots-unauthorized"],
+    // A not-found beside the page catches it in the page's own segment.
+    ["own", 404, "notfound-sibling-slots-own-nf"],
+    // A Server Component the page renders throws to the page's boundary too.
+    ["nested-missing", 404, "notfound-sibling-slots-nf"],
+    ["nested-denied", 403, "notfound-sibling-slots-forbidden"],
+    ["nested-unauth", 401, "notfound-sibling-slots-unauthorized"],
+  ])(
+    "the access boundary document keeps the layout's parallel slots (%s)",
+    async (path, status, boundaryId) => {
+      const { res, html } = await fetchHtml(baseUrl, `/notfound-sibling-slots/${path}`);
+      expect(res.status).toBe(status);
+      expect(html).toContain('id="notfound-sibling-slots-layout"');
+      expect(html).toContain(`id="${boundaryId}"`);
+      expect(html).toContain('id="notfound-sibling-slots-sidebar"');
+      expect(html).toContain("SIDEBAR");
+      expect(html).toContain('<meta name="robots" content="noindex"');
+      // The route's other boundaries' files ride in the inline payload,
+      // unrendered.
+      if (boundaryId !== "notfound-sibling-slots-nf") {
+        expect(html).not.toContain(">Sibling slots not found</p>");
+      }
+      expect(html).not.toContain("<h1>404 - Page Not Found</h1>");
+      expect(html).not.toContain("<h1>403 - Forbidden</h1>");
+      expect(html).not.toContain("<h1>401 - Unauthorized</h1>");
+    },
+  );
+
+  // The page's forbidden() or unauthorized() and a slot's notFound() beside it
+  // are each caught by their own boundary, beside the route's other slot.
+  // Observed in Next.js 16.2.7: Turbopack answers the page's status, as here,
+  // and webpack the slot's 404, either way with both boundaries rendered.
+  it.each([
+    ["denied", 403, "mixed-signals-forbidden"],
+    ["unauth", 401, "mixed-signals-unauthorized"],
+    // A Server Component the page renders throws to the page's boundary too.
+    ["nested-denied", 403, "mixed-signals-forbidden"],
+    // The page's signal comes after the slot's rejected the shell, which sets
+    // the status, as on both Next.js bundlers.
+    ["delayed-denied", 404, "mixed-signals-forbidden"],
+  ])(
+    "the page's and a slot's signals are each caught by their own boundary (%s)",
+    async (path, status, boundaryId) => {
+      const { res, html } = await fetchHtml(baseUrl, `/notfound-mixed-signals/${path}`);
+      expect(res.status).toBe(status);
+      expect(html).toContain(`id="mixed-signals-${path}-layout"`);
+      expect(html).toContain(`id="${boundaryId}"`);
+      expect(html).toContain('id="mixed-signals-team-nf"');
+      expect(html).toContain('id="mixed-signals-sidebar"');
+    },
+  );
+
+  it("a layout's notFound() keeps its document free of what renders below it", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/notfound-sibling-slots/sub");
+    expect(res.status).toBe(404);
+    expect(html).toContain('id="notfound-sibling-slots-nf"');
+    // Nothing below the layout reaches the markup or the inline payload.
+    expect(html).not.toContain("Sub page");
+  });
+
+  // A slot's own signal beside the caught notFound() leaves the notFound() to
+  // its fallback document, with its 404, as a boundary above catches it.
+  it("a slot's signal beside a caught notFound() keeps the 404 fallback", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/notfound-replay-fallback/page-forbidden/missing",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain('id="replay-fallback-layout"');
+    expect(html).toContain('id="replay-fallback-page-forbidden-nf"');
+  });
+
+  // A document that can't render again with the boundary that caught the
+  // page's or a slot's notFound(), because a not-found file redirects or
+  // throws or a slot beside it throws, answers as Next.js 16.2.7 does (webpack
+  // and Turbopack): its 404 error shell, carrying the payload. The browser
+  // renders it, follows the redirect or shows the error.
+  it.each([
+    ["page-error/missing", false],
+    ["slot-error", false],
+    ["fallback-redirect/missing", true],
+    ["fallback-throw/missing", false],
+    ["slot-redirect", true],
+    ["slot-throw", false],
+  ])(
+    "a caught notFound() whose document fails answers its 404 error shell (%s)",
+    async (path, redirects) => {
+      const { res, html } = await fetchHtml(baseUrl, `/notfound-replay-fallback/${path}`, {
+        redirect: "manual",
+      });
+      expect(res.status).toBe(404);
+      expect(res.headers.get("location")).toBeNull();
+      expect(html).toContain('<html id="__next_error__"');
+      expect(html).not.toContain('id="replay-fallback-layout"');
+      expect(html.includes("NEXT_REDIRECT")).toBe(redirects);
+      // The browser reports these itself; a redirect it follows is no error.
+      expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
+    },
+  );
+
+  // A failure only the server's render of the caught document hits reaches
+  // the dev overlay, as one in the first render does, even though the browser
+  // then renders that not-found file.
+  it("a caught notFound() whose document fails only on the server reports it in dev", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/notfound-replay-fallback/slot-client-throw");
+    expect(res.status).toBe(404);
+    expect(html).toContain('<html id="__next_error__"');
+    expect(html).toContain("__VINEXT_INITIAL_DEV_ERRORS__");
+    expect(html).toContain("Replay fallback team not-found failed on the server");
+  });
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before

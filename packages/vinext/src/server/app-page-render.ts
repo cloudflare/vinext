@@ -21,7 +21,7 @@ import {
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
-  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageCaughtAccessBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   resolveAppPageSpecialErrorStoredHeaders,
@@ -160,6 +160,12 @@ type RenderAppPageLifecycleOptionsBase = {
     routePath: string,
     overrides?: AppRenderErrorContextOverrides,
   ) => AppPageBoundaryOnError;
+  /**
+   * Whether the route's own boundaries catch its page's HTTP access fallback
+   * in the document, as for a route with parallel slots, which keep rendering
+   * beside them (see `resolveAppPageCaughtAccessBoundaries`).
+   */
+  catchesRouteSignals?: boolean;
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
@@ -1516,6 +1522,7 @@ async function renderAppPageLifecycleImpl(
           options.isPrerender === true && options.isSpeculativePrerender === true
         ),
         isServerComponentError: rscErrorTracker.isCapturedError,
+        isStaticGenerationError: rscErrorTracker.isStaticGenerationError,
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
@@ -1525,10 +1532,11 @@ async function renderAppPageLifecycleImpl(
         // Next.js's `self.__next_f` Flight transport, as the boundary's own
         // document does.
         mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
-        resolveCaughtNotFoundBoundaries: (error) =>
-          resolveAppPageCaughtNotFoundBoundaries(
+        resolveCaughtNotFoundBoundaries: (error, countPageRejections) =>
+          resolveAppPageCaughtAccessBoundaries(
             error,
-            rscErrorTracker.getCapturedSpecialErrors(error),
+            rscErrorTracker.getCapturedAccessFallbackErrors(),
+            { catchesRouteSignals: options.catchesRouteSignals, countPageRejections },
           ),
       });
     },

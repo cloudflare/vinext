@@ -377,7 +377,7 @@ type NotFoundBoundaryProps = {
   fallback: React.ReactNode;
   children: React.ReactNode;
   resetKey?: string | null;
-  /** A parallel slot boundary's id, which the document may render caught. */
+  /** A parallel slot boundary's or the page catcher's id, which the document may render caught. */
   caughtId?: string;
 };
 
@@ -493,10 +493,13 @@ type ForbiddenBoundaryProps = {
   fallback: React.ReactNode;
   children: React.ReactNode;
   resetKey?: string | null;
+  /** The page catcher's id, which the document may render caught. */
+  caughtId?: string;
 };
 
 type ForbiddenBoundaryInnerProps = {
   pathname: string | null;
+  initiallyForbidden?: boolean;
 } & ForbiddenBoundaryProps;
 
 type ForbiddenBoundaryState = {
@@ -511,7 +514,14 @@ export class ForbiddenBoundaryInner extends React.Component<
 > {
   constructor(props: ForbiddenBoundaryInnerProps) {
     super(props);
-    this.state = { forbidden: false, ...readBoundaryResetState(props) };
+    this.state = {
+      forbidden: props.initiallyForbidden === true,
+      ...readBoundaryResetState(props),
+    };
+  }
+
+  componentDidMount(): void {
+    if (this.props.initiallyForbidden === true) consumeCaughtNotFoundBoundary(this.props.caughtId);
   }
 
   static getDerivedStateFromProps(
@@ -548,10 +558,22 @@ export class ForbiddenBoundaryInner extends React.Component<
   }
 }
 
-export function ForbiddenBoundary({ fallback, children, resetKey }: ForbiddenBoundaryProps) {
+export function ForbiddenBoundary({
+  fallback,
+  children,
+  resetKey,
+  caughtId,
+}: ForbiddenBoundaryProps) {
   const pathname = useErrorBoundaryPathname();
+  const initiallyForbidden = useCaughtNotFoundBoundary(caughtId);
   return (
-    <ForbiddenBoundaryInner pathname={pathname} resetKey={resetKey} fallback={fallback}>
+    <ForbiddenBoundaryInner
+      pathname={pathname}
+      resetKey={resetKey}
+      fallback={fallback}
+      caughtId={caughtId}
+      initiallyForbidden={initiallyForbidden}
+    >
       {children}
     </ForbiddenBoundaryInner>
   );
@@ -565,10 +587,13 @@ type UnauthorizedBoundaryProps = {
   fallback: React.ReactNode;
   children: React.ReactNode;
   resetKey?: string | null;
+  /** The page catcher's id, which the document may render caught. */
+  caughtId?: string;
 };
 
 type UnauthorizedBoundaryInnerProps = {
   pathname: string | null;
+  initiallyUnauthorized?: boolean;
 } & UnauthorizedBoundaryProps;
 
 type UnauthorizedBoundaryState = {
@@ -583,7 +608,15 @@ export class UnauthorizedBoundaryInner extends React.Component<
 > {
   constructor(props: UnauthorizedBoundaryInnerProps) {
     super(props);
-    this.state = { unauthorized: false, ...readBoundaryResetState(props) };
+    this.state = {
+      unauthorized: props.initiallyUnauthorized === true,
+      ...readBoundaryResetState(props),
+    };
+  }
+
+  componentDidMount(): void {
+    if (this.props.initiallyUnauthorized === true)
+      consumeCaughtNotFoundBoundary(this.props.caughtId);
   }
 
   static getDerivedStateFromProps(
@@ -620,10 +653,22 @@ export class UnauthorizedBoundaryInner extends React.Component<
   }
 }
 
-export function UnauthorizedBoundary({ fallback, children, resetKey }: UnauthorizedBoundaryProps) {
+export function UnauthorizedBoundary({
+  fallback,
+  children,
+  resetKey,
+  caughtId,
+}: UnauthorizedBoundaryProps) {
   const pathname = useErrorBoundaryPathname();
+  const initiallyUnauthorized = useCaughtNotFoundBoundary(caughtId);
   return (
-    <UnauthorizedBoundaryInner pathname={pathname} resetKey={resetKey} fallback={fallback}>
+    <UnauthorizedBoundaryInner
+      pathname={pathname}
+      resetKey={resetKey}
+      fallback={fallback}
+      caughtId={caughtId}
+      initiallyUnauthorized={initiallyUnauthorized}
+    >
       {children}
     </UnauthorizedBoundaryInner>
   );

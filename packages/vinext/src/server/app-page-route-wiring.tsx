@@ -65,7 +65,7 @@ import {
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import {
-  APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+  getAppPageAccessBoundaryCatcherId,
   tagAppPageLayoutError,
   tagAppPageSlotError,
 } from "./app-page-execution.js";
@@ -2168,7 +2168,7 @@ export function buildAppPageElements<
         providerId={pageElementId}
         segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
       >
-        <Slot id={pageElementId} />
+        <Slot id={pageElementId} page />
       </LayoutSegmentProvider>
       {renderElementWithMetadataOutlet ? null : streamingMetadataOutlet}
     </>
@@ -2289,34 +2289,46 @@ export function buildAppPageElements<
   const notFoundComponent =
     getDefaultExport(notFoundPageModule) ??
     (layoutEntries.length === 0 ? DEFAULT_NOT_FOUND_COMPONENT : null);
-  // The boundary that catches the page's own notFound(), the page-level one or
+  const forbiddenComponent = getDefaultExport(forbiddenPageModule);
+  const unauthorizedComponent = getDefaultExport(unauthorizedPageModule);
+  // The boundary that catches the page's own signal, the page-level one or
   // else the deepest segment's, carries an id so that a document whose slot
-  // boundaries catch their slots' signals renders it caught beside them.
+  // boundaries catch their slots' signals, or whose parallel slots render
+  // beside it, renders it caught (see `resolveAppPageCaughtAccessBoundaries`).
   // A sibling intercept page brings its own boundaries and renders only for
   // an RSC navigation, which never replays a caught document, so the source
   // route's boundaries carry no id then.
-  const identifiesPageNotFoundCatcher = !renderElementWithMetadataOutlet;
+  const identifiesPageCatchers = !renderElementWithMetadataOutlet;
   const isPageNotFoundCaughtAtPage =
-    identifiesPageNotFoundCatcher &&
-    notFoundComponent !== null &&
-    notFoundOwnerTreePosition === null;
-  let pageNotFoundCatcherTreePosition: number | null = null;
-  if (identifiesPageNotFoundCatcher && !isPageNotFoundCaughtAtPage) {
-    for (const treePosition of notFoundBoundaries.keys()) {
-      if (
-        pageNotFoundCatcherTreePosition === null ||
-        treePosition > pageNotFoundCatcherTreePosition
-      ) {
-        pageNotFoundCatcherTreePosition = treePosition;
-      }
+    identifiesPageCatchers && notFoundComponent !== null && notFoundOwnerTreePosition === null;
+  const isPageForbiddenCaughtAtPage =
+    identifiesPageCatchers && forbiddenComponent !== null && forbiddenOwnerTreePosition === null;
+  const isPageUnauthorizedCaughtAtPage =
+    identifiesPageCatchers &&
+    unauthorizedComponent !== null &&
+    unauthorizedOwnerTreePosition === null;
+  const resolvePageCatcherTreePosition = (
+    boundaries: ReadonlyMap<number, AppPageAccessBoundary<TModule>>,
+    isPageCaughtAtPage: boolean,
+  ): number | null => {
+    if (!identifiesPageCatchers || isPageCaughtAtPage) return null;
+    let deepest: number | null = null;
+    for (const treePosition of boundaries.keys()) {
+      if (deepest === null || treePosition > deepest) deepest = treePosition;
     }
-  }
+    return deepest;
+  };
+  const pageCatcherTreePositions = new Map([
+    [404, resolvePageCatcherTreePosition(notFoundBoundaries, isPageNotFoundCaughtAtPage)],
+    [403, resolvePageCatcherTreePosition(forbiddenBoundaries, isPageForbiddenCaughtAtPage)],
+    [401, resolvePageCatcherTreePosition(unauthorizedBoundaries, isPageUnauthorizedCaughtAtPage)],
+  ]);
   if (notFoundComponent) {
     const NotFoundComponent = notFoundComponent;
     routeChildren = (
       <NotFoundBoundary
         resetKey={routeResetKey}
-        caughtId={isPageNotFoundCaughtAtPage ? APP_PAGE_NOT_FOUND_BOUNDARY_ID : undefined}
+        caughtId={isPageNotFoundCaughtAtPage ? getAppPageAccessBoundaryCatcherId(404) : undefined}
         fallback={
           notFoundOwnerTreePosition === null ? (
             renderAccessFallback(404, "page", keepsRouteFallbacks, <NotFoundComponent />)
@@ -2330,12 +2342,12 @@ export function buildAppPageElements<
     );
   }
 
-  const forbiddenComponent = getDefaultExport(forbiddenPageModule);
   if (forbiddenComponent) {
     const ForbiddenComponent = forbiddenComponent;
     routeChildren = (
       <ForbiddenBoundary
         resetKey={routeResetKey}
+        caughtId={isPageForbiddenCaughtAtPage ? getAppPageAccessBoundaryCatcherId(403) : undefined}
         fallback={
           forbiddenOwnerTreePosition === null ? (
             renderAccessFallback(403, "page", keepsRouteFallbacks, <ForbiddenComponent />)
@@ -2349,12 +2361,14 @@ export function buildAppPageElements<
     );
   }
 
-  const unauthorizedComponent = getDefaultExport(unauthorizedPageModule);
   if (unauthorizedComponent) {
     const UnauthorizedComponent = unauthorizedComponent;
     routeChildren = (
       <UnauthorizedBoundary
         resetKey={routeResetKey}
+        caughtId={
+          isPageUnauthorizedCaughtAtPage ? getAppPageAccessBoundaryCatcherId(401) : undefined
+        }
         fallback={
           unauthorizedOwnerTreePosition === null ? (
             renderAccessFallback(401, "page", keepsRouteFallbacks, <UnauthorizedComponent />)
@@ -2502,20 +2516,19 @@ export function buildAppPageElements<
         isRetainedSourceTreePosition(treePosition),
         <BoundaryComponent />,
       );
-      segmentChildren =
-        AccessBoundary === NotFoundBoundary && treePosition === pageNotFoundCatcherTreePosition ? (
-          <NotFoundBoundary
-            resetKey={accessResetKey}
-            fallback={fallback}
-            caughtId={APP_PAGE_NOT_FOUND_BOUNDARY_ID}
-          >
-            {segmentChildren}
-          </NotFoundBoundary>
-        ) : (
-          <AccessBoundary resetKey={accessResetKey} fallback={fallback}>
-            {segmentChildren}
-          </AccessBoundary>
-        );
+      segmentChildren = (
+        <AccessBoundary
+          resetKey={accessResetKey}
+          fallback={fallback}
+          caughtId={
+            treePosition === pageCatcherTreePositions.get(status)
+              ? getAppPageAccessBoundaryCatcherId(status)
+              : undefined
+          }
+        >
+          {segmentChildren}
+        </AccessBoundary>
+      );
     }
 
     const segmentErrorComponent = getErrorBoundaryExport(
