@@ -70,7 +70,7 @@ export type RenderAppPageCacheArtifactsOptions = {
   /** The slot or route boundaries that catch a shell error. See handleSsr. */
   resolveCaughtNotFoundBoundaries?: (
     error: unknown,
-    countPageRejections: () => number,
+    countPageRejections: (rendered: unknown) => number,
   ) => readonly string[] | null;
   renderToReadableStream: (
     element: AppPageRenderableElement,

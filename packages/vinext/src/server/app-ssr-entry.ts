@@ -488,13 +488,13 @@ export async function handleSsr(
      * The boundaries that catch the error that rejected the shell, a parallel
      * slot's not-found or the route's own, or null when none catches it. The
      * document then renders again from the same payload with them caught.
-     * `countPageRejections` counts the error's copies that only the route's
-     * page entry rendered, from the page's component or any component in its
-     * subtree.
+     * `countPageRejections` counts the copies with the given error's digest
+     * that only the route's page entry rendered, from the page's component or
+     * any component in its subtree.
      */
     resolveCaughtNotFoundBoundaries?: (
       error: unknown,
-      countPageRejections: () => number,
+      countPageRejections: (rendered: unknown) => number,
     ) => readonly string[] | null;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
@@ -841,8 +841,8 @@ export async function handleSsr(
         // server component runs again.
         const prepareCaughtNotFoundRoot = (error: unknown): ReactElement | null => {
           const caughtNotFoundBoundaries =
-            options?.resolveCaughtNotFoundBoundaries?.(error, () =>
-              countPageEntryRejections(renderedPageEntry, error),
+            options?.resolveCaughtNotFoundBoundaries?.(error, (rendered) =>
+              countPageEntryRejections(renderedPageEntry, rendered),
             ) ?? null;
           if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
           // Decode the payload again inside this render, so that it hints the

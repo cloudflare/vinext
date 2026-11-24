@@ -553,6 +553,83 @@ describe("app page execution helpers", () => {
     ).toBeNull();
   });
 
+  it("catches the page's forbidden() or unauthorized() beside a slot's notFound()", () => {
+    // Each signal is caught by its own boundary, so the document enables the
+    // page's catcher for its status and the slot's not-found, whichever of
+    // them rejected the shell.
+    const signal = (status: 401 | 403 | 404) => {
+      const digest = `NEXT_HTTP_ERROR_FALLBACK;${status}`;
+      return Object.assign(new Error(digest), { digest });
+    };
+    const catchesRouteSignals = { catchesRouteSignals: true };
+    const teamSlot = () => tagAppPageSlotError(signal(404), 1, "slot:team:/:0");
+
+    for (const status of [401, 403] as const) {
+      const rendered = [tagAppPagePageError(signal(status)), teamSlot()];
+      for (const shellError of [signal(status), signal(404)]) {
+        expect(
+          resolveAppPageCaughtAccessBoundaries(shellError, rendered, catchesRouteSignals),
+        ).toEqual([`page:${status}`, "slot:team:/:0"]);
+      }
+    }
+    // A copy from the page's subtree is counted by its own digest.
+    const countPageRejections = vi.fn((rendered: unknown) =>
+      (rendered as { digest: string }).digest.endsWith(";403") ? 1 : 0,
+    );
+    const inPage = { catchesRouteSignals: true, countPageRejections };
+    expect(
+      resolveAppPageCaughtAccessBoundaries(signal(403), [signal(403), teamSlot()], inPage),
+    ).toEqual(["page:403", "slot:team:/:0"]);
+    expect(countPageRejections).toHaveBeenCalledWith(
+      expect.objectContaining({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" }),
+    );
+    expect(
+      resolveAppPageCaughtAccessBoundaries(signal(401), [signal(401), teamSlot()], inPage),
+    ).toBeNull();
+    // Beside the slot's notFound() that rejected the shell, a page signal of
+    // another status counts only from the page's own component, as one from
+    // a component it renders may sit in a subtree the document never renders.
+    expect(
+      resolveAppPageCaughtAccessBoundaries(signal(404), [signal(403), teamSlot()], inPage),
+    ).toBeNull();
+    // The page's subtree throws once, so beside copies of the shell's status
+    // its copies of another are left out, and two other statuses fall back.
+    expect(
+      resolveAppPageCaughtAccessBoundaries(
+        signal(404),
+        [tagAppPagePageError(signal(404)), signal(403), teamSlot()],
+        inPage,
+      ),
+    ).toEqual([APP_PAGE_NOT_FOUND_BOUNDARY_ID, "slot:team:/:0"]);
+    expect(
+      resolveAppPageCaughtAccessBoundaries(
+        signal(404),
+        [tagAppPagePageError(signal(403)), tagAppPagePageError(signal(401)), teamSlot()],
+        catchesRouteSignals,
+      ),
+    ).toBeNull();
+    // A copy no boundary catches still keeps the fallback for both. The
+    // tracker passes only access signals, and anything else is refused too.
+    expect(
+      resolveAppPageCaughtAccessBoundaries(
+        signal(404),
+        [tagAppPagePageError(signal(403)), teamSlot(), tagAppPageLayoutError(signal(401), 1)],
+        catchesRouteSignals,
+      ),
+    ).toBeNull();
+    expect(
+      resolveAppPageCaughtAccessBoundaries(
+        signal(404),
+        [teamSlot(), { digest: "NEXT_REDIRECT;replace;/target;307;" }],
+        catchesRouteSignals,
+      ),
+    ).toBeNull();
+    // Without parallel slots, the page's forbidden() takes its fallback.
+    expect(
+      resolveAppPageCaughtAccessBoundaries(signal(404), [tagAppPagePageError(signal(403))]),
+    ).toBeNull();
+  });
+
   it("parses redirect and access-fallback digests", () => {
     expect(
       resolveAppPageSpecialError({

@@ -1535,7 +1535,7 @@ async function renderAppPageLifecycleImpl(
         resolveCaughtNotFoundBoundaries: (error, countPageRejections) =>
           resolveAppPageCaughtAccessBoundaries(
             error,
-            rscErrorTracker.getCapturedSpecialErrors(error),
+            rscErrorTracker.getCapturedAccessFallbackErrors(),
             { catchesRouteSignals: options.catchesRouteSignals, countPageRejections },
           ),
       });

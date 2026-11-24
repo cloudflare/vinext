@@ -71,8 +71,8 @@ export function useCaughtNotFoundBoundary(id: string | undefined): boolean {
  * The route's page entry the document rendered, and the payload it came
  * from, which the page's Slot records. The page's boundary catches a signal
  * from anywhere in that subtree on the client, as Next.js wraps the whole
- * `children` subtree in it, so the SSR entry counts the copies of the error
- * that rejected the shell that only this entry renders (see
+ * `children` subtree in it, so the SSR entry counts the copies of each
+ * signal the RSC render threw that only this entry renders (see
  * `countPageEntryRejections`).
  */
 export type RenderedPageEntry = {

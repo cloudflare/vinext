@@ -1279,6 +1279,19 @@ describe("app page stream helpers", () => {
     ).toBe(false);
   });
 
+  it("collects every access signal the RSC render threw, whatever its status", () => {
+    const tracker = createAppPageRscErrorTracker((error) => (error as { digest: string }).digest);
+    const forbidden = { digest: "NEXT_HTTP_ERROR_FALLBACK;403" };
+    const notFound = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const redirect = { digest: "NEXT_REDIRECT;replace;/target;307;" };
+    tracker.onRenderError(forbidden, null, null);
+    tracker.onRenderError(redirect, null, null);
+    tracker.onRenderError(notFound, null, null);
+    tracker.onRenderError(new Error("boom"), null, null);
+
+    expect(tracker.getCapturedAccessFallbackErrors()).toEqual([forbidden, notFound]);
+  });
+
   it("correlates re-created RSC errors by digest and keeps custom-digest SSR errors reportable", () => {
     const baseRscOnError = vi.fn(() => "rsc-digest");
     const tracker = createAppPageRscErrorTracker(baseRscOnError);

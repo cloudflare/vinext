@@ -549,6 +549,27 @@ describe("Next.js compat: not-found", () => {
     },
   );
 
+  // The page's forbidden() or unauthorized() and a slot's notFound() beside it
+  // are each caught by their own boundary, beside the route's other slot.
+  // Observed in Next.js 16.2.7: Turbopack answers the page's status, as here,
+  // and webpack the slot's 404, either way with both boundaries rendered.
+  it.each([
+    ["denied", 403, "mixed-signals-forbidden"],
+    ["unauth", 401, "mixed-signals-unauthorized"],
+    // A Server Component the page renders throws to the page's boundary too.
+    ["nested-denied", 403, "mixed-signals-forbidden"],
+  ])(
+    "the page's and a slot's signals are each caught by their own boundary (%s)",
+    async (path, status, boundaryId) => {
+      const { res, html } = await fetchHtml(baseUrl, `/notfound-mixed-signals/${path}`);
+      expect(res.status).toBe(status);
+      expect(html).toContain(`id="mixed-signals-${path}-layout"`);
+      expect(html).toContain(`id="${boundaryId}"`);
+      expect(html).toContain('id="mixed-signals-team-nf"');
+      expect(html).toContain('id="mixed-signals-sidebar"');
+    },
+  );
+
   it("a layout's notFound() keeps its document free of what renders below it", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/notfound-sibling-slots/sub");
     expect(res.status).toBe(404);

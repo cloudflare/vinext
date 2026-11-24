@@ -1085,6 +1085,37 @@ test.describe("Access boundaries beside parallel slots", () => {
   });
 });
 
+test.describe("The page's and a slot's signals beside each other", () => {
+  // The page's forbidden() or unauthorized() and a slot's notFound() are each
+  // caught by their own boundary, beside the route's other slot. Next.js
+  // 16.2.7 Turbopack answers the page's status, webpack the slot's 404.
+  for (const { path, status, boundaryId } of [
+    { path: "denied", status: 403, boundaryId: "mixed-signals-forbidden" },
+    { path: "unauth", status: 401, boundaryId: "mixed-signals-unauthorized" },
+    { path: "nested-denied", status: 403, boundaryId: "mixed-signals-forbidden" },
+  ]) {
+    test(`the ${path} document hydrates both boundaries beside the sidebar`, async ({ page }) => {
+      const errors: string[] = [];
+      page.on("console", (message) => {
+        // The browser logs the document's own status.
+        if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+          errors.push(message.text());
+        }
+      });
+      page.on("pageerror", (error) => errors.push(error.message));
+      const response = await page.goto(`${BASE}/notfound-mixed-signals/${path}`);
+      expect(response?.status()).toBe(status);
+      await waitForAppRouterHydration(page);
+      const layout = page.locator(`#mixed-signals-${path}-layout`);
+      await expect(layout.locator(`main #${boundaryId}`)).toBeVisible();
+      await expect(layout.locator("section #mixed-signals-team-nf")).toBeVisible();
+      await expect(layout.locator("aside #mixed-signals-sidebar")).toHaveText("SIDEBAR");
+      // Both boundaries hydrate caught, so React doesn't recover by client rendering.
+      expect(errors).toEqual([]);
+    });
+  }
+});
+
 // Next.js 16.2.7 answers a document whose caught slot not-found file fails with
 // its 404 error shell, and the browser renders the payload, where that file
 // runs.

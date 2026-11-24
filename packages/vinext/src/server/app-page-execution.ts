@@ -420,24 +420,37 @@ export function resolveAppPageShellSpecialError(
  * renders none of the page's entry below it, so its copy rejects the shell
  * before any of the page's does. A slot's forbidden() or unauthorized()
  * takes the fallback too, as slots have only not-found boundaries.
+ *
+ * `renderedSpecialErrors` holds every access signal the RSC render threw,
+ * whatever its status: the page's forbidden() beside a slot's notFound() is
+ * caught by each one's own boundary, so the document enables both, and
+ * `countPageRejections` counts the page entry's copies of the given copy's
+ * digest.
  */
 export function resolveAppPageCaughtAccessBoundaries(
   error: unknown,
   renderedSpecialErrors: readonly unknown[],
-  options?: { catchesRouteSignals?: boolean; countPageRejections?: () => number },
+  options?: {
+    catchesRouteSignals?: boolean;
+    countPageRejections?: (rendered: unknown) => number;
+  },
 ): readonly string[] | null {
   const specialError = resolveAppPageSpecialError(error);
   if (specialError?.kind !== "http-access-fallback") return null;
-  const { statusCode } = specialError;
   const catchesRouteSignals = options?.catchesRouteSignals === true;
-  if (statusCode !== 404 && !catchesRouteSignals) return null;
+  if (specialError.statusCode !== 404 && !catchesRouteSignals) return null;
   if (isThrownNavigationError(error) || renderedSpecialErrors.length === 0) return null;
   const boundaries = new Set<string>();
   let caughtInSlot = false;
-  let pageCopies = 0;
-  let untagged = false;
+  // The page's copies of each status, with one copy nothing tags, if any.
+  const pageCopies = new Map<number, { count: number; untagged?: unknown }>();
   for (const rendered of renderedSpecialErrors) {
-    if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
+    const renderedError = resolveAppPageSpecialError(rendered);
+    if (renderedError?.kind !== "http-access-fallback" || renderedError.fromMetadata === true) {
+      return null;
+    }
+    const { statusCode } = renderedError;
+    if (statusCode !== 404 && !catchesRouteSignals) return null;
     // A layout's own signal renders outside every slot's boundary.
     if (getAppPageLayoutErrorLayoutIndex(rendered) !== null) return null;
     const boundary = getAppPageSlotErrorNotFoundBoundary(rendered);
@@ -445,16 +458,44 @@ export function resolveAppPageCaughtAccessBoundaries(
       caughtInSlot = true;
       boundaries.add(boundary);
     } else if (getAppPageSlotErrorLayoutIndex(rendered) === null) {
-      if (!isAppPagePageError(rendered)) untagged = true;
-      pageCopies++;
+      const copies = pageCopies.get(statusCode) ?? { count: 0 };
+      copies.count++;
+      if (!isAppPagePageError(rendered)) copies.untagged = rendered;
+      pageCopies.set(statusCode, copies);
       boundaries.add(getAppPageAccessBoundaryCatcherId(statusCode));
     } else {
       return null;
     }
   }
-  const caughtInPage =
-    catchesRouteSignals && (!untagged || (options?.countPageRejections?.() ?? 0) >= pageCopies);
-  return caughtInSlot || caughtInPage ? Array.from(boundaries) : null;
+  // The page's subtree throws once on the client, and the boundary for that
+  // signal hides the rest of it. So beside copies of the shell's status, its
+  // copies of another are left out. Beside a slot's notFound(), its signal of
+  // another status counts only from the page's own component: one from a
+  // component it renders may sit in a subtree the document never renders.
+  const otherStatuses = Array.from(pageCopies.keys()).filter(
+    (status) => status !== specialError.statusCode,
+  );
+  if (pageCopies.has(specialError.statusCode)) {
+    for (const status of otherStatuses) {
+      pageCopies.delete(status);
+      boundaries.delete(getAppPageAccessBoundaryCatcherId(status));
+    }
+  } else if (
+    otherStatuses.length > 1 ||
+    Array.from(pageCopies.values()).some(({ untagged }) => untagged !== undefined)
+  ) {
+    return null;
+  }
+  const isPageCopies = ({ count, untagged }: { count: number; untagged?: unknown }) =>
+    untagged === undefined || (options?.countPageRejections?.(untagged) ?? 0) >= count;
+  const groups = Array.from(pageCopies);
+  const caughtInPage = catchesRouteSignals && groups.every(([, copies]) => isPageCopies(copies));
+  // Beside a slot's caught notFound(), the page's boundary takes an untagged
+  // 404 as the page's, while its forbidden() or unauthorized() must be shown
+  // to be the page's.
+  const caughtBesideSlot =
+    caughtInSlot && groups.every(([status, copies]) => status === 404 || isPageCopies(copies));
+  return caughtInPage || caughtBesideSlot ? Array.from(boundaries) : null;
 }
 
 /**

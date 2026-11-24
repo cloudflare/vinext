@@ -1228,7 +1228,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 ? (error, countPageRejections) =>
                     resolveAppPageCaughtAccessBoundaries(
                       error,
-                      rscErrorTracker.getCapturedSpecialErrors(error),
+                      rscErrorTracker.getCapturedAccessFallbackErrors(),
                       {
                         catchesRouteSignals: catchesAppPageRouteSignals(revalidationTarget.route),
                         countPageRejections,

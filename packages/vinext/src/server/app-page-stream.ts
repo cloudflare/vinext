@@ -9,7 +9,7 @@ import type { RootParams } from "vinext/shims/root-params";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
-import { getNextErrorDigest } from "./next-error-digest.js";
+import { getNextErrorDigest, parseNextHttpErrorDigest } from "./next-error-digest.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
 import { isInsideUnifiedScope } from "vinext/shims/unified-request-context";
 import { isStaticGenerationAccessError } from "vinext/shims/internal/headers-state";
@@ -191,7 +191,7 @@ export type AppPageSsrHandler = {
       /** The slot or route boundaries that catch a shell error. See handleSsr. */
       resolveCaughtNotFoundBoundaries?: (
         error: unknown,
-        countPageRejections: () => number,
+        countPageRejections: (rendered: unknown) => number,
       ) => readonly string[] | null;
       dynamicStaleTimeSeconds?: number;
       getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
@@ -261,7 +261,7 @@ type RenderAppPageHtmlStreamOptions = {
   /** The slot or route boundaries that catch a shell error. See handleSsr. */
   resolveCaughtNotFoundBoundaries?: (
     error: unknown,
-    countPageRejections: () => number,
+    countPageRejections: (rendered: unknown) => number,
   ) => readonly string[] | null;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
@@ -328,6 +328,11 @@ type AppPageRscErrorTracker = {
    * loses server-side markers such as generateMetadata()'s.
    */
   getCapturedSpecialErrors: (error: unknown) => readonly unknown[];
+  /**
+   * Every notFound(), forbidden() or unauthorized() the RSC render threw,
+   * whatever its status, as the boundaries in a document can catch each.
+   */
+  getCapturedAccessFallbackErrors: () => readonly unknown[];
   isCapturedError: (error: unknown) => boolean;
   /**
    * Whether the RSC render threw the given error, or the error with its
@@ -570,6 +575,11 @@ export function createAppPageRscErrorTracker(
     getCapturedSpecialErrors(error) {
       const digest = getNextErrorDigest(error);
       return (digest !== null && specialErrorsByDigest.get(digest)) || [];
+    },
+    getCapturedAccessFallbackErrors() {
+      return Array.from(specialErrorsByDigest).flatMap(([digest, errors]) =>
+        parseNextHttpErrorDigest(digest) ? errors : [],
+      );
     },
     isCapturedError(error) {
       if (capturedErrors.has(error)) return true;
