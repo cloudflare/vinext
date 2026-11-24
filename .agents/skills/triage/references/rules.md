@@ -87,7 +87,7 @@ For a private or security report, never cite the report in public text.
 
 When the run is part of an automated triage workflow with no chat:
 
-- **Start from what you were given:** the issue's title, body and author, plus the checkout of the default branch's head. If the comments aren't included and `gh` is available, read them with `gh issue view <number> --comments`, and keep `gh` reads to this issue and what it links. Without `gh`, treat anything the body defers to a comment as missing.
+- **Start from what you were given:** the issue's title, body and author, plus the checkout of the default branch's head. If the comments aren't included, the issue is on GitHub and `gh` is available, read them with `gh issue view <number> --comments`, and keep `gh` reads to this issue and what it links. An issue kept in Alcora has no GitHub number: what you were given is all of it. Without `gh`, treat anything the body defers to a comment as missing.
 - Other workflow steps check for duplicates and post the result. Never post, label or close anything, and never wait for confirmation. **Put the reply in the report's `comment`.**
 - **The posted `comment` doesn't link URLs.** Write docs pages and other links without the scheme (`vinext.dev/docs/...`), so they stay readable and copyable.
 - If a step had to be skipped because a tool or network access was missing, name it in the `summary`.

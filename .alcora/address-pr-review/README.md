@@ -15,7 +15,9 @@ to the point where a maintainer only has to review it. Every review or comment
 on it, and its checks finishing, is a round in the sandbox that wrote the fix.
 The issue keeps its **fix: in progress** label while rounds go on, until the
 fix is ready, when **fix: ready** takes its place, or stalls. A fix that goes
-back in review is **fix: in progress** again.
+back in review is **fix: in progress** again. The labels and the comment go
+wherever the issue is kept: on GitHub, or in Alcora. On a confidential issue
+the comment says a fix is ready without linking its pull request.
 
 Its triggers take the tracked pull requests of every workflow by default:
 those a sandbox step opened and kept its sandbox for. **Pull requests opened
