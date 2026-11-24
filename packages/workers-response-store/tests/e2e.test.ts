@@ -2800,7 +2800,7 @@ test("a superseded conditional revalidation answers with the committed entry, st
 
 test("a conditional revalidation that loses its claim answers 304 only for valid validators", async () => {
   const path = "/conditional-claim-validators";
-  const lastModified = "Tue, 29 Sep 2026 00:00:00 GMT";
+  const lastModified = "Sun, 06 Nov 1994 08:49:37 GMT";
   await put(path, "stale-part", {
     status: 206,
     contentRange: "bytes 0-9/100",
@@ -2829,6 +2829,7 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
     ["If-None-Match", `*, ${etag}`],
     ["If-Modified-Since", "2026-09-30"],
     ["If-Modified-Since", "Wed, 31 Sep 2026 00:00:00 GMT"],
+    ["If-Modified-Since", "Sun, 06 Nov 0094 08:49:37 GMT"],
     // Just past 50 years ahead, a two-digit year is the earlier century's, whatever its weekday.
     ["If-Modified-Since", rfc850Date(beyondFiftyYears, 0)],
     ["If-Modified-Since", rfc850Date(beyondFiftyYears, -100)],

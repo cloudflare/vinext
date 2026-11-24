@@ -369,7 +369,9 @@ function parseHttpDate(value: string | null): number {
   // A leap second (60) is valid: check the calendar without it, then count it.
   const date = new Date(Date.UTC(year, month, day, hours, minutes, Math.min(seconds, 59)));
   // Impossible dates and times, and the wrong weekday, are invalid rather than rolled over.
+  // HTTP-date years are 1900 or later (RFC 5322 3.3); Date.UTC maps 0-99 to 1900-1999.
   return month >= 0 &&
+    year >= 1900 &&
     seconds <= 60 &&
     date.getUTCDate() === day &&
     date.getUTCHours() === hours &&
