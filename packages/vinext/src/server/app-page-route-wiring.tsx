@@ -71,6 +71,7 @@ import {
 } from "./app-page-execution.js";
 import { createAppPageLayoutGate, registerAppPageLayoutGate } from "./app-page-layout-gate.js";
 import { hashMountedLayoutIdentity } from "./app-mounted-layouts.js";
+import { keepsMountedSlot, type MountedSlots } from "./app-mounted-slots-header.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
@@ -434,7 +435,8 @@ type BuildAppPageElementsOptions<
    * navigation diverges from the client's router state.
    */
   mountedLayouts?: ReadonlySet<string> | null;
-  mountedSlotIds?: ReadonlySet<string> | null;
+  /** The slots the navigating client holds (see app-mounted-slots-header.ts). */
+  mountedSlots?: MountedSlots | null;
   renderIdentity?: AppPageRenderIdentity;
   /**
    * The render has no PPR (see app-page-dispatch.ts), so a loading-shell
@@ -1783,12 +1785,13 @@ export function buildAppPageElements<
     // On soft nav (RSC): omit key when only default.tsx exists and the slot is
     // already mounted on the client. Absent key means the browser retains prior
     // slot content rather than replacing it. When the slot is not yet mounted
-    // (first entry into this layout), include the key so default.tsx renders.
+    // (first entry into this layout), or its owner renders for other params,
+    // include the key so default.tsx renders.
     if (
       !resolvedOverrideOrPageComponent &&
       resolvedDefaultComponent &&
       options.isRscRequest &&
-      options.mountedSlotIds?.has(slotId)
+      keepsMountedSlot(options.mountedSlots, slotId, segmentPlan.bfcacheSegmentIdentities[slotId])
     ) {
       continue;
     }
@@ -2592,10 +2595,15 @@ export function buildAppPageElements<
       const slotOverride = resolveSlotOverride(slotKey, slotName);
       const hasActiveSlotPage =
         getDefaultExport(slotOverride?.pageModule) !== null || getDefaultExport(slot.page) !== null;
+      const slotId = resolveAppPageSlotId(slot, layoutEntry.treePath);
       const shouldPreserveMountedSlot =
         !hasActiveSlotPage &&
         options.isRscRequest &&
-        options.mountedSlotIds?.has(resolveAppPageSlotId(slot, layoutEntry.treePath));
+        keepsMountedSlot(
+          options.mountedSlots,
+          slotId,
+          segmentPlan.bfcacheSegmentIdentities[slotId],
+        );
       if (shouldPreserveMountedSlot) {
         continue;
       }

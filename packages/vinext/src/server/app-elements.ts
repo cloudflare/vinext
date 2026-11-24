@@ -1,4 +1,4 @@
-import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
+import { createMountedSlotToken, normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { AppElementsWire, UNMATCHED_SLOT, type AppElements } from "./app-elements-wire.js";
 
 export const APP_PREFETCH_LOADING_SHELL_MARKER_KEY = "__prefetchLoadingShell";
@@ -83,7 +83,12 @@ export function getMountedSlotIds(elements: AppElements): string[] {
 }
 
 export function getMountedSlotIdsHeader(elements: AppElements): string | null {
-  return normalizeMountedSlotsHeader(getMountedSlotIds(elements).join(" "));
+  const shellIdentities = AppElementsWire.readMetadata(elements).bfcacheSegmentIdentities;
+  return normalizeMountedSlotsHeader(
+    getMountedSlotIds(elements)
+      .map((slotId) => createMountedSlotToken(slotId, shellIdentities[slotId]))
+      .join(" "),
+  );
 }
 
 export function resolveVisitedResponseInterceptionContext(

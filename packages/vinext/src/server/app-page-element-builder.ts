@@ -54,6 +54,7 @@ import {
   traceGetLayoutOrPageModule,
 } from "./app-page-tracing.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
+import { parseMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import {
   resolveOwnerLevelAccessFile,
@@ -947,7 +948,7 @@ export async function buildPageElements<
   };
   const pageSearchParamsThenable = searchParams ? makeThenableParams(pageSearchParams) : undefined;
 
-  const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
+  const mountedSlots = parseMountedSlotsHeader(mountedSlotsHeader);
 
   // Next.js renders a page's MetadataOutlet in the page's own segment, so a
   // slot intercept's generateMetadata() signal reaches the intercepting route's
@@ -1171,7 +1172,7 @@ export async function buildPageElements<
           }
         : null,
       mountedLayouts,
-      mountedSlotIds,
+      mountedSlots,
       makeThenableParams,
       matchedParams: params,
       pageRenderDependency,
