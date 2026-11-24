@@ -97,6 +97,29 @@ describe("app page request helpers", () => {
     }
   });
 
+  // A route runs its parallel chains after its children's, out of Next's
+  // breadth-first order, so it keeps its tree-wide fetchCache; a breadth-first
+  // chain, as an interception's, gives each source its segment's.
+  it("gives sources their segment's fetchCache only for a breadth-first chain", () => {
+    const generateStaticParams = async () => [];
+    const options = {
+      layouts: [{ fetchCache: "force-cache", generateStaticParams }],
+      page: { fetchCache: "force-no-store", generateStaticParams },
+      parallelBranches: [{ page: { fetchCache: "only-cache", generateStaticParams } }],
+      routeSegments: ["[slug]"],
+    };
+
+    expect(
+      resolveAppPageGenerateStaticParamsSources(options).map((source) => source.fetchCache),
+    ).toEqual([undefined, undefined, undefined]);
+    expect(
+      resolveAppPageGenerateStaticParamsSources({
+        ...options,
+        fetchCachePerSource: true,
+      }).map((source) => source.fetchCache),
+    ).toEqual(["force-cache", "force-no-store", "only-cache"]);
+  });
+
   it("tags generateStaticParams' fetches with the route's implicit tags, as Next.js does", async () => {
     let hits = 0;
     const server = createServer((_request, response) => {

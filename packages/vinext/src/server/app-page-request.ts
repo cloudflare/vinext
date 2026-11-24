@@ -13,8 +13,9 @@ import { interceptionMarkerPatternParam, matchRoutePattern } from "../routing/ro
 import { notFoundResponse } from "./http-error-responses.js";
 import { removeTrailingSlash } from "../utils/base-path.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
-import { pickRootParams, type RootParams } from "vinext/shims/root-params";
+import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isUnknownRecord } from "../utils/record.js";
+import { isRouteSegmentFetchCache } from "./app-segment-config.js";
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
@@ -27,15 +28,18 @@ type GenerateStaticParams = (args: { params: AppPageParams }) => unknown;
 type Awaitable<T> = T | Promise<T>;
 
 type GenerateStaticParamsModule = {
+  fetchCache?: unknown;
   generateStaticParams?: GenerateStaticParams | null;
 };
 
-type GenerateStaticParamsSource = {
+export type GenerateStaticParamsSource = {
   /**
    * Primary loader-tree sources execute top-down as one chain. Each source
    * receives the complete params object produced by the sources before it.
    */
   chained?: true;
+  /** The `fetchCache` of the segment that exports the generator. */
+  fetchCache?: FetchCacheMode;
   generateStaticParams: GenerateStaticParams;
   independentChain?: number;
   paramAliases?: Readonly<Record<string, string>>;
@@ -65,9 +69,22 @@ export type ValidateAppPageDynamicParamsOptions = {
   optionalCatchAllParamNames?: readonly string[];
   params: AppPageParams;
   requiredParamNames?: readonly string[];
+  /**
+   * The route's root param names. Each generator call then reads its parent
+   * params as its root params, as in Next.js's generator walk.
+   */
+  rootParamNames?: readonly string[];
+  /** The fetchCache the generators start from, when the caller sets one. */
+  initialFetchCache?: FetchCacheMode | null;
 };
 
 type ResolveAppPageGenerateStaticParamsSourcesOptions = {
+  /**
+   * Gives each source its segment's `fetchCache`. Only a chain in Next.js's
+   * breadth-first order can apply them per generator: a route runs its
+   * parallel chains after its children's, so it keeps its tree-wide mode.
+   */
+  fetchCachePerSource?: boolean;
   layouts?: readonly (GenerateStaticParamsModule | null | undefined)[];
   layoutTreePositions?: readonly number[];
   page?: GenerateStaticParamsModule | null;
@@ -349,12 +366,17 @@ export function resolveAppPageGenerateStaticParamsSources(
   options: ResolveAppPageGenerateStaticParamsSourcesOptions,
 ): GenerateStaticParamsSource[] {
   const sources: GenerateStaticParamsSource[] = [];
+  const segmentFetchCache = (module: GenerateStaticParamsModule): { fetchCache?: FetchCacheMode } =>
+    options.fetchCachePerSource && isRouteSegmentFetchCache(module.fetchCache)
+      ? { fetchCache: module.fetchCache }
+      : {};
 
   options.layouts?.forEach((layout, index) => {
     if (typeof layout?.generateStaticParams !== "function") return;
 
     sources.push({
       chained: true,
+      ...segmentFetchCache(layout),
       generateStaticParams: layout.generateStaticParams,
       parentParamNames: collectParentParamNames(
         options.routeSegments,
@@ -369,6 +391,7 @@ export function resolveAppPageGenerateStaticParamsSources(
   if (typeof options.page?.generateStaticParams === "function") {
     sources.push({
       chained: true,
+      ...segmentFetchCache(options.page),
       generateStaticParams: options.page.generateStaticParams,
       parentParamNames: collectParentParamNames(
         options.routeSegments,
@@ -398,6 +421,7 @@ export function resolveAppPageGenerateStaticParamsSources(
     ) => {
       if (typeof module?.generateStaticParams !== "function") return;
       sources.push({
+        ...segmentFetchCache(module),
         generateStaticParams: module.generateStaticParams,
         independentChain,
         ...(Object.keys(paramAliases).length > 0 ? { paramAliases } : {}),
@@ -512,16 +536,32 @@ function remapStaticParamsToRouteParams(
   );
 }
 
+// Next.js runs each generateStaticParams with its parent params as the root
+// params, whatever the request's are.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+function callGenerateStaticParams(
+  source: GenerateStaticParamsSource,
+  params: AppPageParams,
+  parentParams: Record<string, unknown>,
+  rootParamNames: readonly string[] | undefined,
+): Promise<unknown> {
+  const call = async () => runWithFetchDedupe(() => source.generateStaticParams({ params }));
+  if (!rootParamNames) return call();
+  return runWithRootParamsScope(pickRootParams(parentParams as RootParams, rootParamNames), call);
+}
+
 async function generateIndependentStaticParams(
   sources: readonly GenerateStaticParamsSource[],
   primaryParams: readonly Record<string, unknown>[] | null,
   requestParams: AppPageParams,
+  rootParamNames: readonly string[] | undefined,
 ): Promise<{ staticParams: Record<string, unknown>[]; validated: boolean }> {
   let rows = (primaryParams ?? []).map((params) => ({ params, branchParams: {} }));
   let hasParentParams = rows.length > 0;
   let validated = false;
 
   for (const source of sources) {
+    applySourceFetchCache(source);
     const parents = hasParentParams ? rows : [{ params: {}, branchParams: {} }];
     const nextRows: typeof rows = [];
 
@@ -531,13 +571,11 @@ async function generateIndependentStaticParams(
         source,
       );
       const branchParams = remapRouteParams(parent.branchParams as AppPageParams, source);
-      const result = await runWithFetchDedupe(() =>
-        source.generateStaticParams({
-          params: {
-            ...pickRouteParams(sourceParams, source.parentParamNames),
-            ...branchParams,
-          },
-        }),
+      const result = await callGenerateStaticParams(
+        source,
+        { ...pickRouteParams(sourceParams, source.parentParamNames), ...branchParams },
+        parent.params,
+        rootParamNames,
       );
       if (!Array.isArray(result)) {
         if (hasParentParams) nextRows.push(parent);
@@ -591,9 +629,19 @@ type GeneratedStaticParamsRow = {
   lineage: string;
 };
 
+// Before a generator runs, Next.js makes its segment's own `fetchCache` the
+// mode for it and the generators after it.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+function applySourceFetchCache(source: GenerateStaticParamsSource): void {
+  if (source.fetchCache !== undefined) setCurrentFetchCacheMode(source.fetchCache);
+}
+
 async function generateChainedStaticParams(
   sources: readonly GenerateStaticParamsSource[],
   requestParams: AppPageParams | null,
+  rootParamNames: readonly string[] | undefined,
+  // The mode each pass starts from, when the caller sets one.
+  initialFetchCache: FetchCacheMode | null | undefined,
   // A rerun over every combination reuses the results each generator already
   // returned, so it calls generators only for the parents it skipped.
   results = new Map<GenerateStaticParamsSource, Map<string, unknown>>(),
@@ -601,8 +649,10 @@ async function generateChainedStaticParams(
   let generatedRows: GeneratedStaticParamsRow[] = [];
   let skippedParents = false;
   let needsEveryCombination = false;
+  if (initialFetchCache !== undefined) setCurrentFetchCacheMode(initialFetchCache);
 
   for (const source of sources) {
+    applySourceFetchCache(source);
     let sourceResults = results.get(source);
     if (!sourceResults) {
       sourceResults = new Map();
@@ -627,8 +677,11 @@ async function generateChainedStaticParams(
     for (const parent of parents) {
       let result = sourceResults.get(parent.lineage);
       if (!sourceResults.has(parent.lineage)) {
-        result = await runWithFetchDedupe(() =>
-          source.generateStaticParams({ params: parent.params as AppPageParams }),
+        result = await callGenerateStaticParams(
+          source,
+          parent.params as AppPageParams,
+          parent.params,
+          rootParamNames,
         );
         sourceResults.set(parent.lineage, result);
       }
@@ -658,7 +711,8 @@ async function generateChainedStaticParams(
   // Next merges each result over its parent combination, so a generator that
   // rewrites a parent param can produce the request from a skipped parent.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
-  if (needsEveryCombination) return generateChainedStaticParams(sources, null, results);
+  if (needsEveryCombination)
+    return generateChainedStaticParams(sources, null, rootParamNames, initialFetchCache, results);
   return generatedRows.map((row) => row.params);
 }
 
@@ -724,6 +778,8 @@ export async function validateAppPageDynamicParams(
     chainedStaticParams = await generateChainedStaticParams(
       chainedSources,
       hasIndependentSources ? null : options.params,
+      options.rootParamNames,
+      options.initialFetchCache,
     );
   }
 
@@ -740,6 +796,7 @@ export async function validateAppPageDynamicParams(
       sources,
       chainedStaticParams,
       options.params,
+      options.rootParamNames,
     );
     if (result.validated) {
       validatedIndependentResults = true;
@@ -777,6 +834,7 @@ export async function validateAppPageDynamicParams(
 type ValidateAppPageRouteDynamicParamsOptions = {
   dynamicConfig?: string;
   dynamicParamsConfig?: boolean;
+  /** The fetchCache the generators start from. */
   fetchCache?: FetchCacheMode | null;
   generateStaticParams?: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
   isDynamicRoute: boolean;
@@ -784,6 +842,7 @@ type ValidateAppPageRouteDynamicParamsOptions = {
   params: AppPageParams;
   /** The request's route-match pathname, compared with the exported paths. */
   pathname: string;
+  rootParamNames?: readonly string[];
   routePattern: string;
   routeSegments?: readonly string[];
 };
@@ -833,7 +892,9 @@ export function validateAppPageRouteDynamicParams(
     return Promise.resolve(exported === true ? null : notFoundResponse());
   }
   // Next.js runs generateStaticParams in a work store of its own: the route's
-  // fetchCache and implicit tags, and no revalidate or force-dynamic default.
+  // implicit tags, no revalidate or force-dynamic default, and the fetchCache
+  // of each generator's segment (see applySourceFetchCache). A route without
+  // per-source modes approximates them with its tree-wide one.
   // Callers run this check apart from the request, so these stay out of it.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -846,8 +907,10 @@ export function validateAppPageRouteDynamicParams(
       options.isProduction,
     ),
     generateStaticParams: options.generateStaticParams,
+    initialFetchCache: options.fetchCache ?? null,
     isDynamicRoute: options.isDynamicRoute,
     params: options.params,
+    rootParamNames: options.rootParamNames,
   });
 }
 
@@ -866,7 +929,8 @@ export async function resolveAppPageInterceptState<TRoute, TPage>(
 
   await loadAppInterceptPage(intercept);
   await loadAppInterceptNotFound(intercept);
-  if (intercept.rendersWholeInterceptingRoute) await loadAppInterceptOwnerDefault(intercept);
+  // The owner's `default` takes part in the interception's params check.
+  await loadAppInterceptOwnerDefault(intercept);
   if (
     intercept.__loadInterceptLayouts ||
     intercept.__loadInterceptLoadings ||
@@ -896,7 +960,7 @@ export async function resolveAppPageInterceptState<TRoute, TPage>(
  * app-page-element-builder.ts). Without a source that shares that tree, the
  * render is of the tree whole, with the slot owner's `default` as its children.
  */
-function markInterceptionSourceRender<TInterceptOpts, TPage>(
+export function markInterceptionSourceRender<TInterceptOpts, TPage>(
   opts: TInterceptOpts,
   intercept: AppPageInterceptMatch<TPage>,
 ): TInterceptOpts {

@@ -409,6 +409,30 @@ describe("resolveAppPageSegmentConfig", () => {
     ).toBe(false);
   });
 
+  it("reads a slot's default at its owner's segment", () => {
+    // app/club/[slug]/@side/default.tsx beside app/club/[slug]/pics/[id]/page.tsx
+    // and app/club/[slug]/page.tsx.
+    const sideDefault = (ownerTreePosition: number, routeSegments: string[]) =>
+      resolveAppPageSegmentConfig({
+        parallelBranches: [
+          {
+            isDefault: true,
+            name: "side",
+            ownerTreePosition,
+            page: { dynamicParams: false, generateStaticParams: () => [{ slug: "acme" }] },
+            routeSegments: [],
+          },
+        ],
+        routeSegments,
+      }).dynamicParamsConfig;
+
+    expect(sideDefault(2, ["club", "[slug]", "pics", "[id]"])).toBeUndefined();
+    expect(sideDefault(2, ["club", "[slug]"])).toBe(false);
+    // app/club/@side/default.tsx follows app/club/[slug], the owner's child.
+    expect(sideDefault(1, ["club", "[slug]"])).toBe(false);
+    expect(sideDefault(1, ["club", "[slug]", "[id]"])).toBeUndefined();
+  });
+
   it("uses slot-only route config values", () => {
     // Next.js collectAppPageSegments() includes parallel route layouts/pages
     // before reduceAppConfig() selects the route-level config.
