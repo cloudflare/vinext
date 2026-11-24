@@ -282,13 +282,18 @@ export class ResponseStoreService extends WorkerEntrypoint<
     return this.getStore(invocation).getTagExpiration(tags);
   }
 
-  put(
+  // A Response whose body arrived over RPC and is passed on to the binding's loopback call
+  // gets that call labelled hung by the runtime ("canceled this request because it detected
+  // that your Worker's code had hung"), although its caller receives the result. The binding
+  // reads the whole body before it stores it, so the service reads it here and passes a copy.
+  async put(
     request: Request,
     response: Response,
     options: ResponseStorePutOptions,
     invocation: ResponseStoreServiceInvocation,
   ): Promise<ResponseStoreMutationResult> {
-    return this.getStore(invocation).put(request, response, options);
+    const body = response.body ? await response.arrayBuffer() : null;
+    return this.getStore(invocation).put(request, new Response(body, response), options);
   }
 
   refresh(
