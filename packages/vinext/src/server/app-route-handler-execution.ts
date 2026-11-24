@@ -16,6 +16,7 @@ import {
   hasCdnResponsePolicy,
   hasExplicitNonCacheableResponsePolicy,
   NEVER_CACHE_CONTROL,
+  toBrowserOnlyCacheControl,
 } from "./cache-control.js";
 import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import { isrCacheControl, resolveRouteExpireSeconds, type IsrWritePolicy } from "./isr-cache.js";
@@ -31,7 +32,10 @@ import {
   shouldWriteAppRouteHandlerCache,
   type AppRouteHandlerModule,
 } from "./app-route-handler-policy.js";
-import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
+import {
+  copyLinkHeaderProvenance,
+  markRouteHandlerCachePolicyHeaders,
+} from "./app-response-header-provenance.js";
 import {
   applyRouteHandlerMiddlewareContext,
   applyRouteHandlerRevalidateHeader,
@@ -620,14 +624,21 @@ async function executeAppRouteHandlerImpl(
     // owns fail-closed policy until the completed response is authorized.
     const preserveHandlerPolicy = handlerSetCachePolicy;
     if (options.bypassSharedCache === true || (responseMustStayPrivate && !preserveHandlerPolicy)) {
+      // A shared-cache bypass keeps the response out of every shared cache:
+      // the browser gets only the private part of the handler's policy.
+      // Next.js sends the handler's value unchanged here.
+      const browserCacheControl = preserveHandlerPolicy
+        ? toBrowserOnlyCacheControl(finalized.headers.get("Cache-Control"))
+        : undefined;
       const headers = new Headers(finalized.headers);
-      applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+      applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL, browserCacheControl });
       finalized = new Response(finalized.body, {
         headers,
         status: finalized.status,
         statusText: finalized.statusText,
       });
       copyLinkHeaderProvenance(response.headers, finalized.headers);
+      if (browserCacheControl !== undefined) markRouteHandlerCachePolicyHeaders(finalized.headers);
     }
 
     if (!cleanupDeferredToBody) {

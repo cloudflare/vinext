@@ -1,6 +1,7 @@
 import {
   getCdnCacheAdapter,
   isNonCacheableCacheControl,
+  splitCacheControlDirectives,
   type CdnCacheableHeaderInput,
 } from "vinext/shims/cdn-cache";
 import { recordRouteCacheabilityCdnTags } from "vinext/shims/cacheability-classification";
@@ -19,6 +20,46 @@ export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 const STALE_REVALIDATE_CACHE_CONTROL = "s-maxage=0, stale-while-revalidate";
 
 export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
+
+// RFC 9111 directives that a private cache applies. `public`, `s-maxage`,
+// `proxy-revalidate`, a field-qualified `private` and unknown extensions are
+// dropped: they apply to shared caches or have no known private meaning.
+const PRIVATE_CACHE_DIRECTIVES = new Set([
+  "immutable",
+  "max-age",
+  "must-revalidate",
+  "must-understand",
+  "no-cache",
+  "no-transform",
+  "stale-if-error",
+  "stale-while-revalidate",
+]);
+
+/**
+ * The browser-only form of a response's Cache-Control: `private` and the
+ * directives a private cache applies. A value with bare `private` or with
+ * `no-store` is returned unchanged. Returns `undefined` when the value gives
+ * a browser neither `max-age` nor `no-cache`, so the caller keeps its own
+ * never-cache policy instead of leaving browser freshness to heuristics.
+ */
+export function toBrowserOnlyCacheControl(cacheControl: string | null): string | undefined {
+  if (!cacheControl) return undefined;
+  const directives = splitCacheControlDirectives(cacheControl).map((directive) => {
+    const equals = directive.indexOf("=");
+    const name = (equals === -1 ? directive : directive.slice(0, equals)).trim().toLowerCase();
+    return { directive, hasValue: equals !== -1, name };
+  });
+  if (
+    directives.some(
+      ({ hasValue, name }) => name === "no-store" || (name === "private" && !hasValue),
+    )
+  ) {
+    return cacheControl;
+  }
+  const kept = directives.filter(({ name }) => PRIVATE_CACHE_DIRECTIVES.has(name));
+  if (!kept.some(({ name }) => name === "max-age" || name === "no-cache")) return undefined;
+  return ["private", ...kept.map(({ directive }) => directive)].join(", ");
+}
 
 const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
 export function shouldUseNextDeployCacheControl(): boolean {
