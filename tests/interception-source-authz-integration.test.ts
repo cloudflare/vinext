@@ -112,6 +112,9 @@ async function expectInterceptionSourceAuthorization(baseUrl: string): Promise<v
   expect(control.headers.get("x-auth-guard")).toBe("blocked");
   expect(await control.text()).not.toContain(GUARDED_MARKER);
 
+  // Next.js never rejects a request over its `Next-Url`, so a context that
+  // names no canonical source is treated as absent and the target renders on
+  // its own.
   const traversal = await fetch(`${baseUrl}/photos/1`, {
     headers: interceptionHeaders("/feed/.."),
   });
@@ -119,10 +122,14 @@ async function expectInterceptionSourceAuthorization(baseUrl: string): Promise<v
   expect({
     status: traversal.status,
     authGuard: traversal.headers.get("x-auth-guard"),
+    cacheControl: traversal.headers.get("cache-control"),
+    rendersTarget: traversalBody.includes("Refresh"),
     exposedGuardedContent: traversalBody.includes(GUARDED_MARKER),
   }).toEqual({
-    status: 400,
+    status: 200,
     authGuard: null,
+    cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
+    rendersTarget: true,
     exposedGuardedContent: false,
   });
 

@@ -1175,7 +1175,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const {
     url,
     isRscRequest,
-    interceptionContextHeader,
+    interceptionContextHeader: normalizedInterceptionContext,
     interceptionIdHeader,
     mountedSlotsHeader,
     renderMode,
@@ -1197,15 +1197,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // header for the route matcher's deliberate one-decode contract, while
   // carrying the decoded canonical pathname for middleware authorization.
   let interceptionSourcePathname: string | null = null;
-  if (isRscRequest && interceptionContextHeader !== null) {
+  if (isRscRequest && normalizedInterceptionContext !== null) {
     try {
-      interceptionSourcePathname = decodeInterceptionSourcePathname(interceptionContextHeader);
+      interceptionSourcePathname = decodeInterceptionSourcePathname(normalizedInterceptionContext);
     } catch {
-      options.clearRequestContext();
-      setInterceptionResponseUncacheable(true);
-      return badRequestResponse();
+      // Next.js never rejects a request over its `Next-Url`, so a context that
+      // names no canonical source is treated as absent and the target renders
+      // on its own.
     }
   }
+  // An unusable context then routes exactly like an absent one, while its raw
+  // value still keeps the response out of shared caches above.
+  const interceptionContextHeader =
+    isRscRequest && interceptionSourcePathname === null ? null : normalizedInterceptionContext;
   const { pathname, requestPathname } = normalized;
   let cleanPathname = pathname;
   let resolvedUrl = cleanPathname + url.search;
@@ -1598,7 +1602,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               (props.bypassInterceptionContextCache ||
                 // Next.js lets an explicit next.config public policy cache a
                 // force-dynamic route, so only bypass when no such policy matched.
-                (props.forceDynamic === true && responseStagePolicy === null)))
+                (props.forceDynamic === true && responseStagePolicy === null))) ||
+            // An interception context never selects a metadata or not-found
+            // render, but its raw value stays in the stage's request headers
+            // and RSC URL hash, so it would only split their shared entries.
+            ((props.kind === "app-metadata" || props.kind === "app-not-found") &&
+              hasRawInterceptionContext)
               ? "bypass"
               : canUseSharedWorkerResponseStage
                 ? "shared"
@@ -2723,6 +2732,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           const cache =
             responseStageProbeMode ||
             pagesOnDemandRevalidate ||
+            // As for a metadata route, a raw interception context selects no
+            // Pages render and would only split the shared entries.
+            hasRawInterceptionContext ||
             hasPagesPreviewCookie(stageRequest.headers.get("cookie")) ||
             (resourceKind === "page" && dataKind === "static" && hasRequestAwareDocument)
               ? "bypass"

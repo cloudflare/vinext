@@ -192,6 +192,44 @@ test.describe("Middleware-guarded interception slot owner", () => {
       });
     }
   });
+
+  // Next.js never rejects a request over its `Next-Url`, so a context that
+  // names no canonical source is treated as absent and the target renders on
+  // its own.
+  test("renders the target directly for an unusable interception context", async ({ request }) => {
+    for (const source of ["/admin?x=1", "/admin#x", "//admin", "/admin/%zz", "/admin/.."]) {
+      const response = await request.get(`${BASE}/photos/1`, {
+        headers: interceptionHeaders(source),
+      });
+      const body = await response.text();
+      expect({
+        source,
+        status: response.status(),
+        cacheControl: response.headers()["cache-control"],
+        rendersPhotoPage: body.includes(`"data-testid":"photo-page"`),
+        rendersAdminModal: body.includes(`"data-testid":"admin-photo-modal"`),
+        rendersAdminLayout: body.includes(`"data-testid":"admin-layout"`),
+        exposesOwner: body.includes("Protected admin content"),
+      }).toEqual({
+        source,
+        status: 200,
+        cacheControl: expect.stringContaining("no-store"),
+        rendersPhotoPage: true,
+        rendersAdminModal: false,
+        rendersAdminLayout: false,
+        exposesOwner: false,
+      });
+    }
+
+    const feed = await request.get(`${BASE}/photos/1`, {
+      headers: interceptionHeaders("/feed?x=1"),
+    });
+    const feedBody = await feed.text();
+    expect(feed.status()).toBe(200);
+    expect(feedBody).toContain(`"data-testid":"photo-page"`);
+    expect(feedBody).not.toContain(`"data-testid":"photo-modal"`);
+    expect(feedBody).not.toContain(`"data-testid":"feed-layout"`);
+  });
 });
 
 test.describe("encoded App route parity", () => {
