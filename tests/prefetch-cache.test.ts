@@ -969,6 +969,137 @@ describe("prefetch cache eviction", () => {
     expect(prefetched.has(originalRscUrl)).toBe(false);
   });
 
+  describe("mounted slots that the rendered route does not own", () => {
+    const productSlots = "slot:reviews:/shop/[slug]";
+
+    function installRouteManifest(): void {
+      (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+        bootstrap: {
+          routeManifest: decodeBrowserRouteManifest({
+            graphVersion: "graph:test",
+            routes: [
+              {
+                isDynamic: false,
+                layoutIds: ["layout:/"],
+                pageId: "page:/about",
+                paramNames: [],
+                patternParts: ["about"],
+                rootBoundaryId: null,
+                slotIds: [],
+              },
+              {
+                isDynamic: true,
+                layoutIds: ["layout:/", "layout:/shop/[slug]"],
+                pageId: "page:/shop/:slug",
+                paramNames: ["slug"],
+                patternParts: ["shop", ":slug"],
+                rootBoundaryId: null,
+                slotIds: [productSlots],
+              },
+            ],
+            layouts: [],
+            slotBindings: [],
+            interceptions: [],
+            interceptionsBySlotId: [],
+            rootBoundaries: [],
+          }),
+          rsc: undefined,
+        },
+        functions: { navigate: vi.fn() },
+      };
+    }
+
+    function seedHomePagePrefetch(rscUrl: string, renderedPathAndSearch: string) {
+      const snapshot = {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        renderedPathAndSearch,
+        url: rscUrl,
+      };
+      getPrefetchCache().set(rscUrl, {
+        mountedSlotsHeader: null,
+        outcome: "cache-seeded",
+        snapshot,
+        timestamp: Date.now(),
+      });
+      getPrefetchedUrls().add(rscUrl);
+      return snapshot;
+    }
+
+    it("reuses a prefetch whose route owns none of the mounted slots", () => {
+      installRouteManifest();
+      const snapshot = seedHomePagePrefetch("/about.rsc?_rsc=home", "/about");
+
+      expect(
+        hasPrefetchCacheEntryForNavigation("/about.rsc?_rsc=product", null, productSlots),
+      ).toBe(true);
+      expect(consumePrefetchResponse("/about.rsc?_rsc=product", null, productSlots)).toEqual(
+        snapshot,
+      );
+    });
+
+    it("matches the route that the server rendered, after a rewrite", () => {
+      installRouteManifest();
+      seedHomePagePrefetch("/sale.rsc?_rsc=home", "/shop/shoes");
+      const snapshot = seedHomePagePrefetch("/help.rsc?_rsc=home", "/about");
+
+      expect(hasPrefetchCacheEntryForNavigation("/sale.rsc?_rsc=product", null, productSlots)).toBe(
+        false,
+      );
+      expect(consumePrefetchResponse("/help.rsc?_rsc=product", null, productSlots)).toEqual(
+        snapshot,
+      );
+    });
+
+    it("router.prefetch on a page with mounted slots reuses a prefetch of another route", async () => {
+      const navigation = await import("../packages/vinext/src/shims/app-router-navigation.js");
+      const fetch = vi.fn(
+        async (_input: RequestInfo | URL, _init?: RequestInit) =>
+          new Response("flight", { headers: { "content-type": "text/x-component" } }),
+      );
+      (globalThis as any).fetch = fetch;
+      installRouteManifest();
+      seedHomePagePrefetch("/about?_rsc=home", "/about");
+      seedHomePagePrefetch("/shop/shoes?_rsc=home", "/shop/shoes");
+      navigation.setMountedSlotsHeader(productSlots);
+
+      navigation.appRouterInstance.prefetch("/about", { kind: "full" });
+      await settlePrefetchSetup();
+      expect(fetch).not.toHaveBeenCalled();
+
+      navigation.appRouterInstance.prefetch("/shop/shoes", { kind: "full" });
+      await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+      expect(toRscUrlString(fetch.mock.calls[0]![0])).toMatch(/^\/shop\/shoes\?_rsc=.+$/);
+      expect(new Headers(fetch.mock.calls[0]![1]?.headers).get(VINEXT_MOUNTED_SLOTS_HEADER)).toBe(
+        productSlots,
+      );
+    });
+
+    it("keeps the exact match when the rendered route is not known", () => {
+      seedHomePagePrefetch("/about.rsc?_rsc=home", "/about");
+
+      expect(
+        hasPrefetchCacheEntryForNavigation("/about.rsc?_rsc=product", null, productSlots),
+      ).toBe(false);
+    });
+
+    it("keeps the exact match for an interception context", () => {
+      installRouteManifest();
+      const rscUrl = "/about.rsc?_rsc=home";
+      const snapshot = seedHomePagePrefetch(rscUrl, "/about");
+      const cache = getPrefetchCache();
+      const entry = cache.get(rscUrl)!;
+      cache.delete(rscUrl);
+      cache.set(AppElementsWire.encodeCacheKey(rscUrl, "/feed"), { ...entry, snapshot });
+
+      expect(
+        hasPrefetchCacheEntryForNavigation("/about.rsc?_rsc=product", "/feed", productSlots),
+      ).toBe(false);
+    });
+  });
+
   it("keeps learning-only prefetch responses out of navigation consumption", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();
