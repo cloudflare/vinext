@@ -5,6 +5,10 @@ import { setNavigationContext } from "vinext/shims/navigation-context-accessors"
 import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import {
+  MIDDLEWARE_OVERRIDE_HEADERS,
+  MIDDLEWARE_REQUEST_HEADER_PREFIX,
+} from "../utils/protocol-headers.js";
+import {
   mergeMiddlewareResponseHeaders,
   withExternalRewriteResponseHeaders,
 } from "./middleware-response-headers.js";
@@ -196,6 +200,32 @@ function restoreFlightHeaders(request: Request, source: Request): Request {
   }
 
   return changed ? cloneRequestWithHeaders(request, headers) : request;
+}
+
+/**
+ * Middleware never sees the request's flight headers, so its request-header
+ * override can't list them. Like Next.js (`server/web/adapter.ts`: "Flight
+ * headers are not overridable / removable so they are applied at the end"),
+ * add the request's flight headers to a non-empty override.
+ */
+function keepFlightHeadersInOverride(middlewareHeaders: Headers, request: Request): void {
+  const overrideHeaders = middlewareHeaders.get(MIDDLEWARE_OVERRIDE_HEADERS);
+  if (!overrideHeaders) return;
+
+  const overwrittenHeaders: string[] = [];
+  for (const name of FLIGHT_HEADERS) {
+    const value = request.headers.get(name);
+    if (value !== null) {
+      middlewareHeaders.set(`${MIDDLEWARE_REQUEST_HEADER_PREFIX}${name}`, value);
+      overwrittenHeaders.push(name);
+    }
+  }
+  if (overwrittenHeaders.length > 0) {
+    middlewareHeaders.set(
+      MIDDLEWARE_OVERRIDE_HEADERS,
+      `${overrideHeaders},${overwrittenHeaders.join(",")}`,
+    );
+  }
 }
 
 /**
@@ -464,6 +494,7 @@ export async function applyAppMiddleware(
 
   if (options.context.headers || options.context.requestHeaders) {
     options.context.requestHeaders ??= new Headers(options.context.headers!);
+    keepFlightHeadersInOverride(options.context.requestHeaders, options.request);
     applyMiddlewareRequestHeaders(options.context.requestHeaders);
   }
   if (options.context.headers) {

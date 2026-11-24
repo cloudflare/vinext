@@ -40,7 +40,8 @@ import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware
 import { markLocaleRedirect } from "../packages/vinext/src/server/pages-i18n.js";
 import { mergeMiddlewareResponseHeaders } from "../packages/vinext/src/server/middleware-response-headers.js";
 import { sealForwardedMiddlewareContext } from "../packages/vinext/src/server/forwarded-middleware-context.js";
-import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import { NextResponse, type NextRequest } from "../packages/vinext/src/shims/server.js";
+import { hashMountedLayoutIdentity } from "../packages/vinext/src/server/app-mounted-layouts.js";
 import {
   handleMetadataRouteRequest,
   isMetadataRouteRequestPath,
@@ -3968,6 +3969,54 @@ describe("createAppRscHandler", () => {
 
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
     await expect(response.json()).resolves.toEqual({ visitor: "visitor-a" });
+  });
+
+  it("keeps the client's flight headers in a response stage after a middleware header override", async () => {
+    // Next.js applies flight headers after middleware, as they are not
+    // overridable (packages/next/src/server/web/adapter.ts: "Flight headers
+    // are not overridable / removable so they are applied at the end").
+    // Without them a sibling navigation renders its mounted layouts again.
+    const mountedLayoutsHeader = hashMountedLayoutIdentity("layout:/");
+    const dispatchMatchedPage = vi.fn(async (_options: { request: Request }) => {
+      // Userland still sees the override without the flight headers.
+      expect((await requestHeaders()).get("x-from-proxy")).toBe("1");
+      expect((await requestHeaders()).get("rsc")).toBeNull();
+      return new Response("page");
+    });
+    const responseHandler = createHandler({ dispatchMatchedPage });
+    let middlewareSawRsc: string | null = "unset";
+    const requestHandler = createHandler({
+      configHeaders: [],
+      middlewareModule: {
+        default(request: NextRequest) {
+          middlewareSawRsc = request.headers.get("rsc");
+          const headers = new Headers(request.headers);
+          headers.set("x-from-proxy", "1");
+          return NextResponse.next({ request: { headers } });
+        },
+      },
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>((stageRequest, props) =>
+      responseHandler.handleResponseStage(stageRequest, null, props),
+    );
+    const headers = createRscRequestHeaders({ mountedLayoutsHeader });
+    const url = await createRscRequestUrl("/docs/about", headers);
+
+    const response = await requestHandler(
+      new Request(new URL(url, "https://example.test"), { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(await response.text()).toBe("page");
+    expect(middlewareSawRsc).toBeNull();
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    const pageRequest = dispatchMatchedPage.mock.calls[0]![0].request;
+    expect(pageRequest.headers.get("x-from-proxy")).toBe("1");
+    expect(pageRequest.headers.get("x-vinext-mounted-layouts")).toBe(mountedLayoutsHeader);
+    expect(pageRequest.headers.get("rsc")).toBe("1");
   });
 
   it("dispatches middleware cookie overlays with cache bypass and preserves raw headers", async () => {
