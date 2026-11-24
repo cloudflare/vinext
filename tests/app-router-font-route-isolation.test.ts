@@ -1,0 +1,152 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { ViteDevServer } from "vite";
+import { createBuilder } from "vite";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import vinext from "../packages/vinext/src/index.js";
+import { startFixtureServer } from "./helpers.js";
+
+// Issue #4810: each App Router page carries only the next/font rules and
+// preloads of its own layouts, pages and the client components they render,
+// whatever the process served before. Next.js scopes fonts per app entry
+// through its next-font-manifest; vinext once collected them into
+// process-wide lists that every page carried.
+const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-font-route-isolation");
+const outDir = path.resolve(FIXTURE_DIR, "dist");
+const nodeModulesLink = path.join(FIXTURE_DIR, "node_modules");
+const FONTS = ["font-root", "font-gnf", "font-a", "font-b", "font-c", "font-d"];
+
+beforeAll(() => {
+  fs.rmSync(nodeModulesLink, { recursive: true, force: true });
+  fs.symlinkSync(path.resolve(import.meta.dirname, "../node_modules"), nodeModulesLink);
+});
+
+afterAll(() => {
+  fs.rmSync(outDir, { recursive: true, force: true });
+  fs.rmSync(nodeModulesLink, { recursive: true, force: true });
+});
+
+async function fontsOf(baseUrl: string, pathname: string, status = 200) {
+  const res = await fetch(`${baseUrl}${pathname}`);
+  expect(res.status).toBe(status);
+  const html = await res.text();
+  const style = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "";
+  const preloads = [...html.matchAll(/<link rel="preload"[^>]*as="font"[^>]*>/g)].join("\n");
+  const link = res.headers.get("link") ?? "";
+  // Match file names (`font-a.<hash>.woff2`), not CSS like `font-display`.
+  const pick = (text: string) => FONTS.filter((font) => text.includes(`${font}.`));
+  return { pathname, style: pick(style), preloads: pick(preloads), link: pick(link) };
+}
+
+async function fontsInOrder(baseUrl: string) {
+  // A client component's font registers once the SSR graph first runs the
+  // component, after that render has read its fonts, so warm `/d` first. Its
+  // font must still stay out of the other pages.
+  await fontsOf(baseUrl, "/d");
+  const observed = [];
+  for (const pathname of ["/", "/b", "/c", "/d", "/"]) {
+    observed.push(await fontsOf(baseUrl, pathname));
+  }
+  observed.push(await fontsOf(baseUrl, "/missing", 404));
+  return observed;
+}
+
+// Every page renders in the root layout, which loads a font of its own.
+const own = (pathname: string, font: string) => ({
+  pathname,
+  style: ["font-root", font],
+  preloads: ["font-root", font],
+  link: ["font-root", font],
+});
+
+const EXPECTED = [
+  own("/", "font-a"),
+  own("/b", "font-b"),
+  own("/c", "font-c"),
+  // A client component's font loads in the SSR graph.
+  own("/d", "font-d"),
+  own("/", "font-a"),
+  // A route-miss 404 renders global-not-found on its own, without the root
+  // layout, so it carries only global-not-found's font.
+  { pathname: "/missing", style: ["font-gnf"], preloads: ["font-gnf"], link: ["font-gnf"] },
+];
+
+describe("App Router next/font is scoped to the requested route (production)", () => {
+  let server: import("node:http").Server | undefined;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    fs.rmSync(outDir, { recursive: true, force: true });
+    const builder = await createBuilder({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext({ appDir: FIXTURE_DIR })],
+      logLevel: "silent",
+      build: { assetsInlineLimit: 0 },
+    });
+    await builder.buildApp();
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    ({ server } = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir,
+      noCompression: true,
+    }));
+    const addr = server!.address();
+    baseUrl = `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`;
+  }, 120000);
+
+  afterAll(() => {
+    server?.close();
+  });
+
+  it("answers each page with its own fonts in any request order", async () => {
+    expect(await fontsInOrder(baseUrl)).toEqual(EXPECTED);
+  });
+});
+
+describe("App Router next/font is scoped to the requested route (dev)", () => {
+  let server: ViteDevServer | undefined;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR, { appRouter: true }));
+  }, 120000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("answers each page with its own fonts in any request order", async () => {
+    expect(await fontsInOrder(baseUrl)).toEqual(EXPECTED);
+  });
+});
+
+// With resolve.preserveSymlinks, module ids keep the root's symlinked path, so
+// the route files the owners are read from must keep it too. (A production
+// build of a symlinked root can't resolve vinext's own dependencies under this
+// repository's pnpm layout, so only dev runs here; both read the same ids.)
+describe("App Router next/font through a symlinked root with resolve.preserveSymlinks (dev)", () => {
+  const linkedRoot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-fonts-")), "app");
+  let server: ViteDevServer | undefined;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    fs.symlinkSync(FIXTURE_DIR, linkedRoot, "junction");
+    ({ server, baseUrl } = await startFixtureServer(linkedRoot, {
+      appRouter: true,
+      resolve: { preserveSymlinks: true },
+    }));
+  }, 120000);
+
+  afterAll(async () => {
+    await server?.close();
+    fs.rmSync(path.dirname(linkedRoot), { recursive: true, force: true });
+  });
+
+  it("answers each page with its own fonts in any request order", async () => {
+    expect(await fontsInOrder(baseUrl)).toEqual(EXPECTED);
+  });
+});

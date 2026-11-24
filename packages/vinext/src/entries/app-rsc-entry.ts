@@ -30,6 +30,7 @@ import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
 import { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "../server/image-optimization.js";
 import { ACTION_OWNER_MANIFEST_ID } from "../plugins/action-owner-manifest.js";
+import { DEV_FONT_OWNERS_ID, FONT_OWNER_MANIFEST_ID } from "../plugins/font-owner-manifest.js";
 
 const DEFAULT_EXPIRE_TIME = 31_536_000;
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
@@ -162,6 +163,11 @@ type AppRouterConfig = {
   /** Register the application's direct OpenTelemetry ESM loader in Node builds. */
   nodeOpenTelemetryLoader?: boolean;
   actionOwners?: Record<string, string[]> | null;
+  /**
+   * Read each render's font owners from the dev module graph rather than the
+   * build's route font manifest.
+   */
+  devFontOwners?: boolean;
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
@@ -793,6 +799,7 @@ export function generateRscEntry(
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
   const actionOwners = config?.actionOwners;
+  const devFontOwners = config?.devFontOwners === true;
   const hasAppRouteHandlers = routes.some((route) => route.routePath !== null);
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
@@ -1065,8 +1072,26 @@ import "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
-function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
-function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+${devFontOwners ? "" : `import __vinextFontOwners from ${JSON.stringify(FONT_OWNER_MANIFEST_ID)};`}
+function _getSSRFontStyles(owners) { return [..._getSSRFontStylesGoogle(owners), ..._getSSRFontStylesLocal(owners)]; }
+function _getSSRFontPreloads(owners) { return [..._getSSRFontPreloadsGoogle(owners), ..._getSSRFontPreloadsLocal(owners)]; }
+// The modules whose fonts the render of \`route\` (or of no matched route, or
+// the standalone global-not-found render) carries; null carries every font.
+${
+  devFontOwners
+    ? `function __getFontOwners(route, render) {
+  const query = render === "global-not-found"
+    ? "global-not-found"
+    : route?.pattern != null ? "route=" + encodeURIComponent(route.pattern) : "routeless";
+  // The resolved virtual id's URL form: import analysis rewrites only literals.
+  return import(/* @vite-ignore */ ${JSON.stringify(`/@id/__x00__${DEV_FONT_OWNERS_ID}?`)} + query).then((m) => m.default);
+}`
+    : `function __getFontOwners(route, render) {
+  if (!__vinextFontOwners) return null;
+  if (render === "global-not-found") return __vinextFontOwners.globalNotFound;
+  return route?.pattern != null ? (__vinextFontOwners.routes[route.pattern] ?? []) : __vinextFontOwners.routeless;
+}`
+}
 ${
   hasPagesDir
     ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.
@@ -1336,6 +1361,7 @@ function __createFallbackRenderer() {
   },
   fontProviders: {
     buildFontLinkHeader: __buildAppPageFontLinkHeader,
+    getFontOwners: __getFontOwners,
     getFontLinks: _getSSRFontLinks,
     getFontPreloads: _getSSRFontPreloads,
     getFontStyles: _getSSRFontStyles,
@@ -1530,7 +1556,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   isDev: process.env.NODE_ENV !== "production",
   draftModeSecret: __draftModeSecret,
   devForwardedMiddlewareContextKey: ${JSON.stringify(config?.devForwardedMiddlewareContextKey ?? null)},
-  dispatchMatchedPage({
+  async dispatchMatchedPage({
     bypassInterceptionContextCache,
     cachePathname,
     cleanPathname,
@@ -1567,6 +1593,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
     const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);
     const __generateStaticParams = __resolveRouteGenerateStaticParams(route);
+    const __fontOwners = await __getFontOwners(route);
     return __dispatchAppPage({
       basePath: __basePath,
       bypassInterceptionContextCache,
@@ -1616,9 +1643,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         );
       },
       generateStaticParams: __generateStaticParams,
-      getFontLinks: _getSSRFontLinks,
-      getFontPreloads: _getSSRFontPreloads,
-      getFontStyles: _getSSRFontStyles,
+      getFontLinks: () => _getSSRFontLinks(__fontOwners),
+      getFontPreloads: () => _getSSRFontPreloads(__fontOwners),
+      getFontStyles: () => _getSSRFontStyles(__fontOwners),
       getNavigationContext: _getNavigationContext,
       getSourceRoute(sourceRouteIndex) {
         return routes[sourceRouteIndex];
