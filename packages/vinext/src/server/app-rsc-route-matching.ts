@@ -601,11 +601,12 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           sourceRouteLacksSlot,
           rendersWholeInterceptingRoute,
           sourceRouteIndex: rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex,
-          // The owner's params above the interception marker take the values
-          // the interception rewrite captures from the source pathname.
-          matchedParams: rendersWholeInterceptingRoute
-            ? mergeMatchedParams(params, sourceParams)
-            : mergeMatchedParams(sourceParams, params),
+          // The params above the interception marker, the owner's and those of
+          // the slot's folders, take the values the interception rewrite
+          // captures from the source pathname, as the root params do. Where
+          // they differ from the target's, `rendersTargetLayouts` is false, so
+          // the source is authorized like a direct request to it, or dropped.
+          matchedParams: mergeMatchedParams(params, sourceParams),
           sourceMatchedParams: renderedSourceParams ?? createRouteParams(),
           authorizationSourceRouteIndex: concreteSourceRouteIndex,
           authorizationSourceParams: matchedSourceParams ?? createRouteParams(),
@@ -1008,10 +1009,10 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
 }
 
 function mergeMatchedParams(
-  sourceParams: AppRscRouteParams,
   targetParams: AppRscRouteParams,
+  sourceParams: AppRscRouteParams,
 ): AppRscRouteParams {
-  return Object.assign(createRouteParams(), sourceParams, targetParams);
+  return Object.assign(createRouteParams(), targetParams, sourceParams);
 }
 
 function pickPatternParams(

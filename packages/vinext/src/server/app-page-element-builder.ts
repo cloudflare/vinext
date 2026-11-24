@@ -1171,9 +1171,7 @@ export async function buildPageElements<
           }
         : null,
       mountedLayouts,
-      // The whole intercepting route keeps nothing the client holds, so its
-      // slots' defaults render even where the client has the slot mounted.
-      mountedSlotIds: rendersWholeInterceptingRoute ? null : mountedSlotIds,
+      mountedSlotIds,
       makeThenableParams,
       matchedParams: params,
       pageRenderDependency,

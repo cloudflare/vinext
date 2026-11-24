@@ -39,6 +39,7 @@ import { INITIAL_BFCACHE_ID } from "../server/app-bfcache-id.js";
 import { AppElementsWire, type AppElements } from "../server/app-elements.js";
 import {
   ROUTE_MISS_DOCUMENT_NAVIGATION,
+  canInterceptNavigationTarget,
   resolveManifestNavigationInterceptionContext,
 } from "../server/app-browser-interception-context.js";
 import {
@@ -316,18 +317,30 @@ export function getPrefetchInterceptionContext(
   }
 
   const currentSource = source ?? getPrefetchInterceptionSource();
+  const routeManifest = getNavigationRuntime()?.bootstrap.routeManifest ?? null;
   // An entry that keeps its source sends it on its navigations, so its
-  // prefetches do too, as Next.js prefetches with the `Next-Url` it navigates
-  // with. One that renders an intercepting route's own tree sends it only to
-  // the targets its tree path intercepts.
+  // prefetches to a target an intercept can match do too, as Next.js
+  // prefetches with the `Next-Url` it navigates with. Next.js's server drops
+  // that header on a request to any other path, so a prefetch there stays a
+  // plain one that shared caches answer. Its navigation still sends the
+  // source, since a redirect or middleware rewrite can still reach an
+  // intercept, so it renders without this prefetch. One that renders an
+  // intercepting route's own tree sends it only to the targets its tree path
+  // intercepts.
   if (currentSource.sourceInterceptionContext !== null && !currentSource.resolvesFromTreePath) {
-    return currentSource.sourceInterceptionContext;
+    return canInterceptNavigationTarget({
+      basePath: __basePath,
+      routeManifest,
+      targetPathname: targetUrl.pathname,
+    })
+      ? currentSource.sourceInterceptionContext
+      : null;
   }
   const interceptionContext = resolveManifestNavigationInterceptionContext({
     basePath: __basePath,
     currentPathname: currentSource.pathname,
     currentRenderIsRouteMiss: currentSource.routeMiss,
-    routeManifest: getNavigationRuntime()?.bootstrap.routeManifest ?? null,
+    routeManifest,
     targetPathname: targetUrl.pathname,
   });
   // A navigation to that target loads its document, so it never uses this
@@ -2571,6 +2584,8 @@ const _appRouter: AppRouterInstance = {
         interceptionContext = getPrefetchInterceptionContext(fullHref, interceptionSource);
         if (interceptionContext !== null) {
           headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
+        } else {
+          headers.delete(VINEXT_INTERCEPTION_CONTEXT_HEADER);
         }
       }
       // Hybrid ownership: when a Pages route owns the URL, the App Router

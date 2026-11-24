@@ -724,10 +724,10 @@ describe("prefetch cache eviction", () => {
   });
 
   // An intercept opened from an unmatched URL's not-found page keeps
-  // /_not-found as its entry's source, which its navigations send whatever
-  // their target, so its prefetches send it too, as Next.js prefetches with
-  // the `Next-Url` it navigates with.
-  it("router.prefetch sends the source an intercepted entry keeps", async () => {
+  // /_not-found as its entry's source, which its navigations send, so its
+  // prefetches to a target an intercept can match send it too, as Next.js
+  // prefetches with the `Next-Url` it navigates with.
+  it("router.prefetch sends the source an intercepted entry keeps to targets it can intercept", async () => {
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", { headers: { "content-type": "text/x-component" } }),
@@ -778,11 +778,13 @@ describe("prefetch cache eviction", () => {
       routeId: "route:/photos/1",
     });
 
+    // Nothing intercepts `/about`, so its prefetch stays a plain one that
+    // shared caches answer, as Next.js's server drops `Next-Url` there.
     appRouterInstance.prefetch("/about", { kind: "full" });
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
     expect(
       new Headers(fetch.mock.calls[1]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
-    ).toBe("/_not-found");
+    ).toBeNull();
   });
 
   // A sibling intercept's tree stops at the interception marker, so Next.js

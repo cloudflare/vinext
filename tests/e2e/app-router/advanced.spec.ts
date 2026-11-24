@@ -382,6 +382,67 @@ test.describe("Intercepting Routes", () => {
     expect(await markerKept(page)).toBe(true);
   });
 
+  // A slot of a layout both trees share keeps the page the source showed in
+  // it, on the click and on a refresh, as in Next.js 16.2.7 (webpack and
+  // Turbopack), where it is a `__DEFAULT__` segment that keeps what the client
+  // holds.
+  test("keeps a slot of a layout the source and the whole intercepting route share", async ({
+    page,
+  }) => {
+    const sidebar = page.locator("#intercept-ancestor-slot-sidebar");
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-ancestor-slot/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await expect(sidebar).toHaveText("Sidebar static");
+
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+    await expect(page).toHaveURL(/\/intercept-source-ancestor-slot\/club\/static\/pics\/1$/);
+    await expect(page.locator("#intercept-ancestor-slot-modal")).toHaveText("Pic modal: 1");
+    await expect(page.locator("#intercept-ancestor-slot-club-default")).toHaveText("Club default");
+    await expect(sidebar).toHaveText("Sidebar static");
+
+    const refresh = page.waitForResponse(
+      (response) =>
+        response.url().includes("/intercept-source-ancestor-slot/club/static/pics/1") &&
+        response.request().headers()["rsc"] === "1",
+    );
+    await refreshRouter(page);
+    expect((await refresh).status()).toBe(200);
+    await expect(page.locator("#intercept-ancestor-slot-modal")).toHaveText("Pic modal: 1");
+    await expect(sidebar).toHaveText("Sidebar static");
+    expect(await markerKept(page)).toBe(true);
+
+    // A hard load of the target shows the slot's default, as Next.js does.
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-ancestor-slot-pic")).toHaveText("Pic page: 1");
+    await expect(sidebar).toHaveText("Sidebar default");
+  });
+
+  // The intercepting page takes the params above its marker from the page it
+  // opened from, as Next.js 16.2.7's interception rewrite captures them from
+  // `Next-Url` (webpack and Turbopack).
+  test("gives the intercepting page the source's params above its marker", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-params/club/bravo/deep`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    await page.getByRole("link", { name: "Acme pic 1", exact: true }).click();
+    await expect(page).toHaveURL(/\/intercept-source-params\/club\/acme\/pics\/1$/);
+    await expect(page.locator("#intercept-source-params-modal")).toHaveText("Pic modal: bravo/1");
+    await expect(page.locator("#intercept-source-params-deep")).toContainText("Deep: bravo");
+    expect(await markerKept(page)).toBe(true);
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-source-params-pic")).toHaveText("Pic page: acme/1");
+    await expect(page.locator("#intercept-source-params-modal")).toHaveCount(0);
+  });
+
   // A link in the whole intercepting route sends its source again, as Next.js
   // does, so an interception from that source into a slot of a layout both
   // trees share opens softly over it.

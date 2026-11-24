@@ -3957,10 +3957,81 @@ describe("buildPageElements", () => {
   });
 
   // Each other slot of the whole intercepting route is Next.js's lone
-  // `__DEFAULT__` segment, which carries none of the slot directory's files,
-  // and the payload keeps nothing the client holds, so a default renders even
-  // in a slot the client has mounted.
+  // `__DEFAULT__` segment, which carries none of the slot directory's files.
   it("renders the whole intercepting route's other slots as clean, fresh defaults", async () => {
+    const calls: string[] = [];
+    const component =
+      (name: string) =>
+      ({ children }: { children?: React.ReactNode }) => {
+        calls.push(name);
+        return React.createElement("div", null, name, children);
+      };
+    const route = createSyntheticRoute({
+      layouts: [],
+      layoutTreePositions: [],
+      page: { default: component("club page") } as AppPageModule,
+      pattern: "/club/:slug",
+      params: ["slug"],
+      routeSegments: ["club", "[slug]"],
+      slots: {
+        aside: {
+          name: "aside",
+          page: { default: component("aside page") } as AppPageModule,
+          default: { default: component("aside default") } as AppPageModule,
+          error: { default: () => React.createElement("div", null, "aside error") },
+          layout: { default: component("aside slot layout") } as AppPageModule,
+          layoutIndex: -1,
+          loading: { default: () => React.createElement("div", null, "aside loading") },
+          notFound: { default: () => React.createElement("div", null, "aside not found") },
+          notFoundTreePosition: 0,
+          notFounds: [{ default: () => React.createElement("div", null, "aside not found") }],
+          notFoundTreePositions: [0],
+          ownerTreePosition: 0,
+          routeSegments: ["club", "[slug]"],
+        },
+        modal: {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: -1,
+          routeSegments: [],
+        },
+      },
+    });
+    const options = createBaseOptions({
+      route,
+      params: { slug: "static" },
+      routePath: "/club/static/pics/1",
+      opts: {
+        interceptionContext: "/club/static",
+        interceptOwnerDefault: null,
+        interceptPage: { default: component("pic modal") } as AppPageModule,
+        interceptParams: { id: "1", slug: "static" },
+        interceptSlotId: "slot:modal:/",
+        interceptSlotKey: "modal",
+        interceptSourceMatchedUrl: "/club/static",
+        interceptSourcePageSegments: ["club", "[slug]", "@modal", "(.)pics", "[id]"],
+        rendersInterceptionSource: true,
+        rendersWholeInterceptingRoute: true,
+      },
+    });
+    const elements = await buildPageElements({
+      ...options,
+      pageRequest: { ...options.pageRequest, isRscRequest: true },
+    });
+
+    const aside = (elements as Record<string, React.ReactNode>)["slot:aside:/"];
+    expect(aside).toBeDefined();
+    expect(findElementOfType(aside, ErrorBoundary)).toBeNull();
+    expect(findElementOfType(aside, React.Suspense)).toBeNull();
+    expect(await renderElementEntry(elements, "slot:aside:/")).toContain("aside default");
+    expect(calls).not.toContain("aside slot layout");
+    expect(calls).not.toContain("aside page");
+  });
+
+  // A slot the client has mounted belongs to a layout the source's tree and
+  // the whole intercepting route share, so it keeps what the client shows,
+  // on a refresh too, as Next.js keeps a `__DEFAULT__` segment's current one.
+  it("keeps the whole intercepting route's slots the client has mounted", async () => {
     const calls: string[] = [];
     const component =
       (name: string) =>
@@ -4022,13 +4093,9 @@ describe("buildPageElements", () => {
       pageRequest: { ...options.pageRequest, isRscRequest: true },
     });
 
-    const aside = (elements as Record<string, React.ReactNode>)["slot:aside:/"];
-    expect(aside).toBeDefined();
-    expect(findElementOfType(aside, ErrorBoundary)).toBeNull();
-    expect(findElementOfType(aside, React.Suspense)).toBeNull();
-    expect(await renderElementEntry(elements, "slot:aside:/")).toContain("aside default");
-    expect(calls).not.toContain("aside slot layout");
-    expect(calls).not.toContain("aside page");
+    expect(Object.hasOwn(elements, "slot:aside:/")).toBe(false);
+    expect(await renderElementEntry(elements, "slot:modal:/")).toContain("pic modal");
+    expect(calls).not.toContain("aside default");
   });
 
   // An owner whose slot has URL subroutes holds a children slot for its page.

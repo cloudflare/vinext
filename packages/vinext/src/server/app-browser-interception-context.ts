@@ -73,6 +73,30 @@ export function resolveManifestNavigationInterceptionContext(
   return null;
 }
 
+/**
+ * Whether any intercept's target can match the target pathname, also after a
+ * middleware rewrite adds dynamic segments to it. Next.js's server drops the
+ * `Next-Url` of a request to any other path, so its response stays cacheable.
+ */
+export function canInterceptNavigationTarget(options: {
+  basePath: string;
+  routeManifest: BrowserRouteManifest | null;
+  targetPathname: string;
+}): boolean {
+  if (options.routeManifest === null) return true;
+  const targetParts = splitPathnameForRouteMatch(
+    stripBasePath(options.targetPathname, options.basePath),
+  );
+  for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
+    if (
+      matchRoutePatternWithOptionalDynamicSegments(targetParts, interception.targetPatternParts)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function resolveMiddlewareRewriteNavigationInterceptionContext(
   options: ResolveManifestNavigationInterceptionContextOptions,
 ): NavigationInterceptionContextResolution {
