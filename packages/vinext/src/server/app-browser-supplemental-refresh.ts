@@ -71,7 +71,7 @@ export type SupplementalRefreshHandle = {
  * Whether a payload renders the whole intercepting route, which keeps nothing
  * of its source or of any other render, as Next.js renders that tree alone.
  */
-export function rendersWholeInterceptingRoute(elements: AppElements): boolean {
+function rendersWholeInterceptingRoute(elements: AppElements): boolean {
   return AppElementsWire.readMetadata(elements).wholeInterceptionSource !== null;
 }
 
