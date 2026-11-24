@@ -274,8 +274,6 @@ async function read(
   return worker.fetch(`https://user.test/cache${path}`, { headers });
 }
 
-// Miniflare does not run Workers Cache. Inject the header at the cache-bearing
-// entrypoint, where deployed Workers Cache adds it during revalidation.
 // An RFC 850 date for `date`, with the weekday of the same day `yearOffset` years away.
 function rfc850Date(date: Date, yearOffset: number) {
   const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -285,6 +283,8 @@ function rfc850Date(date: Date, yearOffset: number) {
   return `${weekdays[weekday.getUTCDay()]}, ${day}-${month}-${year.slice(2)} 00:00:00 GMT`;
 }
 
+// Miniflare does not run Workers Cache. Inject the header at the cache-bearing
+// entrypoint, where deployed Workers Cache adds it during revalidation.
 async function conditionalRead(path: string, header = "If-None-Match", value?: string) {
   const bindings = await mf.getBindings<{
     RESPONSE_STORE_BINDING: Awaited<ReturnType<Miniflare["getWorker"]>>;
