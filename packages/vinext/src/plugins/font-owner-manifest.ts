@@ -319,12 +319,14 @@ export function createFontOwnerManifestPlugin(options: {
  * has not transformed yet is transformed here, as its request would. Packages
  * are walked only once loaded: dev externalizes or prebundles them, and the
  * font transform never sees those copies. `visit` returns whether to walk on
- * through a module's imports.
+ * through a module's imports. With `transformMissing` false, it reads only the
+ * graph as it is.
  */
 async function walkDevModuleGraph(
   environment: DevEnvironment,
   roots: readonly string[],
   visit: (id: string, file: string | null) => boolean,
+  transformMissing = true,
 ): Promise<void> {
   const visited = new Set<string>();
   const stack = [...roots];
@@ -333,7 +335,7 @@ async function walkDevModuleGraph(
     if (visited.has(id) || id.startsWith("\0")) continue;
     visited.add(id);
     let module = environment.moduleGraph.getModuleById(id);
-    if (!module?.transformResult && !id.includes("/node_modules/")) {
+    if (transformMissing && !module?.transformResult && !id.includes("/node_modules/")) {
       try {
         await environment.transformRequest(module?.url ?? id);
       } catch {
@@ -347,4 +349,171 @@ async function walkDevModuleGraph(
       if (imported.id) stack.push(imported.id);
     }
   }
+}
+
+/**
+ * The Pages Router font manifest: an external import of a file the Pages
+ * server build writes beside its entry, mapping each page's route pattern to
+ * the owners its document carries.
+ */
+export const PAGES_FONT_OWNER_MANIFEST_ID = "virtual:vinext-pages-font-owner-manifest";
+/** Dev: `virtual:vinext-pages-font-owners?page=<pattern>` exports a page's owner keys. */
+export const DEV_PAGES_FONT_OWNERS_ID = "virtual:vinext-pages-font-owners";
+
+const RESOLVED_PAGES_FONT_OWNER_MANIFEST_ID = `\0${PAGES_FONT_OWNER_MANIFEST_ID}`;
+const RESOLVED_DEV_PAGES_FONT_OWNERS_PREFIX = `\0${DEV_PAGES_FONT_OWNERS_ID}?`;
+const PAGES_FONT_OWNER_MANIFEST_FILE = "__vinext_pages_font_owner_manifest.js";
+const PAGES_FONT_OWNER_MANIFEST_EXTERNALS: ReadonlyMap<string, string> = new Map([
+  [PAGES_FONT_OWNER_MANIFEST_ID, PAGES_FONT_OWNER_MANIFEST_FILE],
+]);
+
+/** The files whose fonts a page's document carries: `_app`'s and the page's. */
+type PagesFontRoutes = {
+  appFile: string | null;
+  /** Each page, and `/_error`, whose file is null when the app has no custom one. */
+  pages: { pattern: string; filePath: string | null }[];
+};
+
+/**
+ * The owner keys of a dev Pages render: the font owners the server graph of
+ * `files` reaches. Next.js gives a page the fonts of `_app` and of the page.
+ *
+ * With `transformMissing`, modules the graph has not loaded yet are
+ * transformed, as their request would, so a component the page loads lazily
+ * counts before it first runs. The generated entry's dev lookup needs that: it
+ * is a module computed once per page. The Node handler asks again on each
+ * request, after the page ran, so it reads the graph as it is: transforming an
+ * invalidated page there races the module runner's own reload after an edit.
+ */
+export async function collectDevPagesFontOwners(
+  environment: DevEnvironment,
+  files: readonly (string | null | undefined)[],
+  options: {
+    canonicalizeModuleId: (id: string) => string;
+    isOwner: (id: string) => boolean;
+    ownerKey: (id: string) => string;
+    watch?: (file: string) => void;
+    transformMissing?: boolean;
+  },
+): Promise<string[]> {
+  const owners = new Set<string>();
+  const roots = files.filter((file): file is string => typeof file === "string");
+  await walkDevModuleGraph(
+    environment,
+    roots.map((root) =>
+      canonicalizeFontModuleId(environment.config, options.canonicalizeModuleId, root),
+    ),
+    (id, file) => {
+      if (file) options.watch?.(file);
+      if (options.isOwner(id)) owners.add(options.ownerKey(id));
+      return true;
+    },
+    options.transformMissing === true,
+  );
+  return [...owners].sort();
+}
+
+export function createPagesFontOwnerManifestPlugin(options: {
+  canonicalizeModuleId: (id: string) => string;
+  getRoutes: () => Promise<PagesFontRoutes>;
+  /** Keys of the modules the `vinext:font-owner` transform marked. */
+  ownerKeys: ReadonlySet<string>;
+}): Plugin {
+  let config: ResolvedConfig;
+  const isOwner = (id: string) => options.ownerKeys.has(fontOwnerKey(config.root, id));
+  const ownerKey = (id: string) => fontOwnerKey(config.root, id);
+  const canonicalizeModuleId = (id: string) =>
+    canonicalizeFontModuleId(config, options.canonicalizeModuleId, id);
+
+  return {
+    name: "vinext:pages-font-owner-manifest",
+    configResolved(resolvedConfig) {
+      config = resolvedConfig;
+    },
+    configureServer(devServer) {
+      // An added or removed `_app`, `_error` or page changes a page's files,
+      // which the walk could not watch while they were missing. Recompute
+      // every page's owners, in whichever environment runs the Pages entry.
+      // Edits to files a walk read invalidate it on their own.
+      const invalidate = () => {
+        for (const environment of Object.values(devServer.environments)) {
+          const graph = environment.moduleGraph;
+          for (const [id, module] of graph.idToModuleMap) {
+            if (id.startsWith(RESOLVED_DEV_PAGES_FONT_OWNERS_PREFIX))
+              graph.invalidateModule(module);
+          }
+        }
+      };
+      devServer.watcher.on("add", invalidate);
+      devServer.watcher.on("unlink", invalidate);
+    },
+    resolveId(source) {
+      if (source === PAGES_FONT_OWNER_MANIFEST_ID) {
+        return this.environment.mode === "build"
+          ? { id: source, external: true }
+          : RESOLVED_PAGES_FONT_OWNER_MANIFEST_ID;
+      }
+      if (source.startsWith(`${DEV_PAGES_FONT_OWNERS_ID}?`)) return `\0${source}`;
+    },
+    async load(id) {
+      if (id === RESOLVED_PAGES_FONT_OWNER_MANIFEST_ID) return "export default null";
+      if (!id.startsWith(RESOLVED_DEV_PAGES_FONT_OWNERS_PREFIX)) return;
+      const pattern = new URLSearchParams(
+        id.slice(RESOLVED_DEV_PAGES_FONT_OWNERS_PREFIX.length),
+      ).get("page");
+      const { appFile, pages } = await options.getRoutes();
+      const page = pages.find((candidate) => candidate.pattern === pattern);
+      const environment = this.environment as DevEnvironment;
+      // Unknown page: every font, as before fonts were scoped.
+      if (!page || typeof environment.transformRequest !== "function") {
+        return "export default null";
+      }
+      const owners = await collectDevPagesFontOwners(environment, [appFile, page.filePath], {
+        canonicalizeModuleId: options.canonicalizeModuleId,
+        isOwner,
+        ownerKey,
+        // Editing any module the walk read can change the page's fonts.
+        watch: (file) => this.addWatchFile(file),
+        // Computed once, maybe before the page's lazy components first load.
+        transformMissing: true,
+      });
+      return `export default ${JSON.stringify(owners)};`;
+    },
+    renderChunk(code, chunk) {
+      return rewriteOutputRootExternals(code, chunk.fileName, PAGES_FONT_OWNER_MANIFEST_EXTERNALS);
+    },
+    async generateBundle() {
+      // Only the server build whose entry reads the manifest writes it.
+      if (this.environment.config.consumer !== "server") return;
+      if (!this.getModuleInfo(PAGES_FONT_OWNER_MANIFEST_ID)) return;
+      const { appFile, pages } = await options.getRoutes();
+      let manifest: Pick<FontOwnerManifest, "routes"> = { routes: {} };
+      if (options.ownerKeys.size > 0) {
+        const app = appFile ? [canonicalizeModuleId(appFile)] : [];
+        manifest = buildFontOwnerManifest({
+          rsc: snapshotModuleGraph(this.getModuleIds(), (id) => this.getModuleInfo(id)),
+          ssr: new Map(),
+          clientReferences: new Map(),
+          isOwner,
+          ownerKey,
+          routes: new Map(
+            pages.map(({ pattern, filePath }) => [
+              pattern,
+              {
+                files: [...app, ...(filePath ? [canonicalizeModuleId(filePath)] : [])],
+                interceptFiles: new Map(),
+              },
+            ]),
+          ),
+          routelessFiles: [],
+          globalNotFoundFiles: [],
+        });
+      }
+      this.emitFile({
+        type: "asset",
+        fileName: PAGES_FONT_OWNER_MANIFEST_FILE,
+        source: `export default ${safeJsonStringify({ routes: manifest.routes })};\n`,
+      });
+    },
+  };
 }

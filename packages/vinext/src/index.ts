@@ -117,7 +117,12 @@ import {
   hasExportedName,
 } from "./build/report.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
-import { createFontOwnerManifestPlugin } from "./plugins/font-owner-manifest.js";
+import {
+  collectDevPagesFontOwners,
+  createFontOwnerManifestPlugin,
+  createPagesFontOwnerManifestPlugin,
+} from "./plugins/font-owner-manifest.js";
+import { fontOwnerKey } from "./build/font-owner-manifest.js";
 import { createServerModuleScopePlugin, realDirectoryPath } from "./plugins/server-module-scope.js";
 import {
   createRscScanGlobImportsPlugin,
@@ -2230,7 +2235,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      { nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader, prerenderSecret },
+      {
+        devFontOwners: isServeCommand,
+        nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
+        prerenderSecret,
+      },
     );
   }
 
@@ -2258,6 +2267,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       prerenderSecret,
+      isServeCommand,
     );
   }
 
@@ -8087,6 +8097,18 @@ export const loadServerActionClient = ${
                           )
                         : undefined,
                       classifyDevPageRoute,
+                      (files) => {
+                        const environment = server.environments["ssr"];
+                        if (!environment) return Promise.resolve(null);
+                        // No module has loaded a font, so none is any page's:
+                        // skip the walk on each request.
+                        if (fontOwnerKeys.size === 0) return Promise.resolve([]);
+                        return collectDevPagesFontOwners(environment, files, {
+                          canonicalizeModuleId: canonicalize,
+                          isOwner: (id) => fontOwnerKeys.has(fontOwnerKey(root, id)),
+                          ownerKey: (id) => fontOwnerKey(root, id),
+                        });
+                      },
                     ),
                   };
                 }
@@ -8775,6 +8797,24 @@ export const loadServerActionClient = ${
       onOwner(key) {
         fontOwnerKeys.add(key);
       },
+    }),
+    // The Pages Router's per-page font owners — see src/plugins/font-owner-manifest.ts
+    createPagesFontOwnerManifestPlugin({
+      canonicalizeModuleId: canonicalize,
+      async getRoutes() {
+        if (!hasPagesDir) return { appFile: null, pages: [] };
+        const pages = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+        return {
+          appFile: findFileWithExts(pagesDir, "_app", fileMatcher),
+          pages: [
+            ...pages.map((route) => ({ pattern: route.pattern, filePath: route.filePath })),
+            // The error page renders as a page of its own, like Next.js' `/_error`
+            // entry, with only `_app`'s fonts when the app has no custom one.
+            { pattern: "/_error", filePath: findFileWithExts(pagesDir, "_error", fileMatcher) },
+          ],
+        };
+      },
+      ownerKeys: fontOwnerKeys,
     }),
     // Google Fonts import rewrite + self-hosting — see src/plugins/fonts.ts
     createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir),
