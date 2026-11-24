@@ -2711,9 +2711,12 @@ test("conditional and unconditional stale reads share one regeneration claim", a
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(await metadataRowCount("revalidation_claims"), 1);
-  await assert.rejects(
-    conditionalRead("/conditional-claim"),
-    /revalidation is already in progress/,
+  const raced = await conditionalRead("/conditional-claim");
+  assert.equal(await raced.text(), "stale-body");
+  assert.equal(raced.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.match(
+    raced.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=0, stale-while-revalidate=\d+$/,
   );
   assert.equal(await (await read("/conditional-claim")).text(), "stale-body");
   assert.equal(await (await first).text(), "fresh-body");
@@ -2727,7 +2730,7 @@ test("conditional and unconditional stale reads share one regeneration claim", a
   assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
-test("a superseded conditional revalidation never returns the old active body", async () => {
+test("a superseded conditional revalidation answers with the committed entry, still stale", async () => {
   const path = "/conditional-lease-expiry";
   await put(path, "stale-body", {
     cacheControl: "public, max-age=0, stale-while-revalidate=60",
@@ -2752,7 +2755,14 @@ test("a superseded conditional revalidation never returns the old active body", 
     30_000,
   );
   assert.ok(replacement);
-  await assert.rejects(pending, /revalidation is already in progress or was superseded/);
+  const superseded = await pending;
+  assert.equal(await superseded.text(), "stale-body");
+  assert.equal(superseded.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(superseded.headers.get("X-Workers-Response-Store-Revision"), "1");
+  assert.match(
+    superseded.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=0, stale-while-revalidate=\d+$/,
+  );
   assert.equal((await metadata())[0].activeRevision, 1);
   assert.equal(await metadataRowCount("revalidation_claims"), 1);
 
