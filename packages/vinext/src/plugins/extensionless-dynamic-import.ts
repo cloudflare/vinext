@@ -240,6 +240,7 @@ function resolvePackageImport(
   if (matchedExport === null) return null;
 
   const { keyMatch, exportValue } = matchedExport;
+  const packageRoot = resolveRealDirectory(packageInfo.packageRoot);
   for (const target of resolveExportTargets(exportValue, exportConditions)) {
     if (!target.startsWith("./")) continue;
     const targetParts = decodePackageTarget(target);
@@ -249,13 +250,13 @@ function resolvePackageImport(
     const decodedCapture = decodeRequestCapturePattern(keyMatch.capture);
     if (decodedCapture === null) continue;
     const absoluteGlob = path.resolve(
-      packageInfo.packageRoot,
+      packageRoot,
       `${targetPrefix.slice(2)}${decodedCapture}${targetSuffix}`,
     );
-    const absolutePrefix = path.resolve(packageInfo.packageRoot, targetPrefix.slice(2));
+    const absolutePrefix = path.resolve(packageRoot, targetPrefix.slice(2));
     if (
-      !isWithinPackage(packageInfo.packageRoot, absoluteGlob) ||
-      !isWithinPackage(packageInfo.packageRoot, absolutePrefix)
+      !isWithinPackage(packageRoot, absoluteGlob) ||
+      !isWithinPackage(packageRoot, absolutePrefix)
     ) {
       continue;
     }
@@ -626,7 +627,10 @@ function buildPackageGlobPatterns(
 }
 
 function resolveImporterDirectory(id: string): string {
-  const directory = path.dirname(id.split(/[?#]/, 1)[0]);
+  return resolveRealDirectory(path.dirname(id.split(/[?#]/, 1)[0]));
+}
+
+function resolveRealDirectory(directory: string): string {
   try {
     return toSlash(fs.realpathSync.native(directory));
   } catch {
