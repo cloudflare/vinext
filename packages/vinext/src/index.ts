@@ -1711,15 +1711,17 @@ function hasReactDirective(code: string): boolean {
 /**
  * Resolve a project directory through symlinks the way Vite resolves
  * `config.root` (and Next.js its project dir), so route files, `server.config.root`
- * and module ids all share one path. Windows uses the JS realpath, as Vite
- * does, to keep mapped network drives.
+ * and module ids all share one path.
  */
 function resolveProjectDir(dir: string, preserveSymlinks: boolean | undefined): string {
   if (preserveSymlinks) return toSlash(dir);
   try {
-    return toSlash(
-      process.platform === "win32" ? fs.realpathSync(dir) : fs.realpathSync.native(dir),
-    );
+    const realDir = fs.realpathSync.native(dir);
+    // Like Vite, keep a mapped network drive's letter instead of its UNC path.
+    if (process.platform === "win32" && realDir.startsWith("\\\\") && !/^[\\/]{2}/.test(dir)) {
+      return toSlash(fs.realpathSync(dir));
+    }
+    return toSlash(realDir);
   } catch {
     return toSlash(dir);
   }
