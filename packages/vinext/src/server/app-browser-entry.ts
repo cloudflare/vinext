@@ -1023,8 +1023,17 @@ async function commitSameUrlNavigatePayload(
         startedNavigationId: actionInitiation.navigationId,
       });
       const mountedSlotsHeader = getMountedSlotIdsHeader(actionInitiation.routerState.elements);
-      const supplemental = persistedInterceptions.map(
-        (interception) => (signal: AbortSignal) =>
+      // The source page an intercepted state names goes beneath the re-render
+      // only when the server rendered it as an intercept from that source.
+      const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+        basePath: __basePath,
+        keptSlotPathnames: resolveKeptSlotPathnames(actionInitiation.routerState.slotBindings),
+        previousNextUrl: actionInitiation.routerState.previousNextUrl,
+        refreshUrl,
+      });
+      const primaryElements = nextElements;
+      const supplemental = persistedInterceptions.map((interception) =>
+        sourcePageRefreshMerge.loadIntercepted(primaryElements, (signal) =>
           fetchPersistedInterceptedSlotRefresh({
             interceptionContext: interception.interceptionContext,
             interceptionId: interception.interception.id,
@@ -1032,19 +1041,12 @@ async function commitSameUrlNavigatePayload(
             signal,
             targetPathname: interception.targetPathname,
           }),
+        ),
       );
-      // The source page an intercepted state names goes beneath the re-render
-      // only when the server rendered it as an intercept from that source.
-      const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
-        keptSlotPathnames: resolveKeptSlotPathnames(actionInitiation.routerState.slotBindings),
-        previousNextUrl: actionInitiation.routerState.previousNextUrl,
-        refreshUrl,
-      });
       for (const sourcePageRefresh of sourcePageRefreshes) {
-        supplemental.push(async (signal) =>
-          sourcePageRefreshMerge.track(
-            sourcePageRefresh,
-            await fetchPersistedSourcePageRefresh({
+        supplemental.push(
+          sourcePageRefreshMerge.load(sourcePageRefresh, primaryElements, (signal) =>
+            fetchPersistedSourcePageRefresh({
               mountedSlotsHeader,
               signal,
               targetPathname: sourcePageRefresh,
@@ -1055,7 +1057,7 @@ async function commitSameUrlNavigatePayload(
       nextElements = resolveSupplementalRefreshes({
         merge: sourcePageRefreshMerge.merge,
         mergesInto: takesSupplementalRefreshes,
-        primary: nextElements,
+        primary: primaryElements,
         signal: supplementalHandle.signal,
         supplemental,
       }).then((result) => {
@@ -3035,6 +3037,7 @@ function bootstrapHydration(
           // only when the server rendered that payload as an intercept from
           // that source.
           const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+            basePath: __basePath,
             keptSlotPathnames:
               navigationKind === "traverse"
                 ? null
@@ -3045,8 +3048,9 @@ function bootstrapHydration(
                 : navigationInitiationState.previousNextUrl,
             refreshUrl: url,
           });
-          const supplemental = persistedRefreshInterceptions.map(
-            (interception) => (signal: AbortSignal) =>
+          const primaryPayload = Promise.resolve(rscPayload);
+          const supplemental = persistedRefreshInterceptions.map((interception) =>
+            sourcePageRefreshMerge.loadIntercepted(primaryPayload, (signal) =>
               fetchPersistedInterceptedSlotRefresh({
                 interceptionContext: interception.interceptionContext,
                 interceptionId: interception.interception.id,
@@ -3054,8 +3058,8 @@ function bootstrapHydration(
                 signal,
                 targetPathname: interception.targetPathname,
               }),
+            ),
           );
-          const primaryPayload = Promise.resolve(rscPayload);
           // A traversal learns from its payload whether it takes the source
           // page; one that doesn't neither waits for nor fails with it.
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {

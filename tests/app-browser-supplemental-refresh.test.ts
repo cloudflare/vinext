@@ -327,6 +327,60 @@ describe("parallel route supplemental refreshes", () => {
       }),
     ).resolves.toEqual(expect.objectContaining({ degraded: true, value: primary }));
 
+    // Only a render that can fill a left slot is waited for: another URL's
+    // or an intercept's request is cancelled, so it can't fail the refresh.
+    expect(sourceMerge.takes("/club/alpha", primary)).toBe(false);
+    const signals: AbortSignal[] = [];
+    const failing = (signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<AppElements>((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    };
+    const primaryPromise = Promise.resolve(primary);
+    const gated = await resolveSupplementalRefreshes({
+      merge: sourceMerge.merge,
+      mergesInto: takesSupplementalRefreshes,
+      primary: primaryPromise,
+      signal: new AbortController().signal,
+      supplemental: [
+        sourceMerge.load("/club/alpha", primaryPromise, failing),
+        sourceMerge.loadIntercepted(primaryPromise, failing),
+        sourceMerge.load("/club/static", primaryPromise, async () => staticRender),
+      ],
+    });
+    expect(gated.degraded).toBe(false);
+    expect(gated.value["slot:sidebar:/"]).toBe("sidebar static");
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+
+    // A traversal starts from another entry, which names no URL a slot was
+    // kept from: only the render of the source fills a left slot.
+    const traversalMerge = createInterceptionSourceRefreshMerge({
+      keptSlotPathnames: null,
+      previousNextUrl: "/club/static",
+      refreshUrl: new URL("https://example.com/club/static/pics/1"),
+    });
+    expect(traversalMerge.takes("/club/alpha", primary)).toBe(false);
+    expect(traversalMerge.takes("/club/static", primary)).toBe(true);
+    expect(traversalMerge.merge(primary, traversalMerge.track("/club/alpha", alphaRender))).toBe(
+      primary,
+    );
+    expect(
+      traversalMerge.merge(primary, traversalMerge.track("/club/static", staticRender))[
+        "slot:sidebar:/"
+      ],
+    ).toBe("sidebar static");
+
+    // A base path is left out of the URL a slot was kept from.
+    const basePathMerge = createInterceptionSourceRefreshMerge({
+      basePath: "/docs",
+      keptSlotPathnames,
+      previousNextUrl: "/docs/club/static",
+      refreshUrl: new URL("https://example.com/docs/club/static/pics/1"),
+    });
+    expect(basePathMerge.takes("/docs/club/static", primary)).toBe(true);
+    expect(basePathMerge.takes("/docs/club/alpha", primary)).toBe(false);
+
     // Once it holds the slot, the whole route takes nothing more.
     expect(takesSupplementalRefreshes(merged)).toBe(false);
     expect(sourceMerge.takes("/club/static", merged)).toBe(false);
