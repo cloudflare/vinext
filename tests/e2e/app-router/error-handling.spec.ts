@@ -1093,6 +1093,7 @@ test.describe("The page's and a slot's signals beside each other", () => {
     { path: "denied", status: 403, boundaryId: "mixed-signals-forbidden" },
     { path: "unauth", status: 401, boundaryId: "mixed-signals-unauthorized" },
     { path: "nested-denied", status: 403, boundaryId: "mixed-signals-forbidden" },
+    { path: "delayed-denied", status: 404, boundaryId: "mixed-signals-forbidden" },
   ]) {
     test(`the ${path} document hydrates both boundaries beside the sidebar`, async ({ page }) => {
       const errors: string[] = [];

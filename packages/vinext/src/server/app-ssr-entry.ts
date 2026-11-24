@@ -839,12 +839,42 @@ export async function handleSsr(
         // payload, with the boundaries that catch it on the client rendering
         // their fallback, or null when any copy isn't caught in the tree. No
         // server component runs again.
+        const resolveCaughtNotFoundBoundaries = (error: unknown): readonly string[] | null =>
+          options?.resolveCaughtNotFoundBoundaries?.(error, (rendered) =>
+            countPageEntryRejections(renderedPageEntry, rendered),
+          ) ?? null;
         const prepareCaughtNotFoundRoot = (error: unknown): ReactElement | null => {
-          const caughtNotFoundBoundaries =
-            options?.resolveCaughtNotFoundBoundaries?.(error, (rendered) =>
-              countPageEntryRejections(renderedPageEntry, rendered),
-            ) ?? null;
+          const caughtNotFoundBoundaries = resolveCaughtNotFoundBoundaries(error);
           if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
+          return prepareCaughtRoot(caughtNotFoundBoundaries);
+        };
+        // The Flight render goes on after the shell rejected, so a signal it
+        // throws later, such as an async page's forbidden() after a slot's
+        // notFound(), can reject the caught render. When the boundaries that
+        // catch every signal thrown so far include the render's and more, it
+        // renders again with them. Each render adds at least one, so this ends.
+        const widenCaughtNotFoundRoot = (
+          error: unknown,
+          caughtRenderError: unknown,
+        ): ReactElement | null => {
+          const digest = getNextErrorDigest(caughtRenderError);
+          const previous = caughtBoundaries?.ids;
+          if (digest === null || parseNextHttpErrorDigest(digest) === null || !previous) {
+            return null;
+          }
+          const caughtNotFoundBoundaries = resolveCaughtNotFoundBoundaries(error);
+          if (
+            !caughtNotFoundBoundaries ||
+            caughtNotFoundBoundaries.length <= previous.size ||
+            !Array.from(previous).every((id) => caughtNotFoundBoundaries.includes(id))
+          ) {
+            return null;
+          }
+          return prepareCaughtRoot(caughtNotFoundBoundaries);
+        };
+        const prepareCaughtRoot = (
+          caughtNotFoundBoundaries: readonly string[],
+        ): ReactElement | null => {
           // Decode the payload again inside this render, so that it hints the
           // client references' stylesheets and modules to this document, like
           // the render it replaces. A fallback shell's stays open, as its SSR
@@ -947,13 +977,21 @@ export async function handleSsr(
           try {
             htmlStream = await prerenderFallbackShell(ssrRoot);
           } catch (error) {
-            const caughtRoot = prepareCaughtNotFoundRoot(error);
+            let caughtRoot = prepareCaughtNotFoundRoot(error);
             if (!caughtRoot) throw error;
-            try {
-              htmlStream = await prerenderFallbackShell(caughtRoot);
-              caughtShellError = error;
-            } catch (caughtRenderError) {
-              htmlStream = renderCaughtErrorShell(error, caughtRenderError);
+            for (;;) {
+              try {
+                htmlStream = await prerenderFallbackShell(caughtRoot);
+                caughtShellError = error;
+              } catch (caughtRenderError) {
+                const widenedRoot = widenCaughtNotFoundRoot(error, caughtRenderError);
+                if (widenedRoot) {
+                  caughtRoot = widenedRoot;
+                  continue;
+                }
+                htmlStream = renderCaughtErrorShell(error, caughtRenderError);
+              }
+              break;
             }
           }
         } else {
@@ -975,21 +1013,32 @@ export async function handleSsr(
             htmlStream = streamingHtmlStream;
           } catch (error) {
             void streamingHtmlStream?.cancel().catch(() => {});
-            const caughtRoot = prepareCaughtNotFoundRoot(error);
+            let caughtRoot = prepareCaughtNotFoundRoot(error);
             if (caughtRoot) {
-              let caughtHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
-              try {
-                caughtHtmlStream = await runWithStreamedClientReferences(streamedReferences, () =>
-                  renderToReadableStream(caughtRoot, renderOptions),
-                );
-                if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
-                renderComplete = caughtHtmlStream.allReady;
-                shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
-                caughtShellError = error;
-                htmlStream = caughtHtmlStream;
-              } catch (caughtRenderError) {
-                void caughtHtmlStream?.cancel().catch(() => {});
-                htmlStream = renderCaughtErrorShell(error, caughtRenderError);
+              for (;;) {
+                let caughtHtmlStream:
+                  | Awaited<ReturnType<typeof renderToReadableStream>>
+                  | undefined;
+                try {
+                  const root = caughtRoot;
+                  caughtHtmlStream = await runWithStreamedClientReferences(streamedReferences, () =>
+                    renderToReadableStream(root, renderOptions),
+                  );
+                  if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
+                  renderComplete = caughtHtmlStream.allReady;
+                  shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
+                  caughtShellError = error;
+                  htmlStream = caughtHtmlStream;
+                } catch (caughtRenderError) {
+                  void caughtHtmlStream?.cancel().catch(() => {});
+                  const widenedRoot = widenCaughtNotFoundRoot(error, caughtRenderError);
+                  if (widenedRoot) {
+                    caughtRoot = widenedRoot;
+                    continue;
+                  }
+                  htmlStream = renderCaughtErrorShell(error, caughtRenderError);
+                }
+                break;
               }
             } else if (
               options?.fallbackToErrorDocumentOnShellError !== true ||

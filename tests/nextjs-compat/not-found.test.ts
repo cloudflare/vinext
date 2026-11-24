@@ -558,6 +558,9 @@ describe("Next.js compat: not-found", () => {
     ["unauth", 401, "mixed-signals-unauthorized"],
     // A Server Component the page renders throws to the page's boundary too.
     ["nested-denied", 403, "mixed-signals-forbidden"],
+    // The page's signal comes after the slot's rejected the shell, which sets
+    // the status, as on both Next.js bundlers.
+    ["delayed-denied", 404, "mixed-signals-forbidden"],
   ])(
     "the page's and a slot's signals are each caught by their own boundary (%s)",
     async (path, status, boundaryId) => {
