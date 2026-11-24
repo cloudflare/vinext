@@ -378,6 +378,9 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
  * Convert a full, non-contextual navigation request to the definitive ISR RSC
  * variant. Partial/intercepted/mounted-slot payloads remain contextual because
  * their bytes can legitimately differ from the destination's full route.
+ *
+ * The mounted layouts stay: they're in no cache key or Vary, and only a render
+ * that's never stored reads them (see app-mounted-layouts.ts).
  */
 export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): boolean {
   if (
@@ -393,7 +396,6 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
   headers.delete(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
   headers.delete(NEXT_URL_HEADER);
-  headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
   return true;
 }
@@ -415,6 +417,8 @@ export function canonicalizeDynamicShellRscRequestHeaders(headers: Headers): boo
     return false;
   }
   headers.delete(VINEXT_RSC_RENDER_MODE_HEADER);
+  // A prefetch seeds the client's prefetch cache, so it stays whole.
+  headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   return canonicalizePrewarmableRscRequestHeaders(headers);
 }
 
