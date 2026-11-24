@@ -34,7 +34,7 @@ const DEFAULT_OVERHEAD_MS = 48_000;
 const DEFAULT_REPORT_MS = 35_000;
 const DEFAULT_MAX_SHARDS = 10;
 
-const MANIFEST_PATH = new URL("ci-integration-timings.json", import.meta.url).pathname;
+const MANIFEST_PATH = fileURLToPath(new URL("ci-integration-timings.json", import.meta.url));
 
 function die(...msg) {
   console.error(...msg);
