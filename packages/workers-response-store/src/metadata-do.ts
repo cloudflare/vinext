@@ -1820,7 +1820,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       } catch (error) {
         if (!isRetryableR2Error(error)) throw error;
         // A put that failed can leave the stale copy's body unread, holding its R2 connection.
-        if (object && !object.body.locked) await object.body.cancel();
+        if (object && !object.body.locked) await object.body.cancel().catch(() => {});
         failure = error;
       }
     }

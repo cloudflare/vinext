@@ -3756,31 +3756,15 @@ test("writes with different purge requirements are not coalesced", async () => {
   });
   const firstResult = await first;
 
-  // The newer write stands in for the first, as one from another isolate would.
   assert.deepEqual(firstResult.json, {
-    backingStoreUpdated: true,
-    edgePurgeAccepted: true,
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
   });
   assert.deepEqual(second.json, {
     backingStoreUpdated: true,
     edgePurgeAccepted: true,
   });
   assert.equal(await (await read("/coalesced-purge")).text(), "second");
-});
-
-test("a newer write that didn't purge doesn't stand in for an overtaken write that must", async () => {
-  await put("/coalesced-purge-overtaken", "seed");
-  const first = put("/coalesced-purge-overtaken", "first", {
-    bodyDelayMs: 300,
-    coalesce: true,
-    purgeExisting: true,
-  });
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  const second = await put("/coalesced-purge-overtaken", "second", { coalesce: true });
-
-  assert.equal(second.json.backingStoreUpdated, true);
-  assert.deepEqual((await first).json, { backingStoreUpdated: false, edgePurgeAccepted: false });
-  assert.equal(await (await read("/coalesced-purge-overtaken")).text(), "second");
 });
 
 test("a failed coalesced write does not suppress an immediate retry", async () => {
@@ -4724,15 +4708,4 @@ test("a purge whose R2 tombstone write is rate-limited backs off and completes",
   const result = await purge({ tags: ["r2-rate-limited-purge"] });
   assert.equal(result.response.status, 200, JSON.stringify(result.json));
   assert.equal((await read("/r2-rate-limited-purge")).status, 404);
-});
-
-test("a coalesced write that a newer write from another isolate overtakes counts as stored", async () => {
-  // A write that doesn't coalesce stands in for one from another isolate: neither waits for the
-  // other, and the metadata DO drops the older one.
-  const older = put("/superseded-coalesced", "older", { bodyDelayMs: 300, coalesce: true });
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  const newer = await put("/superseded-coalesced", "newer");
-  assert.equal(newer.json.backingStoreUpdated, true);
-  assert.deepEqual((await older).json, { backingStoreUpdated: true, edgePurgeAccepted: true });
-  assert.equal(await (await read("/superseded-coalesced")).text(), "newer");
 });

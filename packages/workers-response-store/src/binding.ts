@@ -1746,19 +1746,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     try {
       const result = await write;
       if (!result.published || !result.entry) {
-        // Writes in other isolates don't coalesce in memory: the metadata DO drops the older of two
-        // overlapping writes instead. A newer write that is still fresh stands in for this one, as
-        // a leader does for a write coalesced in this isolate, unless this write must purge the
-        // edge copy it replaces: the newer write may not have.
-        const superseded =
-          options.coalesce === true &&
-          options.purgeExisting !== true &&
-          replaces === undefined &&
-          reservation !== undefined &&
-          result.entry != null &&
-          result.entry.activeRevision > reservation.revision &&
-          Date.now() < result.entry.freshUntil;
-        return { backingStoreUpdated: superseded, edgePurgeAccepted: superseded };
+        return { backingStoreUpdated: false, edgePurgeAccepted: false };
       }
       return {
         backingStoreUpdated: true,
