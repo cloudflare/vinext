@@ -6,7 +6,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 // with each kind of source, against the Cloudflare Images binding. Each
 // expectation was observed with `next start` on next@16.2.7 for the same file.
 //
-// The Worker detects animation as a GIF, PNG or WebP source streams in and
+// The Worker detects animation as the source streams in and
 // keeps only its first 1 MiB to replay. Some sources here are padded so that
 // detection decides before the source ends, or reads past what it keeps and
 // fetches the source again.
@@ -45,6 +45,7 @@ test.describe("Cloudflare Workers /_next/image optimizes still images", () => {
   for (const [source, why] of [
     ["/image-still.jpg", "a format detection skips"],
     ["/image-still.webp", "a still WebP, read to its end"],
+    ["/image-still.avif", "an AVIF without the sequence brand"],
   ] as const) {
     test(`transforms ${source}: ${why}`, async ({ request }) => {
       const sourceBytes = await original(request, source);
@@ -89,6 +90,7 @@ test.describe("Cloudflare Workers /_next/image serves animated images as-is", ()
   for (const [source, contentType, cacheControl, why] of [
     ["/image-animated.webp", "image/webp", REVALIDATED, "decided at its ANIM chunk"],
     ["/image-animated.png", "image/png", REVALIDATED, "an APNG, read to its end"],
+    ["/image-animated.avif", "image/avif", REVALIDATED, "an AVIF with the avis brand"],
     // next.config.mjs gives it a longer max-age, which Next.js keeps over
     // minimumCacheTTL.
     [

@@ -1,8 +1,8 @@
 /**
  * Animated image detection for the image optimization endpoint.
  *
- * Next.js serves an animated GIF, PNG (APNG) or WebP unoptimized rather than
- * flattening it to its first frame. This is a port of the `is-animated`
+ * Animated images are served as-is to preserve all their frames.
+ * The GIF, PNG and WebP checks are a port of the `is-animated`
  * package Next.js compiles in (next/dist/compiled/is-animated, MIT, Józef
  * Sokołowski), which `imageOptimizer` in
  * packages/next/src/server/image-optimizer.ts calls on the upstream bytes.
@@ -114,8 +114,27 @@ async function isAnimatedWebp(source: ImageSourceReader): Promise<boolean> {
   }
 }
 
+/** An AVIF sequence advertises `avis` as a major or compatible brand. */
+async function isAnimatedAvif(source: ImageSourceReader, head: Uint8Array): Promise<boolean> {
+  const boxSize = new DataView(head.buffer).getUint32(0);
+  if (boxSize < 16) return false;
+  if (ascii(head, 8, 12) === "avis") return (await source.bytes(12, 4)).length === 4;
+
+  // Skip the minor version at byte 12 and stop at the end of the ftyp box.
+  const sequenceBrand = [0x61, 0x76, 0x69, 0x73]; // "avis"
+  for (let offset = 16; offset + 4 <= boxSize; offset += 4096) {
+    const length = Math.min(4096, boxSize - offset);
+    const brands = await source.bytes(offset, length);
+    for (let index = 0; index + 4 <= brands.length; index += 4) {
+      if (bytesAt(brands, index, sequenceBrand)) return true;
+    }
+    if (brands.length < length) return false;
+  }
+  return false;
+}
+
 /**
- * Whether a source is an animated GIF, PNG or WebP, judged by its signature.
+ * Whether a source is an animated GIF, PNG, WebP or AVIF.
  * The source is parsed as it streams in, so only the bytes a format's check
  * needs are read, and none are kept beyond what the reader holds to replay.
  */
@@ -124,5 +143,8 @@ export async function isAnimatedImage(source: ImageSourceReader): Promise<boolea
   if (ascii(head, 0, 3) === "GIF") return isAnimatedGif(source, head);
   if (bytesAt(head, 0, PNG_SIGNATURE)) return isAnimatedPng(source);
   if (bytesAt(head, 8, WEBP_FOURCC)) return isAnimatedWebp(source);
+  if (head.length === 12 && ascii(head, 4, 8) === "ftyp") {
+    return isAnimatedAvif(source, head);
+  }
   return false;
 }
