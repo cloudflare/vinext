@@ -358,21 +358,24 @@ function parseHttpDate(value: string | null): number {
   const day = Number(groups.day);
   const [hours, minutes, seconds] = groups.time.split(":").map(Number);
   let year = Number(groups.year);
-  // RFC 850's two-digit year is the latest one not more than 50 years ahead.
+  // RFC 850's two-digit year is the latest one whose date is not more than 50 years ahead.
   if (groups.year.length === 2) {
-    const now = new Date().getUTCFullYear();
-    year += now - (now % 100);
-    if (year > now + 50) year -= 100;
+    const now = new Date();
+    year += now.getUTCFullYear() - (now.getUTCFullYear() % 100);
+    const limit = new Date(now);
+    limit.setUTCFullYear(now.getUTCFullYear() + 50);
+    if (Date.UTC(year, month, day, hours, minutes, seconds) > limit.getTime()) year -= 100;
   }
-  const date = new Date(Date.UTC(year, month, day, hours, minutes, seconds));
+  // A leap second (60) is valid: check the calendar without it, then count it.
+  const date = new Date(Date.UTC(year, month, day, hours, minutes, Math.min(seconds, 59)));
   // Impossible dates and times, and the wrong weekday, are invalid rather than rolled over.
   return month >= 0 &&
+    seconds <= 60 &&
     date.getUTCDate() === day &&
     date.getUTCHours() === hours &&
     date.getUTCMinutes() === minutes &&
-    date.getUTCSeconds() === seconds &&
     date.toUTCString().startsWith(groups.weekday.slice(0, 3))
-    ? date.getTime()
+    ? date.getTime() + (seconds === 60 ? 1000 : 0)
     : Number.NaN;
 }
 
@@ -386,7 +389,8 @@ function isNotModified(request: Request, response: Response): boolean {
   if (response.status < 200 || response.status > 299) return false;
   const ifNoneMatch = request.headers.get("If-None-Match");
   if (ifNoneMatch !== null) {
-    if (ifNoneMatch.trim() === "*") return true;
+    // Optional whitespace is only SP and HTAB (RFC 9110 5.6.3).
+    if (/^[ \t]*\*[ \t]*$/.test(ifNoneMatch)) return true;
     const etag = response.headers.get("ETag") ?? "";
     if (!CURRENT_ENTITY_TAG.test(etag) || !ENTITY_TAG_LIST.test(ifNoneMatch)) return false;
     const [, current] = [...etag.matchAll(OPAQUE_TAG)][0];

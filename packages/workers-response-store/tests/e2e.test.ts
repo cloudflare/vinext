@@ -276,6 +276,15 @@ async function read(
 
 // Miniflare does not run Workers Cache. Inject the header at the cache-bearing
 // entrypoint, where deployed Workers Cache adds it during revalidation.
+// An RFC 850 date for `date`, with the weekday of the same day `yearOffset` years away.
+function rfc850Date(date: Date, yearOffset: number) {
+  const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const weekday = new Date(date);
+  weekday.setUTCFullYear(date.getUTCFullYear() + yearOffset);
+  const [, day, month, year] = date.toUTCString().split(" ");
+  return `${weekdays[weekday.getUTCDay()]}, ${day}-${month}-${year.slice(2)} 00:00:00 GMT`;
+}
+
 async function conditionalRead(path: string, header = "If-None-Match", value?: string) {
   const bindings = await mf.getBindings<{
     RESPONSE_STORE_BINDING: Awaited<ReturnType<Miniflare["getWorker"]>>;
@@ -2810,6 +2819,9 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
   await raced.arrayBuffer();
   const etag = raced.headers.get("ETag")!;
   const tag = etag.replace(/^W\//, "");
+  const beyondFiftyYears = new Date();
+  beyondFiftyYears.setUTCFullYear(beyondFiftyYears.getUTCFullYear() + 50);
+  beyondFiftyYears.setUTCDate(beyondFiftyYears.getUTCDate() + 1);
   for (const [header, value] of [
     ["If-None-Match", `garbage, ${etag}`],
     ["If-None-Match", `${tag} suffix`],
@@ -2817,6 +2829,9 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
     ["If-None-Match", `*, ${etag}`],
     ["If-Modified-Since", "2026-09-30"],
     ["If-Modified-Since", "Wed, 31 Sep 2026 00:00:00 GMT"],
+    // Just past 50 years ahead, a two-digit year is the earlier century's, whatever its weekday.
+    ["If-Modified-Since", rfc850Date(beyondFiftyYears, 0)],
+    ["If-Modified-Since", rfc850Date(beyondFiftyYears, -100)],
   ]) {
     const response = await conditionalRead(path, header, value);
     assert.equal(response.status, 206, `${header}: ${value}`);
@@ -2827,6 +2842,7 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
     ["If-Modified-Since", lastModified],
     ["If-Modified-Since", "Tuesday, 29-Sep-26 00:00:00 GMT"],
     ["If-Modified-Since", "Tue Sep 29 00:00:00 2026"],
+    ["If-Modified-Since", "Tue, 29 Sep 2026 23:59:60 GMT"],
   ]) {
     const response = await conditionalRead(path, header, value);
     assert.equal(response.status, 304, `${header}: ${value}`);
