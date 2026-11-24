@@ -122,7 +122,7 @@ import {
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
-  resolveKeptSlotPathnames,
+  resolveKeptSlots,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
   supplyRetainedElements,
@@ -1011,12 +1011,7 @@ async function commitSameUrlNavigatePayload(
       basePath: __basePath,
       refreshUrl,
       state: actionInitiation.routerState,
-    }).filter(
-      (sourcePathname) =>
-        !persistedInterceptions.some(
-          (interception) => interception.targetPathname === sourcePathname,
-        ),
-    );
+    });
     if (persistedInterceptions.length > 0 || sourcePageRefreshes.length > 0) {
       supplementalHandle = serverActionSupplementalRefreshCoordinator.begin({
         activeNavigationId: browserNavigationController.getActiveNavigationId(),
@@ -1027,7 +1022,7 @@ async function commitSameUrlNavigatePayload(
       // only when the server rendered it as an intercept from that source.
       const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
         basePath: __basePath,
-        keptSlotPathnames: resolveKeptSlotPathnames(actionInitiation.routerState.slotBindings),
+        keptSlots: resolveKeptSlots(actionInitiation.routerState.slotBindings),
         previousNextUrl: actionInitiation.routerState.previousNextUrl,
         refreshUrl,
       });
@@ -1044,8 +1039,13 @@ async function commitSameUrlNavigatePayload(
         ),
       );
       for (const sourcePageRefresh of sourcePageRefreshes) {
+        const load = persistedInterceptions.some(
+          (interception) => interception.targetPathname === sourcePageRefresh,
+        )
+          ? sourcePageRefreshMerge.loadLeftSlots
+          : sourcePageRefreshMerge.load;
         supplemental.push(
-          sourcePageRefreshMerge.load(sourcePageRefresh, primaryElements, (signal) =>
+          load(sourcePageRefresh, primaryElements, (signal) =>
             fetchPersistedSourcePageRefresh({
               mountedSlotsHeader,
               signal,
@@ -2481,15 +2481,6 @@ function bootstrapHydration(
                 navigationKind === "traverse"
                   ? { previousNextUrl: requestPreviousNextUrl, slotBindings: [] }
                   : navigationInitiationState,
-            }).filter((sourcePathAndSearch) => {
-              if (
-                persistedRefreshInterceptions.some(
-                  (interception) => interception.targetPathname === sourcePathAndSearch,
-                )
-              ) {
-                return false;
-              }
-              return true;
             })
           : [];
         const hasSupplementalRefresh =
@@ -3038,10 +3029,10 @@ function bootstrapHydration(
           // that source.
           const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
             basePath: __basePath,
-            keptSlotPathnames:
+            keptSlots:
               navigationKind === "traverse"
                 ? null
-                : resolveKeptSlotPathnames(navigationInitiationState.slotBindings),
+                : resolveKeptSlots(navigationInitiationState.slotBindings),
             previousNextUrl:
               navigationKind === "traverse"
                 ? requestPreviousNextUrl
@@ -3063,8 +3054,13 @@ function bootstrapHydration(
           // A traversal learns from its payload whether it takes the source
           // page; one that doesn't neither waits for nor fails with it.
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
+            const load = persistedRefreshInterceptions.some(
+              (interception) => interception.targetPathname === persistedSourcePageRefresh,
+            )
+              ? sourcePageRefreshMerge.loadLeftSlots
+              : sourcePageRefreshMerge.load;
             supplemental.push(
-              sourcePageRefreshMerge.load(persistedSourcePageRefresh, primaryPayload, (signal) =>
+              load(persistedSourcePageRefresh, primaryPayload, (signal) =>
                 fetchPersistedSourcePageRefresh({
                   // A traversal starts from another entry's state, whose
                   // mounted slots aren't the ones the intercepted payload

@@ -96,32 +96,58 @@ export function takesSupplementalRefreshes(elements: AppElements): boolean {
 }
 
 /**
- * The URL each active slot of a state was rendered at, the one a fan-out
- * refetches it from: a page's own URL, or the URL a slot showing an intercept
- * was intercepted at (see resolvePersistedRefreshInterceptions).
+ * What an active slot of a state shows: the URL it was rendered at, the one a
+ * fan-out refetches it from, and whether that render was an intercept. A slot
+ * showing a page and one showing an intercept can share a URL, and each is
+ * filled only from its own render of it.
  */
-export function resolveKeptSlotPathnames(
+type KeptSlot = {
+  intercepted: boolean;
+  pathname: string;
+};
+
+/**
+ * The slots a state keeps, each with the URL it was rendered at: a page's own
+ * URL, or the URL a slot showing an intercept was intercepted at (see
+ * resolvePersistedRefreshInterceptions).
+ */
+export function resolveKeptSlots(
   slotBindings: readonly AppElementsSlotBinding[],
-): ReadonlyMap<string, string> {
-  const pathnames = new Map<string, string>();
+): ReadonlyMap<string, KeptSlot> {
+  const keptSlots = new Map<string, KeptSlot>();
   for (const binding of slotBindings) {
     if (binding.state !== "active" || binding.activeRouteId == null) continue;
     const route = AppElementsWire.parseElementKey(binding.activeRouteId);
     if (route?.kind === "route") {
-      pathnames.set(binding.slotId, binding.refreshPathname ?? route.path);
+      keptSlots.set(binding.slotId, {
+        intercepted: binding.interceptionId != null,
+        pathname: binding.refreshPathname ?? route.path,
+      });
     }
   }
-  return pathnames;
+  return keptSlots;
+}
+
+function keptFrom(
+  keptSlots: ReadonlyMap<string, KeptSlot>,
+  slotId: string,
+  pathname: string,
+  intercepted: boolean,
+): boolean {
+  const keptSlot = keptSlots.get(slotId);
+  return keptSlot?.pathname === pathname && keptSlot.intercepted === intercepted;
 }
 
 // The whole intercepting route keeps nothing of another render but the slots
 // it left for the client to keep, each from the render of the URL the client
 // kept it from, when the state names one: another URL may render the same slot
-// for other params. An intercepted render supplies only the slot it intercepts.
+// for other params. An intercepted render supplies only the slot it intercepts,
+// and only when that slot showed the intercept; a page's render, only a slot
+// that showed a page.
 function mergeLeftMountedSlots(
   currentElements: AppElements,
   refreshedElements: AppElements,
-  keptSlotPathnames: ReadonlyMap<string, string> | null,
+  keptSlots: ReadonlyMap<string, KeptSlot> | null,
 ): AppElements {
   const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
   const leftSlotIds = new Set(leftMountedSlotIds(currentElements));
@@ -131,9 +157,14 @@ function mergeLeftMountedSlots(
       binding.state === "active" &&
       leftSlotIds.has(binding.slotId) &&
       (interceptedSlotId === null || binding.slotId === interceptedSlotId) &&
-      (keptSlotPathnames === null ||
+      (keptSlots === null ||
         (binding.refreshPathname !== undefined &&
-          keptSlotPathnames.get(binding.slotId) === binding.refreshPathname)) &&
+          keptFrom(
+            keptSlots,
+            binding.slotId,
+            binding.refreshPathname,
+            interceptedSlotId !== null,
+          ))) &&
       Object.hasOwn(refreshedElements, binding.slotId),
   );
   if (refreshedBindings.length === 0) return currentElements;
@@ -158,10 +189,10 @@ function mergeLeftMountedSlots(
 export function mergeRefreshedParallelSlot(
   currentElements: AppElements,
   refreshedElements: AppElements,
-  keptSlotPathnames: ReadonlyMap<string, string> | null = null,
+  keptSlots: ReadonlyMap<string, KeptSlot> | null = null,
 ): AppElements {
   if (rendersWholeInterceptingRoute(currentElements)) {
-    return mergeLeftMountedSlots(currentElements, refreshedElements, keptSlotPathnames);
+    return mergeLeftMountedSlots(currentElements, refreshedElements, keptSlots);
   }
   const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
   const interception = refreshedMetadata.interception;
@@ -349,11 +380,11 @@ function isInterceptionSourceRender(
 export function mergeInterceptionSourceRefresh(
   currentElements: AppElements,
   sourceElements: AppElements,
-  keptSlotPathnames: ReadonlyMap<string, string> | null = null,
+  keptSlots: ReadonlyMap<string, KeptSlot> | null = null,
 ): AppElements {
   return rendersWholeInterceptingRoute(currentElements) ||
     isInterceptionSourceRender(currentElements, sourceElements)
-    ? mergeRefreshedParallelSlot(currentElements, sourceElements, keptSlotPathnames)
+    ? mergeRefreshedParallelSlot(currentElements, sourceElements, keptSlots)
     : currentElements;
 }
 
@@ -367,10 +398,11 @@ export function mergeInterceptionSourceRefresh(
 export function createInterceptionSourceRefreshMerge(options: {
   basePath?: string;
   /**
-   * The URL each slot of the state the fan-out refreshes was kept from (see
-   * resolveKeptSlotPathnames), or null when it starts from another entry.
+   * The slots of the state the fan-out refreshes, each with the URL it was kept
+   * from and whether it showed an intercept (see resolveKeptSlots), or null
+   * when the fan-out starts from another entry.
    */
-  keptSlotPathnames?: ReadonlyMap<string, string> | null;
+  keptSlots?: ReadonlyMap<string, KeptSlot> | null;
   previousNextUrl: string | null;
   refreshUrl: URL;
 }): {
@@ -403,14 +435,28 @@ export function createInterceptionSourceRefreshMerge(options: {
     primary: Promise<AppElements>,
     fetch: (signal: AbortSignal) => Promise<AppElements>,
   ) => (signal: AbortSignal) => Promise<AppElements>;
+  /**
+   * The load of a page's render from a URL a persisted intercept is refreshed
+   * from as well. Any other payload takes that intercept's render alone, so only
+   * the whole intercepting route takes this one, for a slot it left that showed
+   * a page from that URL, and it is fetched only once the payload asks for it.
+   */
+  loadLeftSlots: (
+    pathAndSearch: string,
+    primary: Promise<AppElements>,
+    fetch: (signal: AbortSignal) => Promise<AppElements>,
+  ) => (signal: AbortSignal) => Promise<AppElements>;
 } {
   const sourceUrl =
     options.previousNextUrl === null ? null : new URL(options.previousNextUrl, options.refreshUrl);
   const sourcePathAndSearch =
     sourceUrl === null ? null : `${sourceUrl.pathname}${sourceUrl.search}`;
   const basePath = options.basePath ?? "";
-  const keptSlotPathnames = options.keptSlotPathnames ?? null;
+  const keptSlots = options.keptSlots ?? null;
   const sourceRenders = new WeakSet<AppElements>();
+  // A load the payload doesn't take resolves to the payload, which merges as
+  // nothing.
+  const untakenPayloads = new WeakSet<AppElements>();
   // Whether the render fetched from this path can fill a slot the whole
   // intercepting route left: the render of the URL the client kept the slot
   // from or, for a fan-out that starts from another entry, which names no such
@@ -424,11 +470,13 @@ export function createInterceptionSourceRefreshMerge(options: {
       (slotId) => interceptedSlotId === null || slotId === interceptedSlotId,
     );
     if (leftSlotIds.length === 0) return false;
-    if (keptSlotPathnames === null) {
+    if (keptSlots === null) {
       return interceptedSlotId === null && pathAndSearch === sourcePathAndSearch;
     }
     const pathname = stripBasePath(new URL(pathAndSearch, options.refreshUrl).pathname, basePath);
-    return leftSlotIds.some((slotId) => keptSlotPathnames.get(slotId) === pathname);
+    return leftSlotIds.some((slotId) =>
+      keptFrom(keptSlots, slotId, pathname, interceptedSlotId !== null),
+    );
   };
   const takes = (pathAndSearch: string, primary: AppElements): boolean =>
     rendersWholeInterceptingRoute(primary)
@@ -445,14 +493,15 @@ export function createInterceptionSourceRefreshMerge(options: {
       finish: (elements: AppElements) => AppElements,
       primary: Promise<AppElements>,
       fetch: (signal: AbortSignal) => Promise<AppElements>,
+      startsBesidePayload = true,
     ) =>
     async (signal: AbortSignal): Promise<AppElements> => {
       const controller = new AbortController();
       const abort = () => controller.abort(signal.reason);
       if (signal.aborted) abort();
       else signal.addEventListener("abort", abort, { once: true });
-      const request = fetch(controller.signal);
-      void request.catch(() => {});
+      const request = startsBesidePayload ? fetch(controller.signal) : null;
+      void request?.catch(() => {});
       try {
         let payload: AppElements;
         try {
@@ -463,9 +512,10 @@ export function createInterceptionSourceRefreshMerge(options: {
         }
         if (!takesPayload(payload)) {
           controller.abort();
-          return finish(payload);
+          untakenPayloads.add(payload);
+          return payload;
         }
-        return finish(await request);
+        return finish(await (request ?? fetch(controller.signal)));
       } finally {
         signal.removeEventListener("abort", abort);
       }
@@ -487,12 +537,23 @@ export function createInterceptionSourceRefreshMerge(options: {
         primary,
         fetch,
       ),
+    loadLeftSlots: (pathAndSearch, primary, fetch) =>
+      loadIf(
+        (payload) =>
+          rendersWholeInterceptingRoute(payload) && fillsLeftSlot(pathAndSearch, payload),
+        (elements) => track(pathAndSearch, elements),
+        primary,
+        fetch,
+        false,
+      ),
     merge: (current, refreshed) =>
-      sourceRenders.has(refreshed)
-        ? mergeInterceptionSourceRefresh(current, refreshed, keptSlotPathnames)
-        : keptSlotPathnames === null && rendersWholeInterceptingRoute(current)
-          ? current
-          : mergeRefreshedParallelSlot(current, refreshed, keptSlotPathnames),
+      untakenPayloads.has(refreshed)
+        ? current
+        : sourceRenders.has(refreshed)
+          ? mergeInterceptionSourceRefresh(current, refreshed, keptSlots)
+          : keptSlots === null && rendersWholeInterceptingRoute(current)
+            ? current
+            : mergeRefreshedParallelSlot(current, refreshed, keptSlots),
     takes,
     track,
   };
