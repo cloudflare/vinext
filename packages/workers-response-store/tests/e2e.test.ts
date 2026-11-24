@@ -2800,7 +2800,8 @@ test("a superseded conditional revalidation answers with the committed entry, st
 
 test("a conditional revalidation that loses its claim answers 304 only for valid validators", async () => {
   const path = "/conditional-claim-validators";
-  const lastModified = "Sun, 06 Nov 1994 08:49:37 GMT";
+  // Just after the leap second that ended 1998.
+  const lastModified = "Fri, 01 Jan 1999 00:00:00 GMT";
   await put(path, "stale-part", {
     status: 206,
     contentRange: "bytes 0-9/100",
@@ -2829,7 +2830,8 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
     ["If-None-Match", `*, ${etag}`],
     ["If-Modified-Since", "2026-09-30"],
     ["If-Modified-Since", "Wed, 31 Sep 2026 00:00:00 GMT"],
-    ["If-Modified-Since", "Sun, 06 Nov 0094 08:49:37 GMT"],
+    ["If-Modified-Since", "Fri, 01 Jan 0099 00:00:00 GMT"],
+    ["If-Modified-Since", "Thu, 31 Dec 1998 23:59:60 GMT"],
     // Just past 50 years ahead, a two-digit year is the earlier century's, whatever its weekday.
     ["If-Modified-Since", rfc850Date(beyondFiftyYears, 0)],
     ["If-Modified-Since", rfc850Date(beyondFiftyYears, -100)],
@@ -2841,8 +2843,8 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
   for (const [header, value] of [
     ["If-None-Match", `"other", , W/${tag}`],
     ["If-Modified-Since", lastModified],
-    ["If-Modified-Since", "Tuesday, 29-Sep-26 00:00:00 GMT"],
-    ["If-Modified-Since", "Tue Sep 29 00:00:00 2026"],
+    ["If-Modified-Since", "Friday, 01-Jan-99 00:00:00 GMT"],
+    ["If-Modified-Since", "Fri Jan  1 00:00:00 1999"],
     ["If-Modified-Since", "Tue, 29 Sep 2026 23:59:60 GMT"],
   ]) {
     const response = await conditionalRead(path, header, value);

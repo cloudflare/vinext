@@ -366,7 +366,8 @@ function parseHttpDate(value: string | null): number {
     limit.setUTCFullYear(now.getUTCFullYear() + 50);
     if (Date.UTC(year, month, day, hours, minutes, seconds) > limit.getTime()) year -= 100;
   }
-  // A leap second (60) is valid: check the calendar without it, then count it.
+  // A leap second (60) is valid: check the calendar without it, then place it inside the
+  // preceding second, so it stays before the next minute.
   const date = new Date(Date.UTC(year, month, day, hours, minutes, Math.min(seconds, 59)));
   // Impossible dates and times, and the wrong weekday, are invalid rather than rolled over.
   // HTTP-date years are 1900 or later (RFC 5322 3.3); Date.UTC maps 0-99 to 1900-1999.
@@ -377,7 +378,7 @@ function parseHttpDate(value: string | null): number {
     date.getUTCHours() === hours &&
     date.getUTCMinutes() === minutes &&
     date.toUTCString().startsWith(groups.weekday.slice(0, 3))
-    ? date.getTime() + (seconds === 60 ? 1000 : 0)
+    ? date.getTime() + (seconds === 60 ? 999 : 0)
     : Number.NaN;
 }
 
