@@ -35,8 +35,10 @@ test.describe("instrumentation.ts startup", () => {
   });
 });
 
-// A page of its own: action-error-sanitization.spec.ts throws the same actions
-// on /action-error-sanitization in parallel.
+// Routes of their own: api-routes.spec.ts requests /api/error-route and
+// action-error-sanitization.spec.ts throws on /action-error-sanitization in
+// parallel.
+const ROUTE_ERROR_PATH = "/api/error-route/instrumentation";
 const ACTION_ERROR_PATH = "/action-error-sanitization/instrumentation";
 
 type RecordedError = {
@@ -72,15 +74,15 @@ test.describe("instrumentation.ts onRequestError", () => {
   });
 
   test("onRequestError() is called when a route handler throws", async ({ request }) => {
-    // /api/error-route throws an unhandled Error — vinext should invoke
+    // The error route throws an unhandled Error — vinext should invoke
     // the onRequestError handler registered in instrumentation.ts.
-    const errorRes = await request.get("/api/error-route");
+    const errorRes = await request.get(ROUTE_ERROR_PATH);
     expect(errorRes.status()).toBe(500);
 
     // Give the async reportRequestError() call a moment to complete.
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const [err] = await errorsFor(request, "/api/error-route");
+    const [err] = await errorsFor(request, ROUTE_ERROR_PATH);
     expect(err).toBeTruthy();
     expect(err.message).toBe("Intentional route handler error");
     expect(err.method).toBe("GET");
@@ -89,12 +91,12 @@ test.describe("instrumentation.ts onRequestError", () => {
   });
 
   test("onRequestError() receives the correct route path pattern", async ({ request }) => {
-    const errorRes = await request.get("/api/error-route");
+    const errorRes = await request.get(ROUTE_ERROR_PATH);
     expect(errorRes.status()).toBe(500);
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const [err] = await errorsFor(request, "/api/error-route");
+    const [err] = await errorsFor(request, ROUTE_ERROR_PATH);
     expect(err).toBeTruthy();
     // The routePath should be the file-system route pattern, not the concrete URL.
     expect(err.routePath).toContain("error-route");
@@ -102,12 +104,12 @@ test.describe("instrumentation.ts onRequestError", () => {
 
   test("multiple errors are captured independently", async ({ request }) => {
     // Fire the error route twice and verify both entries are recorded.
-    await request.get("/api/error-route");
-    await request.get("/api/error-route");
+    await request.get(ROUTE_ERROR_PATH);
+    await request.get(ROUTE_ERROR_PATH);
 
     await new Promise((resolve) => setTimeout(resolve, 400));
 
-    expect(await errorsFor(request, "/api/error-route")).toHaveLength(2);
+    expect(await errorsFor(request, ROUTE_ERROR_PATH)).toHaveLength(2);
   });
 
   // Next.js reports a thrown fetch action through the Flight render of its
