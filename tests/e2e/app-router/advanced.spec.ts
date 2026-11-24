@@ -57,6 +57,33 @@ test.describe("Parallel Routes", () => {
     await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeVisible();
   });
 
+  // The client keeps the mounted slots that show their defaults, so a refresh
+  // leaves them out of its payload, and they stay as Next.js keeps a default
+  // segment's content.
+  test("router.refresh() keeps the parallel slots showing their defaults", async ({ page }) => {
+    await page.goto(`${BASE}/dashboard/settings`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator('[data-testid="team-default"]')).toBeVisible();
+
+    for (let refreshes = 0; refreshes < 2; refreshes++) {
+      const refresh = page.waitForResponse((response) =>
+        isAppRouterRscRequestForPath(response.request(), "/dashboard/settings"),
+      );
+      await page.evaluate(() => {
+        const router = window.next?.router;
+        if (!router || !("refresh" in router)) {
+          throw new Error("window.next App Router is not installed");
+        }
+        router.refresh();
+      });
+      await (await refresh).finished();
+      await page.waitForTimeout(500);
+      await expect(page.locator("h1")).toHaveText("Settings");
+      await expect(page.locator('[data-testid="team-default"]')).toBeVisible();
+      await expect(page.locator('[data-testid="analytics-default"]')).toBeVisible();
+    }
+  });
+
   test("soft navigation preserves active parallel slot content over target defaults", async ({
     page,
   }) => {
@@ -213,10 +240,27 @@ test.describe("Intercepting Routes", () => {
         request.headers()["rsc"] === "1",
     );
     await refreshRouter(page);
-    expect((await refresh).headers()["x-vinext-interception-context"]).toBe(
+    const refreshRequest = await refresh;
+    expect(refreshRequest.headers()["x-vinext-interception-context"]).toBe(
       "/nextjs-compat/intercept-source-group/club/static",
     );
     await expectInterceptingRoute(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    // The slots showing their defaults keep them, refresh after refresh, as
+    // Next.js keeps a default segment's content. The response commits after
+    // its body is read.
+    await (await refreshRequest.response())?.finished();
+    await page.waitForTimeout(500);
+    await expectOtherSlotsInDefault(page);
+    const secondRefresh = page.waitForRequest(
+      (request) =>
+        request.url().includes("/intercept-source-group/club/static/pics/1") &&
+        request.headers()["rsc"] === "1",
+    );
+    await refreshRouter(page);
+    await (await (await secondRefresh).response())?.finished();
+    await page.waitForTimeout(500);
+    await expectInterceptingRoute(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    await expectOtherSlotsInDefault(page);
 
     await page.goBack();
     await expect(page).toHaveURL(/\/intercept-source-group\/club\/static$/);
@@ -380,6 +424,67 @@ test.describe("Intercepting Routes", () => {
     await expect(page.locator("#intercept-ancestor-children-static")).toHaveCount(0);
     await expect(page.locator("#intercept-ancestor-children-pic")).toHaveCount(0);
     expect(await markerKept(page)).toBe(true);
+  });
+
+  // A slot of a layout both trees share keeps the page the source showed in
+  // it, on the click and on a refresh, as in Next.js 16.2.7 (webpack and
+  // Turbopack), where it is a `__DEFAULT__` segment that keeps what the client
+  // holds.
+  test("keeps a slot of a layout the source and the whole intercepting route share", async ({
+    page,
+  }) => {
+    const sidebar = page.locator("#intercept-ancestor-slot-sidebar");
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-ancestor-slot/club/static`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    await expect(sidebar).toHaveText("Sidebar static");
+
+    await page.getByRole("link", { name: "Pic 1", exact: true }).click();
+    await expect(page).toHaveURL(/\/intercept-source-ancestor-slot\/club\/static\/pics\/1$/);
+    await expect(page.locator("#intercept-ancestor-slot-modal")).toHaveText("Pic modal: 1");
+    await expect(page.locator("#intercept-ancestor-slot-club-default")).toHaveText("Club default");
+    await expect(sidebar).toHaveText("Sidebar static");
+
+    const refresh = page.waitForResponse(
+      (response) =>
+        response.url().includes("/intercept-source-ancestor-slot/club/static/pics/1") &&
+        response.request().headers()["rsc"] === "1",
+    );
+    await refreshRouter(page);
+    expect((await refresh).status()).toBe(200);
+    await expect(page.locator("#intercept-ancestor-slot-modal")).toHaveText("Pic modal: 1");
+    await expect(sidebar).toHaveText("Sidebar static");
+    expect(await markerKept(page)).toBe(true);
+
+    // A hard load of the target shows the slot's default, as Next.js does.
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-ancestor-slot-pic")).toHaveText("Pic page: 1");
+    await expect(sidebar).toHaveText("Sidebar default");
+  });
+
+  // The intercepting page takes the params above its marker from the page it
+  // opened from, as Next.js 16.2.7's interception rewrite captures them from
+  // `Next-Url` (webpack and Turbopack).
+  test("gives the intercepting page the source's params above its marker", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/intercept-source-params/club/bravo/deep`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    await page.getByRole("link", { name: "Acme pic 1", exact: true }).click();
+    await expect(page).toHaveURL(/\/intercept-source-params\/club\/acme\/pics\/1$/);
+    await expect(page.locator("#intercept-source-params-modal")).toHaveText("Pic modal: bravo/1");
+    await expect(page.locator("#intercept-source-params-deep")).toContainText("Deep: bravo");
+    expect(await markerKept(page)).toBe(true);
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#intercept-source-params-pic")).toHaveText("Pic page: acme/1");
+    await expect(page.locator("#intercept-source-params-modal")).toHaveCount(0);
   });
 
   // A link in the whole intercepting route sends its source again, as Next.js

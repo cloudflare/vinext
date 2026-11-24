@@ -370,28 +370,30 @@ describe("App RSC route matching", () => {
     });
   });
 
+  // Next.js's interception rewrite captures the params above the marker from
+  // `Next-Url`, so the source's `lang` wins over the target's.
   it("finds intercepting routes and merges source and target params", () => {
     const matcher = createAppRscRouteMatcher([
-      route("/feed/:id", ["feed", ":id"], {
+      route("/:lang/feed", [":lang", "feed"], {
         modal: {
           intercepts: [
             {
-              targetPattern: "/photos/:id",
+              targetPattern: "/:lang/photos/:id",
               interceptLayouts: ["modal-layout"],
               page: "photo-page",
-              params: ["id"],
+              params: ["lang", "id"],
             },
           ],
         },
       }),
     ]);
 
-    expect(matcher.findIntercept("/photos/target-id", "/feed/source-id")).toMatchObject({
+    expect(matcher.findIntercept("/fr/photos/target-id", "/en/feed")).toMatchObject({
       sourceRouteIndex: 0,
       slotKey: "modal",
-      targetPattern: "/photos/:id",
+      targetPattern: "/:lang/photos/:id",
       page: "photo-page",
-      matchedParams: { id: "target-id" },
+      matchedParams: { lang: "en", id: "target-id" },
     });
   });
 

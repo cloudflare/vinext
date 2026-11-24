@@ -616,6 +616,10 @@ describe("Next.js compat: not-found", () => {
       expect(html).toContain('<html id="__next_error__"');
       expect(html).not.toContain('id="replay-fallback-layout"');
       expect(html.includes("NEXT_REDIRECT")).toBe(redirects);
+      // The browser follows the redirect from the payload. The error shell
+      // carries no refresh tag for it, as Next.js's doesn't, so a client
+      // without JavaScript stays on the 404.
+      expect(html).not.toContain('http-equiv="refresh"');
       // The browser reports these itself; a redirect it follows is no error.
       expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
     },

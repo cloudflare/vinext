@@ -4,14 +4,15 @@ import {
   createSupplementalRefreshCoordinator,
   mergeInterceptionSourceRefresh,
   mergeRefreshedParallelSlot,
-  rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
   resolveServerActionSupplementalRefresh,
+  resolveKeptSlots,
   resolveSupplementalRefreshes,
   SupplementalRefreshError,
   supplyRetainedElements,
+  takesSupplementalRefreshes,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import {
   AppElementsWire,
@@ -157,7 +158,7 @@ describe("parallel route supplemental refreshes", () => {
     await expect(
       resolveSupplementalRefreshes({
         merge: mergeRefreshedParallelSlot,
-        mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
+        mergesInto: takesSupplementalRefreshes,
         primary: Promise.resolve(primary),
         signal: new AbortController().signal,
         supplemental: [sourceRefresh],
@@ -167,12 +168,443 @@ describe("parallel route supplemental refreshes", () => {
     await expect(
       resolveSupplementalRefreshes({
         merge: mergeRefreshedParallelSlot,
-        mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
+        mergesInto: takesSupplementalRefreshes,
         primary: Promise.resolve(primary),
         signal: new AbortController().signal,
         supplemental: [() => Promise.reject(new Error("source refresh failed"))],
       }),
     ).resolves.toEqual({ degraded: false, value: primary });
+  });
+
+  // A slot of a layout the whole intercepting route shares with the client's
+  // tree, with only a default there, is left for the client to keep. A
+  // refresh fetches it from the URL it was rendered at, as Next.js refetches
+  // a reused segment, and merges that slot alone: none of the source's own
+  // tree goes into the whole route.
+  it("takes only the slots the whole intercepting route left for the client", async () => {
+    const sidebarSegmentId = createNestedBfcacheSlotSegmentId("slot:sidebar:/", 1);
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { [sidebarSegmentId]: "sidebar default" },
+        interceptionContext: "/club/static",
+        layoutIds: ["layout:/", "layout:/club/[slug]"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/static/pics/1",
+        slotBindings: [
+          {
+            activeRouteId: "route:/club/static/pics/1",
+            ownerLayoutId: "layout:/club/[slug]",
+            slotId: "slot:modal:/club/[slug]",
+            state: "active",
+          },
+          { ownerLayoutId: "layout:/", slotId: "slot:sidebar:/", state: "default" },
+        ],
+        wholeInterceptionSource: "/club/static",
+      }),
+      [sidebarSegmentId]: "sidebar default segment",
+      "page:/club/static/pics/1": "club default",
+      "slot:children:/": "club layout",
+      "slot:modal:/club/[slug]": "pic modal",
+    };
+    const renderOf = (pathname: string, sidebar: string): AppElements =>
+      bindAppElementsSlotRefreshPathname(
+        {
+          ...AppElementsWire.createMetadataEntries({
+            bfcacheSegmentIdentities: { [sidebarSegmentId]: `${sidebar} identity` },
+            interceptionContext: null,
+            layoutIds: ["layout:/"],
+            rootLayoutTreePath: "/",
+            routeId: `route:${pathname}`,
+            slotBindings: [
+              {
+                activeRouteId: `route:${pathname}`,
+                ownerLayoutId: "layout:/",
+                slotId: "slot:children:/",
+                state: "active",
+              },
+              {
+                activeRouteId: `route:${pathname}`,
+                ownerLayoutId: "layout:/",
+                slotId: "slot:sidebar:/",
+                state: "active",
+              },
+            ],
+          }),
+          [sidebarSegmentId]: `${sidebar} segment`,
+          [`page:${pathname}`]: "source's page",
+          "slot:children:/": "source tree",
+          "slot:sidebar:/": sidebar,
+        },
+        pathname,
+      );
+    const staticRender = renderOf("/club/static", "sidebar static");
+    const alphaRender = renderOf("/club/alpha", "sidebar alpha");
+    const keptSlots = new Map([
+      ["slot:children:/", { intercepted: false, pathname: "/club/static/pics/1" }],
+      ["slot:sidebar:/", { intercepted: false, pathname: "/club/static" }],
+    ]);
+
+    const merged = mergeRefreshedParallelSlot(primary, staticRender, keptSlots);
+    expect(merged["slot:sidebar:/"]).toBe("sidebar static");
+    expect(merged[sidebarSegmentId]).toBe("sidebar static segment");
+    expect(merged["slot:children:/"]).toBe("club layout");
+    expect(merged["page:/club/static/pics/1"]).toBe("club default");
+    expect(merged["slot:modal:/club/[slug]"]).toBe("pic modal");
+    expect(Object.hasOwn(merged, "page:/club/static")).toBe(false);
+    const metadata = AppElementsWire.readMetadata(merged);
+    expect(metadata.wholeInterceptionSource).toBe("/club/static");
+    expect(metadata.bfcacheSegmentIdentities[sidebarSegmentId]).toBe("sidebar static identity");
+    expect(metadata.slotBindings.find((binding) => binding.slotId === "slot:sidebar:/")).toEqual(
+      expect.objectContaining({ refreshPathname: "/club/static", state: "active" }),
+    );
+    expect(
+      metadata.slotBindings.find((binding) => binding.slotId === "slot:children:/"),
+    ).toBeUndefined();
+
+    // Another URL's render of the same slot, for other params, never fills it,
+    // whichever render merges first.
+    expect(mergeRefreshedParallelSlot(primary, alphaRender, keptSlots)).toBe(primary);
+    for (const renders of [
+      [alphaRender, staticRender],
+      [staticRender, alphaRender],
+    ]) {
+      const result = renders.reduce(
+        (current, render) => mergeRefreshedParallelSlot(current, render, keptSlots),
+        primary,
+      );
+      expect(result["slot:sidebar:/"]).toBe("sidebar static");
+    }
+    // A render that leaves the slot out too supplies nothing.
+    const { ["slot:sidebar:/"]: _omitted, ...withoutSidebar } = staticRender;
+    expect(mergeRefreshedParallelSlot(primary, withoutSidebar, keptSlots)).toBe(primary);
+    // An intercepted render supplies only the slot it intercepts.
+    const interceptedRender: AppElements = {
+      ...staticRender,
+      ...AppElementsWire.createMetadataEntries({
+        interception: {
+          slotId: "slot:modal:/",
+          sourceMatchedUrl: "/club/static",
+          sourceRouteId: "route:/club/static",
+          targetMatchedUrl: "/club/static/pics/2",
+          targetRouteId: "route:/club/static/pics/2",
+        },
+        interceptionContext: "/club/static",
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/static/pics/2",
+        slotBindings: AppElementsWire.readMetadata(staticRender).slotBindings,
+      }),
+    };
+    expect(mergeRefreshedParallelSlot(primary, interceptedRender, keptSlots)).toBe(primary);
+
+    // The fan-out's render of the source's URL goes in through the source merge.
+    const sourceMerge = createInterceptionSourceRefreshMerge({
+      keptSlots,
+      previousNextUrl: "/club/static",
+      refreshUrl: new URL("https://example.com/club/static/pics/1"),
+    });
+    expect(takesSupplementalRefreshes(primary)).toBe(true);
+    expect(sourceMerge.takes("/club/static", primary)).toBe(true);
+    await expect(
+      resolveSupplementalRefreshes({
+        merge: sourceMerge.merge,
+        mergesInto: takesSupplementalRefreshes,
+        primary: Promise.resolve(primary),
+        signal: new AbortController().signal,
+        supplemental: [
+          async () => alphaRender,
+          async () => sourceMerge.track("/club/static", staticRender),
+        ],
+      }).then((result) => result.value["slot:sidebar:/"]),
+    ).resolves.toBe("sidebar static");
+    // A failed render degrades the refresh, as for any payload that takes one.
+    await expect(
+      resolveSupplementalRefreshes({
+        merge: sourceMerge.merge,
+        mergesInto: takesSupplementalRefreshes,
+        primary: Promise.resolve(primary),
+        signal: new AbortController().signal,
+        supplemental: [() => Promise.reject(new Error("source refresh failed"))],
+      }),
+    ).resolves.toEqual(expect.objectContaining({ degraded: true, value: primary }));
+
+    // Only a render that can fill a left slot is waited for: another URL's
+    // or an intercept's request is cancelled, so it can't fail the refresh.
+    expect(sourceMerge.takes("/club/alpha", primary)).toBe(false);
+    const signals: AbortSignal[] = [];
+    const failing = (signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<AppElements>((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    };
+    const primaryPromise = Promise.resolve(primary);
+    const gated = await resolveSupplementalRefreshes({
+      merge: sourceMerge.merge,
+      mergesInto: takesSupplementalRefreshes,
+      primary: primaryPromise,
+      signal: new AbortController().signal,
+      supplemental: [
+        sourceMerge.load("/club/alpha", primaryPromise, failing),
+        sourceMerge.loadIntercepted(
+          { slotId: "slot:sidebar:/", targetPathname: "/club/static/pics/2" },
+          primaryPromise,
+          failing,
+        ),
+        sourceMerge.load("/club/static", primaryPromise, async () => staticRender),
+      ],
+    });
+    expect(gated.degraded).toBe(false);
+    expect(gated.value["slot:sidebar:/"]).toBe("sidebar static");
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+
+    // A left slot showing an intercept is filled from that intercept's render,
+    // fetched from the URL it was intercepted at.
+    const panelPrimary: AppElements = {
+      ...primary,
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: "/club/static",
+        layoutIds: ["layout:/", "layout:/club/[slug]"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/static/pics/1",
+        slotBindings: [
+          ...AppElementsWire.readMetadata(primary).slotBindings,
+          { ownerLayoutId: "layout:/", slotId: "slot:panel:/", state: "default" },
+        ],
+        wholeInterceptionSource: "/club/static",
+      }),
+    };
+    const panelKept = resolveKeptSlots([
+      {
+        activeRouteId: AppElementsWire.encodeRouteId("/club/photos/3", "/club"),
+        interceptionId: "interception:slot:panel:/->/club/photos/:id",
+        interceptionSourceMatchedUrl: "/club",
+        ownerLayoutId: "layout:/",
+        refreshPathname: "/club/photos/3",
+        slotId: "slot:panel:/",
+        state: "active",
+      },
+    ]);
+    expect(panelKept.get("slot:panel:/")).toEqual({
+      intercepted: true,
+      pathname: "/club/photos/3",
+    });
+    const panelRender = bindAppElementsSlotRefreshPathname(
+      {
+        ...AppElementsWire.createMetadataEntries({
+          interception: {
+            slotId: "slot:panel:/",
+            sourceMatchedUrl: "/club",
+            sourceRouteId: "route:/club",
+            targetMatchedUrl: "/club/photos/3",
+            targetRouteId: "route:/club/photos/3",
+          },
+          interceptionContext: "/club",
+          layoutIds: ["layout:/"],
+          rootLayoutTreePath: "/",
+          routeId: "route:/club/photos/3",
+          slotBindings: [
+            {
+              activeRouteId: "route:/club/photos/3",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:panel:/",
+              state: "active",
+            },
+          ],
+        }),
+        "slot:panel:/": "photo panel",
+      },
+      "/club/photos/3",
+    );
+    const panelMerge = createInterceptionSourceRefreshMerge({
+      keptSlots: panelKept,
+      previousNextUrl: "/club/static",
+      refreshUrl: new URL("https://example.com/club/static/pics/1"),
+    });
+    const panelPromise = Promise.resolve(panelPrimary);
+    await expect(
+      resolveSupplementalRefreshes({
+        merge: panelMerge.merge,
+        mergesInto: takesSupplementalRefreshes,
+        primary: panelPromise,
+        signal: new AbortController().signal,
+        supplemental: [
+          panelMerge.loadIntercepted(
+            { slotId: "slot:panel:/", targetPathname: "/club/photos/3" },
+            panelPromise,
+            async () => panelRender,
+          ),
+          // Another slot's intercept at the same URL fills nothing, so it is
+          // cancelled before it can fail the refresh.
+          panelMerge.loadIntercepted(
+            { slotId: "slot:drawer:/", targetPathname: "/club/photos/3" },
+            panelPromise,
+            failing,
+          ),
+        ],
+      }).then((result) => result.value["slot:panel:/"]),
+    ).resolves.toBe("photo panel");
+
+    // A slot that showed a page from the URL another slot's intercept was
+    // intercepted at takes that page's render, and each takes only its own,
+    // whichever merges first.
+    const sharedPrimary: AppElements = {
+      ...panelPrimary,
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: "/club/static",
+        layoutIds: ["layout:/", "layout:/club/[slug]"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/static/pics/1",
+        slotBindings: [
+          ...AppElementsWire.readMetadata(panelPrimary).slotBindings,
+          { ownerLayoutId: "layout:/", slotId: "slot:drawer:/", state: "default" },
+        ],
+        wholeInterceptionSource: "/club/static",
+      }),
+    };
+    const sharedKept = new Map([
+      ...panelKept,
+      ["slot:drawer:/", { intercepted: false, pathname: "/club/photos/3" }],
+    ]);
+    const pageRenderOf = (slotId: string, content: string): AppElements =>
+      bindAppElementsSlotRefreshPathname(
+        {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: null,
+            layoutIds: ["layout:/"],
+            rootLayoutTreePath: "/",
+            routeId: "route:/club/photos/3",
+            slotBindings: [
+              {
+                activeRouteId: "route:/club/photos/3",
+                ownerLayoutId: "layout:/",
+                slotId,
+                state: "active",
+              },
+            ],
+          }),
+          [slotId]: content,
+        },
+        "/club/photos/3",
+      );
+    const drawerRender: AppElements = {
+      ...pageRenderOf("slot:drawer:/", "photo drawer"),
+      ...pageRenderOf("slot:panel:/", "photo page in panel"),
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/photos/3",
+        slotBindings: [
+          ...AppElementsWire.readMetadata(pageRenderOf("slot:drawer:/", "")).slotBindings,
+          ...AppElementsWire.readMetadata(pageRenderOf("slot:panel:/", "")).slotBindings,
+        ],
+      }),
+    };
+    const interceptedDrawerRender: AppElements = {
+      ...panelRender,
+      "slot:drawer:/": "intercept's drawer",
+      ...AppElementsWire.createMetadataEntries({
+        ...AppElementsWire.readMetadata(panelRender),
+        slotBindings: [
+          ...AppElementsWire.readMetadata(panelRender).slotBindings,
+          ...AppElementsWire.readMetadata(pageRenderOf("slot:drawer:/", "")).slotBindings,
+        ],
+      }),
+    };
+    const sharedMerge = createInterceptionSourceRefreshMerge({
+      keptSlots: sharedKept,
+      previousNextUrl: "/club/static",
+      refreshUrl: new URL("https://example.com/club/static/pics/1"),
+    });
+    const sharedPromise = Promise.resolve(sharedPrimary);
+    for (const order of [
+      ["intercept", "page"],
+      ["page", "intercept"],
+    ]) {
+      const loads = {
+        intercept: sharedMerge.loadIntercepted(
+          { slotId: "slot:panel:/", targetPathname: "/club/photos/3" },
+          sharedPromise,
+          async () => interceptedDrawerRender,
+        ),
+        page: sharedMerge.loadLeftSlots("/club/photos/3", sharedPromise, async () => drawerRender),
+      };
+      const shared = await resolveSupplementalRefreshes({
+        merge: sharedMerge.merge,
+        mergesInto: takesSupplementalRefreshes,
+        primary: sharedPromise,
+        signal: new AbortController().signal,
+        supplemental: order.map((name) => loads[name as keyof typeof loads]),
+      });
+      expect(shared.degraded).toBe(false);
+      expect(shared.value["slot:panel:/"]).toBe("photo panel");
+      expect(shared.value["slot:drawer:/"]).toBe("photo drawer");
+    }
+    // Any other payload takes the intercept's render alone, so it never
+    // requests that page.
+    const pageFetch = vi.fn(async () => drawerRender);
+    await expect(
+      sharedMerge.loadLeftSlots(
+        "/club/photos/3",
+        Promise.resolve(staticRender),
+        pageFetch,
+      )(new AbortController().signal),
+    ).resolves.toBe(staticRender);
+    expect(pageFetch).not.toHaveBeenCalled();
+    // ...and merges nothing from that load, whatever else merged before it.
+    const plainPromise = Promise.resolve(alphaRender);
+    const plainRefresh = (withLeftSlots: boolean) =>
+      resolveSupplementalRefreshes({
+        merge: sharedMerge.merge,
+        mergesInto: takesSupplementalRefreshes,
+        primary: plainPromise,
+        signal: new AbortController().signal,
+        supplemental: [
+          sharedMerge.load("/club/beta", plainPromise, async () =>
+            renderOf("/club/beta", "sidebar beta"),
+          ),
+          ...(withLeftSlots
+            ? [sharedMerge.loadLeftSlots("/club/photos/3", plainPromise, pageFetch)]
+            : []),
+        ],
+      }).then((result) => result.value);
+    const withoutLeftSlots = await plainRefresh(false);
+    expect(withoutLeftSlots).not.toBe(alphaRender);
+    expect(await plainRefresh(true)).toEqual(withoutLeftSlots);
+    expect(pageFetch).not.toHaveBeenCalled();
+
+    // A traversal starts from another entry, which names no URL a slot was
+    // kept from: only the render of the source fills a left slot.
+    const traversalMerge = createInterceptionSourceRefreshMerge({
+      keptSlots: null,
+      previousNextUrl: "/club/static",
+      refreshUrl: new URL("https://example.com/club/static/pics/1"),
+    });
+    expect(traversalMerge.takes("/club/alpha", primary)).toBe(false);
+    expect(traversalMerge.takes("/club/static", primary)).toBe(true);
+    expect(traversalMerge.merge(primary, traversalMerge.track("/club/alpha", alphaRender))).toBe(
+      primary,
+    );
+    expect(
+      traversalMerge.merge(primary, traversalMerge.track("/club/static", staticRender))[
+        "slot:sidebar:/"
+      ],
+    ).toBe("sidebar static");
+
+    // A base path is left out of the URL a slot was kept from.
+    const basePathMerge = createInterceptionSourceRefreshMerge({
+      basePath: "/docs",
+      keptSlots,
+      previousNextUrl: "/docs/club/static",
+      refreshUrl: new URL("https://example.com/docs/club/static/pics/1"),
+    });
+    expect(basePathMerge.takes("/docs/club/static", primary)).toBe(true);
+    expect(basePathMerge.takes("/docs/club/alpha", primary)).toBe(false);
+
+    // Once it holds the slot, the whole route takes nothing more.
+    expect(takesSupplementalRefreshes(merged)).toBe(false);
+    expect(sourceMerge.takes("/club/static", merged)).toBe(false);
   });
 
   it("recovers the active children route when multiple parallel slots are active", () => {
@@ -266,6 +698,7 @@ describe("parallel route supplemental refreshes", () => {
       {
         interception,
         interceptionContext: "/docs/feed",
+        slotId: "slot:modal:/",
         targetPathname: "/docs/docs/guide?tab=new",
       },
     ]);
@@ -327,6 +760,7 @@ describe("parallel route supplemental refreshes", () => {
       {
         interception,
         interceptionContext: "/feed",
+        slotId: "slot:modal:/",
         targetPathname: "/docs/p/%25C3%25A9?tab=new",
       },
     ]);

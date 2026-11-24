@@ -119,13 +119,14 @@ import {
 import {
   createInterceptionSourceRefreshMerge,
   createSupplementalRefreshCoordinator,
-  rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
+  resolveKeptSlots,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
   supplyRetainedElements,
+  takesSupplementalRefreshes,
 } from "./app-browser-supplemental-refresh.js";
 import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
 import {
@@ -1010,20 +1011,24 @@ async function commitSameUrlNavigatePayload(
       basePath: __basePath,
       refreshUrl,
       state: actionInitiation.routerState,
-    }).filter(
-      (sourcePathname) =>
-        !persistedInterceptions.some(
-          (interception) => interception.targetPathname === sourcePathname,
-        ),
-    );
+    });
     if (persistedInterceptions.length > 0 || sourcePageRefreshes.length > 0) {
       supplementalHandle = serverActionSupplementalRefreshCoordinator.begin({
         activeNavigationId: browserNavigationController.getActiveNavigationId(),
         startedNavigationId: actionInitiation.navigationId,
       });
       const mountedSlotsHeader = getMountedSlotIdsHeader(actionInitiation.routerState.elements);
-      const supplemental = persistedInterceptions.map(
-        (interception) => (signal: AbortSignal) =>
+      // The source page an intercepted state names goes beneath the re-render
+      // only when the server rendered it as an intercept from that source.
+      const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+        basePath: __basePath,
+        keptSlots: resolveKeptSlots(actionInitiation.routerState.slotBindings),
+        previousNextUrl: actionInitiation.routerState.previousNextUrl,
+        refreshUrl,
+      });
+      const primaryElements = nextElements;
+      const supplemental = persistedInterceptions.map((interception) =>
+        sourcePageRefreshMerge.loadIntercepted(interception, primaryElements, (signal) =>
           fetchPersistedInterceptedSlotRefresh({
             interceptionContext: interception.interceptionContext,
             interceptionId: interception.interception.id,
@@ -1031,18 +1036,17 @@ async function commitSameUrlNavigatePayload(
             signal,
             targetPathname: interception.targetPathname,
           }),
+        ),
       );
-      // The source page an intercepted state names goes beneath the re-render
-      // only when the server rendered it as an intercept from that source.
-      const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
-        previousNextUrl: actionInitiation.routerState.previousNextUrl,
-        refreshUrl,
-      });
       for (const sourcePageRefresh of sourcePageRefreshes) {
-        supplemental.push(async (signal) =>
-          sourcePageRefreshMerge.track(
-            sourcePageRefresh,
-            await fetchPersistedSourcePageRefresh({
+        const load = persistedInterceptions.some(
+          (interception) => interception.targetPathname === sourcePageRefresh,
+        )
+          ? sourcePageRefreshMerge.loadLeftSlots
+          : sourcePageRefreshMerge.load;
+        supplemental.push(
+          load(sourcePageRefresh, primaryElements, (signal) =>
+            fetchPersistedSourcePageRefresh({
               mountedSlotsHeader,
               signal,
               targetPathname: sourcePageRefresh,
@@ -1052,8 +1056,8 @@ async function commitSameUrlNavigatePayload(
       }
       nextElements = resolveSupplementalRefreshes({
         merge: sourcePageRefreshMerge.merge,
-        mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
-        primary: nextElements,
+        mergesInto: takesSupplementalRefreshes,
+        primary: primaryElements,
         signal: supplementalHandle.signal,
         supplemental,
       }).then((result) => {
@@ -2477,15 +2481,6 @@ function bootstrapHydration(
                 navigationKind === "traverse"
                   ? { previousNextUrl: requestPreviousNextUrl, slotBindings: [] }
                   : navigationInitiationState,
-            }).filter((sourcePathAndSearch) => {
-              if (
-                persistedRefreshInterceptions.some(
-                  (interception) => interception.targetPathname === sourcePathAndSearch,
-                )
-              ) {
-                return false;
-              }
-              return true;
             })
           : [];
         const hasSupplementalRefresh =
@@ -3033,14 +3028,20 @@ function bootstrapHydration(
           // only when the server rendered that payload as an intercept from
           // that source.
           const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+            basePath: __basePath,
+            keptSlots:
+              navigationKind === "traverse"
+                ? null
+                : resolveKeptSlots(navigationInitiationState.slotBindings),
             previousNextUrl:
               navigationKind === "traverse"
                 ? requestPreviousNextUrl
                 : navigationInitiationState.previousNextUrl,
             refreshUrl: url,
           });
-          const supplemental = persistedRefreshInterceptions.map(
-            (interception) => (signal: AbortSignal) =>
+          const primaryPayload = Promise.resolve(rscPayload);
+          const supplemental = persistedRefreshInterceptions.map((interception) =>
+            sourcePageRefreshMerge.loadIntercepted(interception, primaryPayload, (signal) =>
               fetchPersistedInterceptedSlotRefresh({
                 interceptionContext: interception.interceptionContext,
                 interceptionId: interception.interception.id,
@@ -3048,13 +3049,18 @@ function bootstrapHydration(
                 signal,
                 targetPathname: interception.targetPathname,
               }),
+            ),
           );
-          const primaryPayload = Promise.resolve(rscPayload);
           // A traversal learns from its payload whether it takes the source
           // page; one that doesn't neither waits for nor fails with it.
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
+            const load = persistedRefreshInterceptions.some(
+              (interception) => interception.targetPathname === persistedSourcePageRefresh,
+            )
+              ? sourcePageRefreshMerge.loadLeftSlots
+              : sourcePageRefreshMerge.load;
             supplemental.push(
-              sourcePageRefreshMerge.load(persistedSourcePageRefresh, primaryPayload, (signal) =>
+              load(persistedSourcePageRefresh, primaryPayload, (signal) =>
                 fetchPersistedSourcePageRefresh({
                   // A traversal starts from another entry's state, whose
                   // mounted slots aren't the ones the intercepted payload
@@ -3071,7 +3077,7 @@ function bootstrapHydration(
           }
           rscPayload = resolveSupplementalRefreshes({
             merge: sourcePageRefreshMerge.merge,
-            mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
+            mergesInto: takesSupplementalRefreshes,
             primary: primaryPayload,
             signal: navigationAbortHandle.signal,
             supplemental,

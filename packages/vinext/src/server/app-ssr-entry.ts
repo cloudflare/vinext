@@ -846,7 +846,7 @@ export async function handleSsr(
         const prepareCaughtNotFoundRoot = (error: unknown): ReactElement | null => {
           const caughtNotFoundBoundaries = resolveCaughtNotFoundBoundaries(error);
           if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
-          return prepareCaughtRoot(caughtNotFoundBoundaries);
+          return prepareCaughtRoot(error, caughtNotFoundBoundaries);
         };
         // The Flight render goes on after the shell rejected, so a signal it
         // throws later, such as an async page's forbidden() after a slot's
@@ -870,9 +870,10 @@ export async function handleSsr(
           ) {
             return null;
           }
-          return prepareCaughtRoot(caughtNotFoundBoundaries);
+          return prepareCaughtRoot(error, caughtNotFoundBoundaries);
         };
         const prepareCaughtRoot = (
+          error: unknown,
           caughtNotFoundBoundaries: readonly string[],
         ): ReactElement | null => {
           // Decode the payload again inside this render, so that it hints the
@@ -889,6 +890,9 @@ export async function handleSsr(
           flightRoot = null;
           beforeInteractiveInlineScripts.length = 0;
           clearServerInsertedHTML();
+          // The document's head carries the shell signal's tags, and none for
+          // what the discarded renders threw.
+          errorMetaRenderer.restart([error]);
           // The caught boundaries replace the files below them, which the
           // route's linked stylesheets include. Next.js sends an error shell
           // without stylesheets here, so link only what this render reads.
@@ -937,6 +941,10 @@ export async function handleSsr(
           caughtBoundaries = null;
           caughtShellError = error;
           shellErrorRecovered = true;
+          // Nor does the error shell: Next.js's carries no refresh tag for a
+          // redirect the failed render threw, which the browser follows from
+          // the payload.
+          errorMetaRenderer.restart([error]);
           streamedReferences.unlinked = streamedReferences.unlinked.filter((id) =>
             streamedReferences.streamed.has(id),
           );

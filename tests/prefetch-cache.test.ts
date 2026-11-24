@@ -605,6 +605,70 @@ describe("prefetch cache eviction", () => {
     expect(headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)).toBe("/feed");
   });
 
+  // Before the manifest loads, an entry's kept source rides on every
+  // prefetch. Once it shows nothing intercepts the target, the prefetch goes
+  // without it, so shared caches can answer it.
+  it("router.prefetch drops a kept source once the route manifest shows nothing intercepts the target", async () => {
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const location = (globalThis as any).window.location;
+    location.pathname = "/photos/1";
+    location.href = "http://localhost/photos/1";
+    let loaded = false;
+    let releaseManifest!: () => void;
+    const manifestLoad = new Promise<void>((resolve) => {
+      releaseManifest = resolve;
+    }).then(() => {
+      runtime.bootstrap.routeManifest = decodeBrowserRouteManifest({
+        graphVersion: "graph:test",
+        routes: [],
+        layouts: [],
+        slotBindings: [],
+        interceptions: [
+          {
+            id: "interception:slot:modal:/feed->/photos/:id",
+            ownerLayoutId: "layout:/feed",
+            slotId: "slot:modal:/feed",
+            sourcePatternParts: ["feed"],
+            targetPatternParts: ["photos", ":id"],
+            targetRouteId: "route:/photos/:id",
+          },
+        ],
+        interceptionsBySlotId: [],
+        rootBoundaries: [],
+      });
+      loaded = true;
+      return true;
+    });
+    const runtime = {
+      bootstrap: { routeManifest: null as unknown, rsc: undefined },
+      functions: {
+        getPrefetchRouterState: () => ({
+          pathAndSearch: "/photos/1",
+          routeId: "route:/photos/1",
+          routeMiss: false,
+          sourceInterceptionContext: "/feed",
+        }),
+        loadRouteManifest: () => (loaded ? null : manifestLoad),
+        navigate: vi.fn(),
+      },
+    };
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = runtime;
+
+    appRouterInstance.prefetch("/about", { kind: "full" });
+    await settlePrefetchSetup();
+    expect(fetch).not.toHaveBeenCalled();
+
+    releaseManifest();
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    expect(
+      new Headers(fetch.mock.calls[0]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    ).toBeNull();
+  });
+
   it("router.prefetch sends no interception context from an unmatched URL's not-found page", async () => {
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -724,10 +788,10 @@ describe("prefetch cache eviction", () => {
   });
 
   // An intercept opened from an unmatched URL's not-found page keeps
-  // /_not-found as its entry's source, which its navigations send whatever
-  // their target, so its prefetches send it too, as Next.js prefetches with
-  // the `Next-Url` it navigates with.
-  it("router.prefetch sends the source an intercepted entry keeps", async () => {
+  // /_not-found as its entry's source, which its navigations send, so its
+  // prefetches to a target an intercept can match send it too, as Next.js
+  // prefetches with the `Next-Url` it navigates with.
+  it("router.prefetch sends the source an intercepted entry keeps to targets it can intercept", async () => {
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", { headers: { "content-type": "text/x-component" } }),
@@ -751,6 +815,14 @@ describe("prefetch cache eviction", () => {
               sourcePatternParts: [],
               targetPatternParts: ["photos", ":id"],
               targetRouteId: "route:/photos/:id",
+            },
+            {
+              id: "interception:slot:modal:/->/files/:slug+",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:modal:/",
+              sourcePatternParts: [],
+              targetPatternParts: ["files", ":slug+"],
+              targetRouteId: "route:/files/:slug+",
             },
           ],
           interceptionsBySlotId: [],
@@ -778,10 +850,27 @@ describe("prefetch cache eviction", () => {
       routeId: "route:/photos/1",
     });
 
+    // Nothing intercepts `/about`, so its prefetch stays a plain one that
+    // shared caches answer, as Next.js's server drops `Next-Url` there.
     appRouterInstance.prefetch("/about", { kind: "full" });
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
     expect(
       new Headers(fetch.mock.calls[1]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    ).toBeNull();
+
+    // A middleware rewrite can add the target's missing dynamic segment, so
+    // `/photos` keeps the source.
+    appRouterInstance.prefetch("/photos", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 3);
+    expect(
+      new Headers(fetch.mock.calls[2]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    ).toBe("/_not-found");
+
+    // A rewrite can add a required catch-all's segments as well.
+    appRouterInstance.prefetch("/files", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 4);
+    expect(
+      new Headers(fetch.mock.calls[3]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
     ).toBe("/_not-found");
   });
 
