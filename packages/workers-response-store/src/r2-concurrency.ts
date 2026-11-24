@@ -6,10 +6,11 @@ const MAX_R2_CONCURRENCY = 6;
 // https://developers.cloudflare.com/r2/platform/limits/
 export const MAX_R2_CAS_ATTEMPTS = 5;
 const R2_RETRY_BASE_MS = 250;
-// R2 bindings throw a plain Error whose message ends with the R2 error code: 10001 (500) and
-// 10043 (503) are transient, 10058 (429) is the per-key write limit. All three are retried.
+// R2 bindings throw a plain Error whose message ends with the R2 error code: 10001 (500),
+// 10043 (503) and 10054 (client disconnect) are transient, 10058 (429) is the per-key write
+// limit. R2 says to retry all four.
 // https://developers.cloudflare.com/r2/api/error-codes/
-const RETRYABLE_R2_ERROR = /\((?:10001|10043|10058)\)$/;
+const RETRYABLE_R2_ERROR = /\((?:10001|10043|10054|10058)\)$/;
 
 export function isRetryableR2Error(error: unknown): error is Error {
   return error instanceof Error && RETRYABLE_R2_ERROR.test(error.message);

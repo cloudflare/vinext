@@ -75,7 +75,15 @@ beforeEach(async () => {
                 ResponseStoreBinding as BaseBinding,
               } from "./worker.js";
               export { ResponseStoreRevalidator } from "./worker.js";
-              const RATE_LIMITED = "put: Reduce your concurrent request rate for the same object. (10058)";
+              const R2_ERROR_MESSAGES = {
+                10001: "We encountered an internal error. Please try again.",
+                10020: "The specified object name is not valid.",
+                10043: "Service unavailable.",
+                10054: "Client disconnected before the request completed.",
+                10058: "Reduce your concurrent request rate for the same object.",
+              };
+              let r2ErrorCode = 10058;
+              const r2Error = () => new Error(\`put: \${R2_ERROR_MESSAGES[r2ErrorCode]} (\${r2ErrorCode})\`);
               let purgeMode;
               let metadataR2DelayMs = 0;
               let failMetadataR2Write = false;
@@ -93,7 +101,7 @@ beforeEach(async () => {
                         }
                         if (key === "put" && rateLimitedMetadataR2Writes > 0) {
                           rateLimitedMetadataR2Writes--;
-                          return () => Promise.reject(new Error(RATE_LIMITED));
+                          return () => Promise.reject(r2Error());
                         }
                         if (["get", "head", "put"].includes(key) && metadataR2DelayMs) {
                           return async (...args) => {
@@ -141,7 +149,7 @@ beforeEach(async () => {
                         };
                         if (key === "put" && rateLimitedR2Writes > 0) {
                           rateLimitedR2Writes--;
-                          return () => Promise.reject(new Error(RATE_LIMITED));
+                          return () => Promise.reject(r2Error());
                         }
                         const value = Reflect.get(bucket, key);
                         return typeof value === "function" ? value.bind(bucket) : value;
@@ -180,6 +188,9 @@ beforeEach(async () => {
                     failMetadataR2Write = new URL(request.url).searchParams.has("fail-metadata-r2");
                     rateLimitedR2Writes = Number(
                       new URL(request.url).searchParams.get("rate-limit-r2") ?? 0,
+                    );
+                    r2ErrorCode = Number(
+                      new URL(request.url).searchParams.get("r2-error-code") ?? 10058,
                     );
                     rateLimitedMetadataR2Writes = Number(
                       new URL(request.url).searchParams.get("rate-limit-metadata-r2") ?? 0,
@@ -4693,6 +4704,25 @@ test("a write that R2 rate-limits backs off and publishes", async () => {
   const write = await put("/r2-rate-limited", "first");
   assert.deepEqual(write.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
   assert.equal(await (await read("/r2-rate-limited")).text(), "first");
+});
+
+test("a write that R2 fails with a transient error retries and publishes", async () => {
+  for (const code of [10001, 10043, 10054]) {
+    await worker.fetch(
+      `https://user.test/admin/edge-purge?mode=success&rate-limit-r2=2&r2-error-code=${code}`,
+    );
+    const write = await put(`/r2-transient-${code}`, "first");
+    assert.deepEqual(write.json, { backingStoreUpdated: true, edgePurgeAccepted: true }, `${code}`);
+    assert.equal(await (await read(`/r2-transient-${code}`)).text(), "first");
+  }
+});
+
+test("a write that R2 rejects with a non-retryable error is not retried", async () => {
+  await worker.fetch(
+    "https://user.test/admin/edge-purge?mode=success&rate-limit-r2=1&r2-error-code=10020",
+  );
+  await assert.rejects(put("/r2-not-retried", "first"), /R2 response publication failed/);
+  assert.equal((await read("/r2-not-retried")).status, 404);
 });
 
 test("a write that R2 keeps rate-limiting fails after its last attempt", async () => {
