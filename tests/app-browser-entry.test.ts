@@ -3226,6 +3226,83 @@ describe("app browser entry state helpers", () => {
     );
   });
 
+  // A refresh leaves a mounted slot that shows its default out of its payload,
+  // and the slot stays as Next.js keeps a default segment's content, unless
+  // its owner now renders for other params.
+  it("keeps a default slot a refresh leaves out while its owner keeps its identity", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const asideSlotId = AppElementsWire.encodeSlotId("aside", "/");
+    const currentAside = React.createElement("aside", null, "aside default");
+    const nextRootLayout = React.createElement("section", null, "next root layout");
+    const bindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: asideSlotId,
+        slotName: "aside",
+        state: "default" as const,
+      },
+    ];
+    const currentState = createState({
+      bfcacheIds: { [rootLayoutId]: "0" },
+      elements: createResolvedElements(
+        "route:/settings",
+        "/",
+        null,
+        {
+          [asideSlotId]: currentAside,
+          [rootLayoutId]: React.createElement("section", null, "current root layout"),
+        },
+        [rootLayoutId],
+        bindings,
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      routeId: "route:/settings",
+      slotBindings: bindings,
+    });
+    const commitRefresh = async (extraEntries: Record<string, unknown> = {}) => {
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/settings",
+            "/",
+            null,
+            { [rootLayoutId]: nextRootLayout, ...extraEntries },
+            [rootLayoutId],
+            bindings,
+          ),
+        ),
+        navigationSnapshot: currentState.navigationSnapshot,
+        operationLane: "refresh",
+        renderId: 21,
+        type: "navigate",
+      });
+      const approval = approvePendingNavigationCommit({
+        activeNavigationId: 1,
+        currentState,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+        startedNavigationId: 1,
+        targetHref: "https://example.com/settings",
+      });
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      return applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+    };
+
+    const refreshed = await commitRefresh();
+    expect(refreshed.elements[rootLayoutId]).toBe(nextRootLayout);
+    expect(refreshed.elements[asideSlotId]).toBe(currentAside);
+    expect(refreshed.slotBindings).toEqual(bindings);
+
+    const otherParams = await commitRefresh({
+      [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: { [rootLayoutId]: "other params" },
+    });
+    expect(otherParams.elements[rootLayoutId]).toBe(nextRootLayout);
+    expect(Object.hasOwn(otherParams.elements, asideSlotId)).toBe(false);
+  });
+
   it("preserves planner-approved named slot state across HMR replacement", async () => {
     const rootLayoutId = AppElementsWire.encodeLayoutId("/");
     const authSlotId = AppElementsWire.encodeSlotId("auth", "/");

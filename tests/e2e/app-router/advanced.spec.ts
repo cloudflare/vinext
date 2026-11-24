@@ -57,6 +57,33 @@ test.describe("Parallel Routes", () => {
     await expect(page.locator('[data-testid="analytics-slot"]')).not.toBeVisible();
   });
 
+  // The client keeps the mounted slots that show their defaults, so a refresh
+  // leaves them out of its payload, and they stay as Next.js keeps a default
+  // segment's content.
+  test("router.refresh() keeps the parallel slots showing their defaults", async ({ page }) => {
+    await page.goto(`${BASE}/dashboard/settings`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator('[data-testid="team-default"]')).toBeVisible();
+
+    for (let refreshes = 0; refreshes < 2; refreshes++) {
+      const refresh = page.waitForResponse((response) =>
+        isAppRouterRscRequestForPath(response.request(), "/dashboard/settings"),
+      );
+      await page.evaluate(() => {
+        const router = window.next?.router;
+        if (!router || !("refresh" in router)) {
+          throw new Error("window.next App Router is not installed");
+        }
+        router.refresh();
+      });
+      await (await refresh).finished();
+      await page.waitForTimeout(500);
+      await expect(page.locator("h1")).toHaveText("Settings");
+      await expect(page.locator('[data-testid="team-default"]')).toBeVisible();
+      await expect(page.locator('[data-testid="analytics-default"]')).toBeVisible();
+    }
+  });
+
   test("soft navigation preserves active parallel slot content over target defaults", async ({
     page,
   }) => {
@@ -213,10 +240,27 @@ test.describe("Intercepting Routes", () => {
         request.headers()["rsc"] === "1",
     );
     await refreshRouter(page);
-    expect((await refresh).headers()["x-vinext-interception-context"]).toBe(
+    const refreshRequest = await refresh;
+    expect(refreshRequest.headers()["x-vinext-interception-context"]).toBe(
       "/nextjs-compat/intercept-source-group/club/static",
     );
     await expectInterceptingRoute(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    // The slots showing their defaults keep them, refresh after refresh, as
+    // Next.js keeps a default segment's content. The response commits after
+    // its body is read.
+    await (await refreshRequest.response())?.finished();
+    await page.waitForTimeout(500);
+    await expectOtherSlotsInDefault(page);
+    const secondRefresh = page.waitForRequest(
+      (request) =>
+        request.url().includes("/intercept-source-group/club/static/pics/1") &&
+        request.headers()["rsc"] === "1",
+    );
+    await refreshRouter(page);
+    await (await (await secondRefresh).response())?.finished();
+    await page.waitForTimeout(500);
+    await expectInterceptingRoute(/\/intercept-source-group\/club\/static\/pics\/1$/);
+    await expectOtherSlotsInDefault(page);
 
     await page.goBack();
     await expect(page).toHaveURL(/\/intercept-source-group\/club\/static$/);
