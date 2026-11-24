@@ -237,6 +237,71 @@ export function mergeRefreshedParallelSlot(
   return merged;
 }
 
+// Whether `sourceElements` is the render, from its own URL, of the source page
+// the server proved the intercepted payload `currentElements` for.
+function isInterceptionSourceRender(
+  currentElements: AppElements,
+  sourceElements: AppElements,
+): boolean {
+  const interception = AppElementsWire.readMetadata(currentElements).interception;
+  const sourceMetadata = AppElementsWire.readMetadata(sourceElements);
+  // The source render names its matched URL in its own route id, which renders
+  // without an interception context.
+  const sourceRoute = AppElementsWire.parseElementKey(sourceMetadata.routeId);
+  return (
+    interception !== null &&
+    sourceMetadata.interception === null &&
+    sourceRoute?.kind === "route" &&
+    sourceRoute.interceptionContext === null &&
+    sourceMetadata.routeId === interception.sourceRouteId &&
+    sourceRoute.path === interception.sourceMatchedUrl
+  );
+}
+
+// A refresh, traversal or server-action re-render of an intercepted state
+// renders its source page from that page's own URL. The render goes beneath the
+// intercept the server proved for that source only: a payload the server
+// rendered without one, or for another source, commits as it was rendered.
+export function mergeInterceptionSourceRefresh(
+  currentElements: AppElements,
+  sourceElements: AppElements,
+): AppElements {
+  return isInterceptionSourceRender(currentElements, sourceElements)
+    ? mergeRefreshedParallelSlot(currentElements, sourceElements)
+    : currentElements;
+}
+
+/**
+ * The merge for a fan-out that renders the source page an intercepted state
+ * names, its previousNextUrl, beside the other branches it keeps. That page's
+ * render goes through mergeInterceptionSourceRefresh, every other branch
+ * through mergeRefreshedParallelSlot. `track` marks a branch's render by the
+ * path and search it was fetched from.
+ */
+export function createInterceptionSourceRefreshMerge(options: {
+  previousNextUrl: string | null;
+  refreshUrl: URL;
+}): {
+  merge: (current: AppElements, refreshed: AppElements) => AppElements;
+  track: (pathAndSearch: string, elements: AppElements) => AppElements;
+} {
+  const sourceUrl =
+    options.previousNextUrl === null ? null : new URL(options.previousNextUrl, options.refreshUrl);
+  const sourcePathAndSearch =
+    sourceUrl === null ? null : `${sourceUrl.pathname}${sourceUrl.search}`;
+  const sourceRenders = new WeakSet<AppElements>();
+  return {
+    merge: (current, refreshed) =>
+      sourceRenders.has(refreshed)
+        ? mergeInterceptionSourceRefresh(current, refreshed)
+        : mergeRefreshedParallelSlot(current, refreshed),
+    track: (pathAndSearch, elements) => {
+      if (pathAndSearch === sourcePathAndSearch) sourceRenders.add(elements);
+      return elements;
+    },
+  };
+}
+
 // A payload for an intercepted route can leave the source page beneath it for
 // the client to keep. A render of that page from its own URL supplies them,
 // and nothing else: the intercepted payload's own entries stay its own.

@@ -8,12 +8,60 @@ import {
   AppElementsWire,
   type AppElements,
 } from "./app-elements.js";
+import type { InterceptionSourceIdentity } from "./navigation-planner.js";
 
 const ROUTE_ELEMENT_ID_PREFIXES = [
   APP_ROUTE_HEAD_ID_PREFIX,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
   APP_STREAMING_METADATA_OUTLET_ID_PREFIX,
 ] as const;
+
+/**
+ * Whether a payload for an intercepted route carries the source tree beneath
+ * the intercept itself: every element it left for the client to keep, and the
+ * layout its intercepted slot renders in.
+ */
+export function holdsInterceptionSourceTree(elements: AppElements): boolean {
+  const metadata = AppElementsWire.readMetadata(elements);
+  const interception = metadata.interception;
+  if (interception === null || metadata.skippedLayoutIds.length > 0) return false;
+  const ownerLayoutId = metadata.slotBindings.find(
+    (binding) => binding.slotId === interception.slotId,
+  )?.ownerLayoutId;
+  return (
+    ownerLayoutId !== null &&
+    ownerLayoutId !== undefined &&
+    Object.hasOwn(elements, ownerLayoutId) &&
+    resolveMissingRetainedElementIds(elements).length === 0
+  );
+}
+
+/**
+ * The source a committed tree for an intercepted route shows beneath the
+ * intercept, when it holds that source's tree. Its commit put the source the
+ * server's proof names there, so a traversal back to it shows that source
+ * again, or null when the tree doesn't hold it.
+ */
+export function resolveCommittedInterceptionSource(
+  elements: AppElements,
+): InterceptionSourceIdentity | null {
+  const interception = AppElementsWire.readMetadata(elements).interception;
+  if (interception === null || !holdsInterceptionSourceTree(elements)) return null;
+  return { matchedUrl: interception.sourceMatchedUrl, routeId: interception.sourceRouteId };
+}
+
+function resolveMissingRetainedElementIds(next: AppElements): string[] {
+  const nextMetadata = AppElementsWire.readMetadata(next);
+  const headId = APP_ROUTE_HEAD_ID_PREFIX + nextMetadata.routeId;
+  const metadataBodyId = APP_STREAMING_METADATA_BODY_ID_PREFIX + nextMetadata.routeId;
+  // A head's streamed tags have a body element only when its own render placed
+  // them there, so the body goes with the head the route renders: none beside
+  // a head the payload carries, and the state's own, if any, beside the head
+  // it keeps.
+  return nextMetadata.retainedElementIds.filter(
+    (id) => !Object.hasOwn(next, id) && (id !== metadataBodyId || !Object.hasOwn(next, headId)),
+  );
+}
 
 /**
  * The elements a payload left for the client to keep that it doesn't carry
@@ -38,15 +86,8 @@ export function resolveHeldRetainedElementIds(
   sourceUrl: string | null,
 ): readonly string[] | null {
   const nextMetadata = AppElementsWire.readMetadata(next);
-  const headId = APP_ROUTE_HEAD_ID_PREFIX + nextMetadata.routeId;
   const metadataBodyId = APP_STREAMING_METADATA_BODY_ID_PREFIX + nextMetadata.routeId;
-  // A head's streamed tags have a body element only when its own render placed
-  // them there, so the body goes with the head the route renders: none beside
-  // a head the payload carries, and the state's own, if any, beside the head
-  // it keeps.
-  const missing = nextMetadata.retainedElementIds.filter(
-    (id) => !Object.hasOwn(next, id) && (id !== metadataBodyId || !Object.hasOwn(next, headId)),
-  );
+  const missing = resolveMissingRetainedElementIds(next);
   if (missing.length === 0) return missing;
   if (
     nextMetadata.interception === null ||

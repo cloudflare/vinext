@@ -115,8 +115,8 @@ import {
   type AppBrowserServerActionResult,
 } from "./app-browser-action-result.js";
 import {
+  createInterceptionSourceRefreshMerge,
   createSupplementalRefreshCoordinator,
-  mergeRefreshedParallelSlot,
   rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
@@ -168,6 +168,7 @@ import {
   findVisitedResponseForFullPrefetch,
   hasNavigationResponseHistoryLifetime,
   revokeHistoryRestoreNavigationReuse,
+  isVisitedResponseCacheEntryForPreviousNextUrl,
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
@@ -231,7 +232,10 @@ import {
   type LearnedOptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
 import { createMountedLayoutsHeader, holdsSkippedLayouts } from "./app-mounted-layouts.js";
-import { resolveHeldRetainedElementIds } from "./app-retained-elements.js";
+import {
+  resolveCommittedInterceptionSource,
+  resolveHeldRetainedElementIds,
+} from "./app-retained-elements.js";
 import {
   VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -243,6 +247,7 @@ import { stripRscCompletionMetadataResponse } from "./rsc-completion-metadata.js
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
 import {
   navigationPlanner,
+  type InterceptionSourceIdentity,
   type NavigationReuseFacts,
   type VisitedResponseCacheCandidateFacts,
 } from "./navigation-planner.js";
@@ -917,6 +922,7 @@ type RenderNavigationPayloadOptions = {
   restoredBfcacheIds?: Readonly<Record<string, string>> | null;
   reuseCurrentBfcacheIds?: boolean;
   scrollIntent?: AppRouterScrollIntent | null;
+  suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHref: string;
   traversalIntent?: HistoryTraversalIntent | null;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
@@ -945,6 +951,7 @@ async function renderNavigationPayload(
     restoredBfcacheIds: options.restoredBfcacheIds ?? null,
     reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
     scrollIntent: options.scrollIntent ?? null,
+    suppliedInterceptionSource: options.suppliedInterceptionSource ?? null,
     targetHistoryIndex: options.traversalIntent?.targetHistoryIndex,
     targetHref: options.targetHref,
     visibleCommitMode: options.visibleCommitMode ?? "transition",
@@ -1016,17 +1023,26 @@ async function commitSameUrlNavigatePayload(
             targetPathname: interception.targetPathname,
           }),
       );
+      // The source page an intercepted state names goes beneath the re-render
+      // only when the server rendered it as an intercept from that source.
+      const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+        previousNextUrl: actionInitiation.routerState.previousNextUrl,
+        refreshUrl,
+      });
       for (const sourcePageRefresh of sourcePageRefreshes) {
-        supplemental.push((signal) =>
-          fetchPersistedSourcePageRefresh({
-            mountedSlotsHeader,
-            signal,
-            targetPathname: sourcePageRefresh,
-          }),
+        supplemental.push(async (signal) =>
+          sourcePageRefreshMerge.track(
+            sourcePageRefresh,
+            await fetchPersistedSourcePageRefresh({
+              mountedSlotsHeader,
+              signal,
+              targetPathname: sourcePageRefresh,
+            }),
+          ),
         );
       }
       nextElements = resolveSupplementalRefreshes({
-        merge: mergeRefreshedParallelSlot,
+        merge: sourcePageRefreshMerge.merge,
         mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
         primary: nextElements,
         signal: supplementalHandle.signal,
@@ -1108,10 +1124,16 @@ function readVisitedResponseCacheCandidate(
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
   navigationKind: NavigationKind,
+  previousNextUrl: string | null,
 ): VisitedResponseCacheCandidate {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const match = findVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
-  if (!match || match.entry.navigationReuseRevoked) {
+  if (
+    !match ||
+    match.entry.navigationReuseRevoked ||
+    (navigationKind === "traverse" &&
+      !isVisitedResponseCacheEntryForPreviousNextUrl(match.entry, previousNextUrl))
+  ) {
     return {
       cacheKey,
       entry: null,
@@ -1178,6 +1200,7 @@ function storeVisitedResponseSnapshot(
   prefetchSnapshot: CachedRscResponse = snapshot,
   reuseAfterHistoryRestore: boolean = false,
   fromHydration: boolean = false,
+  previousNextUrl: string | null = null,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   // Router-state fingerprints intentionally give requests for the same visible
@@ -1194,6 +1217,7 @@ function storeVisitedResponseSnapshot(
     now,
     mountedSlotsHeader: requestMountedSlotsHeader,
     params,
+    previousNextUrl,
     response: snapshot,
     reuseAfterHistoryRestore,
   });
@@ -2519,6 +2543,7 @@ function bootstrapHydration(
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
+              requestPreviousNextUrl,
             );
         const visitedResponseDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
           visitedResponseCandidate.facts,
@@ -2639,6 +2664,17 @@ function bootstrapHydration(
             restoredBfcacheIds,
             reuseCurrentBfcacheIds,
             scrollIntent,
+            // A traversal back to a tree this client committed for an
+            // intercepted route shows the source that commit put beneath it,
+            // as one whose response arrives fresh shows the source it fetched.
+            // It trusts the tree as only an approved commit stores one there
+            // outside hydration.
+            suppliedInterceptionSource:
+              navigationKind === "traverse" &&
+              cachedRoute.elements &&
+              cachedRoute.fromHydration !== true
+                ? resolveCommittedInterceptionSource(cachedRoute.elements)
+                : null,
             targetHref: currentHref,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
@@ -2939,6 +2975,17 @@ function bootstrapHydration(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
         if (hasSupplementalRefresh) {
+          // A refresh or traversal renders the source page an intercepted
+          // state names beside the target. It goes beneath the target's payload
+          // only when the server rendered that payload as an intercept from
+          // that source.
+          const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+            previousNextUrl:
+              navigationKind === "traverse"
+                ? requestPreviousNextUrl
+                : navigationInitiationState.previousNextUrl,
+            refreshUrl: url,
+          });
           const supplemental = persistedRefreshInterceptions.map(
             (interception) => (signal: AbortSignal) =>
               fetchPersistedInterceptedSlotRefresh({
@@ -2950,8 +2997,8 @@ function bootstrapHydration(
               }),
           );
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
-            supplemental.push((signal) =>
-              fetchPersistedSourcePageRefresh({
+            supplemental.push(async (signal) => {
+              const elements = await fetchPersistedSourcePageRefresh({
                 // A traversal starts from another entry's state, whose mounted
                 // slots aren't the ones the intercepted payload leaves to it.
                 mountedSlotsHeader:
@@ -2960,11 +3007,12 @@ function bootstrapHydration(
                     : mountedSlotsHeader,
                 signal,
                 targetPathname: persistedSourcePageRefresh,
-              }),
-            );
+              });
+              return sourcePageRefreshMerge.track(persistedSourcePageRefresh, elements);
+            });
           }
           rscPayload = resolveSupplementalRefreshes({
-            merge: mergeRefreshedParallelSlot,
+            merge: sourcePageRefreshMerge.merge,
             mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
             primary: Promise.resolve(rscPayload),
             signal: navigationAbortHandle.signal,
@@ -3189,6 +3237,8 @@ function bootstrapHydration(
               isCompleteAppPayloadMetadata(metadata),
               prefetchSnapshot,
               interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
+              false,
+              state.previousNextUrl,
             );
           }
         } catch {
