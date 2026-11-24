@@ -409,7 +409,9 @@ function isNotModified(request: Request, response: Response): boolean {
 function notModifiedResponse(response: Response): Response {
   void response.body?.cancel().catch(() => {});
   const headers = new Headers(response.headers);
+  // Content-Digest covers the message content, which a 304 has none of (RFC 9530 2).
   for (const name of [
+    "Content-Digest",
     "Content-Encoding",
     "Content-Length",
     "Content-Range",

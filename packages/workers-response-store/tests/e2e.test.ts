@@ -30,6 +30,7 @@ type PutOptions = {
   cdnCacheControl?: string;
   cloudflareCacheControl?: string;
   coalesce?: boolean;
+  contentDigest?: string;
   contentRange?: string;
   contentType?: string;
   etag?: string;
@@ -218,6 +219,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
       options.cacheControl ?? "public, max-age=60, stale-while-revalidate=60",
   });
   if (options.tags) headers.set("X-Response-Cache-Tag", options.tags.join(","));
+  if (options.contentDigest) headers.set("X-Response-Content-Digest", options.contentDigest);
   if (options.contentRange) headers.set("X-Response-Content-Range", options.contentRange);
   if (options.etag) headers.set("X-Response-ETag", options.etag);
   if (options.lastModified) headers.set("X-Response-Last-Modified", options.lastModified);
@@ -351,6 +353,22 @@ async function metadataStub() {
 
 async function metadata(): Promise<any[]> {
   return (await metadataStub()).inspect();
+}
+
+// Holds the only entry's regeneration claim, as another invocation's render does, until released.
+async function holdRevalidationClaim(): Promise<() => Promise<void>> {
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const claim = await stub.claimRevalidation(
+    entry.keyHash,
+    entry.activeRevision,
+    entry.cacheKey,
+    `${r2Root}/${entry.keyHash}`,
+    Date.now(),
+    30_000,
+  );
+  assert.ok(claim);
+  return () => stub.releaseWrite(entry.keyHash, claim.objectKey, claim.claimId);
 }
 
 async function metadataRowCount(table: string, name = metadataName): Promise<number> {
@@ -2804,17 +2822,13 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
   const lastModified = "Fri, 01 Jan 1999 00:00:00 GMT";
   await put(path, "stale-part", {
     status: 206,
+    contentDigest: "sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:",
     contentRange: "bytes 0-9/100",
     lastModified,
     cacheControl: "public, max-age=0, stale-while-revalidate=30",
-    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 1000 },
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60" },
   });
-  const first = conditionalRead(path);
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if ((await metadataRowCount("revalidation_claims")) === 1) break;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+  const release = await holdRevalidationClaim();
   const raced = await conditionalRead(path);
   assert.equal(raced.status, 206);
   await raced.arrayBuffer();
@@ -2850,9 +2864,10 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
     const response = await conditionalRead(path, header, value);
     assert.equal(response.status, 304, `${header}: ${value}`);
     assert.equal(response.headers.get("Content-Range"), null, `${header}: ${value}`);
+    assert.equal(response.headers.get("Content-Digest"), null, `${header}: ${value}`);
     assert.equal(await response.text(), "", `${header}: ${value}`);
   }
-  assert.equal(await (await first).text(), "fresh-body");
+  await release();
 });
 
 test("a conditional revalidation that loses its claim answers a stored non-2xx response as is", async () => {
@@ -2860,14 +2875,9 @@ test("a conditional revalidation that loses its claim answers a stored non-2xx r
   await put(path, "stale-missing", {
     status: 404,
     cacheControl: "public, max-age=0, stale-while-revalidate=30",
-    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 500 },
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60" },
   });
-  const first = conditionalRead(path);
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if ((await metadataRowCount("revalidation_claims")) === 1) break;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+  const release = await holdRevalidationClaim();
   const stale = await read(path);
   assert.equal(stale.status, 404);
   assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
@@ -2875,7 +2885,7 @@ test("a conditional revalidation that loses its claim answers a stored non-2xx r
   const raced = await conditionalRead(path, "If-None-Match", stale.headers.get("ETag")!);
   assert.equal(raced.status, 404);
   assert.equal(await raced.text(), "stale-missing");
-  await (await first).text();
+  await release();
 });
 
 test("a conditional revalidation that loses its claim never serves the entry past its stale window", async () => {

@@ -74,7 +74,7 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   );
 
   if (cacheTags) headers.set("Cache-Tag", cacheTags);
-  for (const name of ["Content-Range", "ETag", "Last-Modified"]) {
+  for (const name of ["Content-Digest", "Content-Range", "ETag", "Last-Modified"]) {
     const value = request.headers.get(`X-Response-${name}`);
     if (value) headers.set(name, value);
   }
