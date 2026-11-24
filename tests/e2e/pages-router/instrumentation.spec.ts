@@ -18,7 +18,28 @@
  * - https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "@playwright/test";
+
+type RecordedError = {
+  message: string;
+  method: string;
+  path: string;
+  routePath: string;
+  routeType: string;
+  routerKind: string;
+};
+
+/**
+ * Errors recorded for one request path. Other spec files run in parallel
+ * against the same server and record their own errors, so a test must only
+ * look at the errors of the path it requested.
+ */
+async function errorsFor(request: APIRequestContext, path: string): Promise<RecordedError[]> {
+  const res = await request.get("/api/instrumentation-test");
+  expect(res.status()).toBe(200);
+  const data = (await res.json()) as { errors: RecordedError[] };
+  return data.errors.filter((error) => error.path === path);
+}
 
 test.describe("instrumentation.ts onRequestError (Pages Router)", () => {
   test.beforeEach(async ({ request }) => {
@@ -35,11 +56,9 @@ test.describe("instrumentation.ts onRequestError (Pages Router)", () => {
     // Give any async reportRequestError() call a moment to settle.
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const stateRes = await request.get("/api/instrumentation-test");
-    const data = await stateRes.json();
     // After the reset in beforeEach, no errors should have been recorded
     // by the successful /api/hello request.
-    expect(data.errors.length).toBe(0);
+    expect(await errorsFor(request, "/api/hello")).toEqual([]);
   });
 
   test("onRequestError() is called when a route handler throws", async ({ request }) => {
@@ -51,13 +70,8 @@ test.describe("instrumentation.ts onRequestError (Pages Router)", () => {
     // Give the async reportRequestError() call a moment to complete.
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const stateRes = await request.get("/api/instrumentation-test");
-    expect(stateRes.status()).toBe(200);
-
-    const data = await stateRes.json();
-    expect(data.errors.length).toBeGreaterThanOrEqual(1);
-
-    const err = data.errors[data.errors.length - 1];
+    const [err] = await errorsFor(request, "/api/error-route");
+    expect(err).toBeTruthy();
     expect(err.message).toBe("Intentional route handler error");
     expect(err.path).toBe("/api/error-route");
     expect(err.method).toBe("GET");
@@ -71,11 +85,8 @@ test.describe("instrumentation.ts onRequestError (Pages Router)", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const stateRes = await request.get("/api/instrumentation-test");
-    const data = await stateRes.json();
-    expect(data.errors.length).toBeGreaterThanOrEqual(1);
-
-    const err = data.errors[data.errors.length - 1];
+    const [err] = await errorsFor(request, "/api/error-route");
+    expect(err).toBeTruthy();
     // The routePath should be the file-system route pattern, not the concrete URL.
     expect(err.routePath).toContain("error-route");
   });
@@ -87,8 +98,6 @@ test.describe("instrumentation.ts onRequestError (Pages Router)", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 400));
 
-    const stateRes = await request.get("/api/instrumentation-test");
-    const data = await stateRes.json();
-    expect(data.errors.length).toBeGreaterThanOrEqual(2);
+    expect(await errorsFor(request, "/api/error-route")).toHaveLength(2);
   });
 });

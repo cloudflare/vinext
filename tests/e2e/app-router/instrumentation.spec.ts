@@ -14,7 +14,7 @@
  * - https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "@playwright/test";
 import { GENERIC_RSC_ERROR } from "../action-error-sanitization";
 import { waitForAppRouterHydration } from "../helpers";
 
@@ -34,6 +34,31 @@ test.describe("instrumentation.ts startup", () => {
     expect(Array.isArray(data.errors)).toBe(true);
   });
 });
+
+// A page of its own: action-error-sanitization.spec.ts throws the same actions
+// on /action-error-sanitization in parallel.
+const ACTION_ERROR_PATH = "/action-error-sanitization/instrumentation";
+
+type RecordedError = {
+  message: string;
+  method: string;
+  path: string;
+  routePath: string;
+  routeType: string;
+  routerKind: string;
+};
+
+/**
+ * Errors recorded for one request path. Other spec files run in parallel
+ * against the same server and record their own errors, so a test must only
+ * look at the errors of the path it requested.
+ */
+async function errorsFor(request: APIRequestContext, path: string): Promise<RecordedError[]> {
+  const res = await request.get("/api/instrumentation-test");
+  expect(res.status()).toBe(200);
+  const data = (await res.json()) as { errors: RecordedError[] };
+  return data.errors.filter((error) => error.path === path);
+}
 
 /**
  * Tests for onRequestError() behaviour — each test resets state first so
@@ -55,13 +80,7 @@ test.describe("instrumentation.ts onRequestError", () => {
     // Give the async reportRequestError() call a moment to complete.
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const stateRes = await request.get("/api/instrumentation-test");
-    expect(stateRes.status()).toBe(200);
-
-    const data = await stateRes.json();
-    expect(data.errors.length).toBeGreaterThanOrEqual(1);
-
-    const err = data.errors.find((e: { path: string }) => e.path === "/api/error-route");
+    const [err] = await errorsFor(request, "/api/error-route");
     expect(err).toBeTruthy();
     expect(err.message).toBe("Intentional route handler error");
     expect(err.method).toBe("GET");
@@ -75,11 +94,8 @@ test.describe("instrumentation.ts onRequestError", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const stateRes = await request.get("/api/instrumentation-test");
-    const data = await stateRes.json();
-    expect(data.errors.length).toBeGreaterThanOrEqual(1);
-
-    const err = data.errors[data.errors.length - 1];
+    const [err] = await errorsFor(request, "/api/error-route");
+    expect(err).toBeTruthy();
     // The routePath should be the file-system route pattern, not the concrete URL.
     expect(err.routePath).toContain("error-route");
   });
@@ -91,9 +107,7 @@ test.describe("instrumentation.ts onRequestError", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 400));
 
-    const stateRes = await request.get("/api/instrumentation-test");
-    const data = await stateRes.json();
-    expect(data.errors.length).toBeGreaterThanOrEqual(2);
+    expect(await errorsFor(request, "/api/error-route")).toHaveLength(2);
   });
 
   // Next.js reports a thrown fetch action through the Flight render of its
@@ -120,7 +134,7 @@ test.describe("instrumentation.ts onRequestError", () => {
     }, testInfo) => {
       // The only project that runs this spec against a production build.
       const production = testInfo.project.name === "cloudflare-workers";
-      await page.goto("/action-error-sanitization");
+      await page.goto(ACTION_ERROR_PATH);
       await waitForAppRouterHydration(page);
       await page.click(`#${trigger}`);
       await expect(page.locator("#error-text")).toHaveText(
@@ -132,16 +146,12 @@ test.describe("instrumentation.ts onRequestError", () => {
       );
 
       await expect(async () => {
-        const data = await (await request.get("/api/instrumentation-test")).json();
-        const actionErrors = data.errors.filter(
-          (error: { path: string }) => error.path === "/action-error-sanitization",
-        );
-        expect(actionErrors).toEqual([
+        expect(await errorsFor(request, ACTION_ERROR_PATH)).toEqual([
           {
             message: typeof message === "string" ? message : expect.stringMatching(message),
             method: "POST",
-            path: "/action-error-sanitization",
-            routePath: "/action-error-sanitization",
+            path: ACTION_ERROR_PATH,
+            routePath: ACTION_ERROR_PATH,
             routeType: "action",
             routerKind: "App Router",
           },
@@ -157,10 +167,8 @@ test.describe("instrumentation.ts onRequestError", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const stateRes = await request.get("/api/instrumentation-test");
-    const data = await stateRes.json();
     // After the reset in beforeEach, no new errors should have been recorded
     // by the successful /api/hello request.
-    expect(data.errors.length).toBe(0);
+    expect(await errorsFor(request, "/api/hello")).toEqual([]);
   });
 });
