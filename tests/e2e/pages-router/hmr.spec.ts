@@ -1,11 +1,24 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { waitForHydration } from "../helpers";
 
 const BASE = process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4173";
 const pagePath = path.resolve(process.cwd(), "tests/fixtures/pages-basic/pages/hmr-state.tsx");
 const mdxPagePath = path.resolve(process.cwd(), "tests/fixtures/pages-basic/pages/hmr-mdx.mdx");
+
+// Vite's chokidar watcher drops a file's change event that lands within 50ms of
+// the previous one and never emits a trailing event, so an edit saved right
+// after the previous one rendered can be lost on Linux. Wait out that window
+// (with headroom for a busy dev server) before every fixture edit.
+// https://github.com/paulmillr/chokidar/blob/3.6.0/index.js
+const WATCHER_CHANGE_SETTLE_MS = 200;
+
+async function editFixture(filePath: string, content: string): Promise<void> {
+  await sleep(WATCHER_CHANGE_SETTLE_MS);
+  await writeFile(filePath, content);
+}
 
 async function expectHmrHead(
   page: Page,
@@ -83,7 +96,7 @@ test("Pages Fast Refresh preserves state and recovers from syntax errors", async
 
     const versionTwo = original.replace(">Version one</h1>", ">Version two</h1>");
     const bodyEffectCount = await getHmrEffectCount(page);
-    await writeFile(pagePath, versionTwo);
+    await editFixture(pagePath, versionTwo);
     await expect(page.getByTestId("version")).toHaveText("Version two");
     await waitForHmrEffectAfter(page, bodyEffectCount);
     await expectHmrHead(page, "Head version one", "HMR title one", "before-document");
@@ -96,7 +109,7 @@ test("Pages Fast Refresh preserves state and recovers from syntax errors", async
       .replace('key="head-instance-one"', 'key="head-instance-two"')
       .replace(">Version two</h1>", ">Version remounted</h1>");
     const remountEffectCount = await getHmrEffectCount(page);
-    await writeFile(pagePath, remounted);
+    await editFixture(pagePath, remounted);
     await expect(page.getByTestId("version")).toHaveText("Version remounted");
     await waitForHmrEffectAfter(page, remountEffectCount);
     await expectHmrHead(page, "Head version one", "HMR title one", "before-document");
@@ -116,7 +129,7 @@ test("Pages Fast Refresh preserves state and recovers from syntax errors", async
     const changedHead = remounted
       .replace('content="Head version one"', 'content="Head version two"')
       .replace("HMR title one", "HMR title two");
-    await writeFile(pagePath, changedHead);
+    await editFixture(pagePath, changedHead);
     await expectHmrHead(page, "Head version two", "HMR title two", "after-document");
     expect(
       await page.evaluate(() => {
@@ -136,10 +149,10 @@ test("Pages Fast Refresh preserves state and recovers from syntax errors", async
       await page.evaluate(() => (window as unknown as { __HMR_MARKER__?: true }).__HMR_MARKER__),
     ).toBe(true);
 
-    await writeFile(pagePath, original.replace("return (", "return <<<BROKEN>>> ("));
+    await editFixture(pagePath, original.replace("return (", "return <<<BROKEN>>> ("));
     await page.waitForTimeout(1_000);
 
-    await writeFile(
+    await editFixture(
       pagePath,
       original
         .replace("Head version one", "Head version recovered")
@@ -153,7 +166,7 @@ test("Pages Fast Refresh preserves state and recovers from syntax errors", async
       await page.evaluate(() => (window as unknown as { __HMR_MARKER__?: true }).__HMR_MARKER__),
     ).toBe(true);
   } finally {
-    await writeFile(pagePath, original);
+    await editFixture(pagePath, original);
   }
 });
 
@@ -171,18 +184,18 @@ test("Pages Fast Refresh updates MDX routes without a full reload", async ({ pag
       (window as unknown as { __HMR_MARKER__: true }).__HMR_MARKER__ = true;
     });
 
-    await writeFile(mdxPagePath, original.replace("version one", "version two"));
+    await editFixture(mdxPagePath, original.replace("version one", "version two"));
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("MDX version two");
     expect(
       await page.evaluate(() => (window as unknown as { __HMR_MARKER__?: true }).__HMR_MARKER__),
     ).toBe(true);
 
-    await writeFile(mdxPagePath, original.replace("version one", "version three"));
+    await editFixture(mdxPagePath, original.replace("version one", "version three"));
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("MDX version three");
     expect(
       await page.evaluate(() => (window as unknown as { __HMR_MARKER__?: true }).__HMR_MARKER__),
     ).toBe(true);
   } finally {
-    await writeFile(mdxPagePath, original);
+    await editFixture(mdxPagePath, original);
   }
 });
