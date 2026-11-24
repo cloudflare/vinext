@@ -9820,9 +9820,10 @@ export const loadServerActionClient = ${
 
       if (!pagesInlinesCommonChunks(this.meta.rolldownVersion)) return;
 
+      const graph = collectPagesClientGraph(this.getModuleIds(), getModuleInfo);
       for (const id of collectUncopiedStylesheets(
         pagesStylesheetSizes,
-        getModuleInfo,
+        graph,
         RESOLVED_CLIENT_ENTRY,
       )) {
         pagesUncopiedModules.add(id);
@@ -9847,7 +9848,6 @@ export const loadServerActionClient = ${
         return code ? Buffer.byteLength(code) : 0;
       };
 
-      const graph = collectPagesClientGraph(this.getModuleIds(), getModuleInfo);
       // Shared groups leave the small modules that import others for the pages
       // to copy.
       if (pagesClientInlinesChunks) {

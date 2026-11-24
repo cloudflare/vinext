@@ -649,58 +649,29 @@ export function isStylesheetModule(id: string): boolean {
  */
 export function collectUncopiedStylesheets(
   stylesheetSizes: ReadonlyMap<string, number>,
-  getModuleInfo: (id: string) => {
-    readonly isEntry: boolean;
-    readonly importers: readonly string[];
-    readonly dynamicImporters: readonly string[];
-  } | null,
+  { infos, entries, loadedBy }: PagesClientGraph,
   // The client entry, which loads the pages.
   pageLoaderId: string,
 ): Set<string> {
   const groups = new Map<string, { size: number; ids: string[] }>();
   const uncopied = new Set<string>();
 
-  // Stylesheets share most of their importers.
-  const infos = new Map<string, ReturnType<typeof getModuleInfo>>();
-  const infoOf = (id: string) => {
-    if (!infos.has(id)) infos.set(id, getModuleInfo(id));
-    return infos.get(id)!;
-  };
-
   for (const [id, size] of stylesheetSizes) {
     // Gone from the module graph since an earlier watch build.
-    if (!infoOf(id)) continue;
+    if (!infos.has(id)) continue;
 
     // Every entry that loads the stylesheet statically.
-    const entries: string[] = [];
-    let loadsDynamically = false;
-    const visited = new Set([id]);
-    const pending = [id];
+    const indexes = loadedBy.get(id) ?? [];
+    const loadsDynamically = indexes.some((index) =>
+      infos.get(entries[index]!)!.dynamicImporters.some((importer) => importer !== pageLoaderId),
+    );
 
-    while (pending.length > 0) {
-      const moduleId = pending.pop()!;
-      const info = infoOf(moduleId);
-      if (!info) continue;
-
-      if (info.isEntry || info.dynamicImporters.length > 0) entries.push(moduleId);
-      if (info.dynamicImporters.some((importer) => importer !== pageLoaderId)) {
-        loadsDynamically = true;
-      }
-
-      for (const importer of info.importers) {
-        if (visited.has(importer)) continue;
-
-        visited.add(importer);
-        pending.push(importer);
-      }
-    }
-
-    if (loadsDynamically && entries.length > 1) {
+    if (loadsDynamically && indexes.length > 1) {
       uncopied.add(id);
       continue;
     }
 
-    const key = entries.sort().join("\0");
+    const key = indexes.join(",");
     const group = groups.get(key) ?? { size: 0, ids: [] };
 
     group.size += size;

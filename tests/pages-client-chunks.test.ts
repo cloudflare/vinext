@@ -409,13 +409,18 @@ describe("collectUncopiedStylesheets", () => {
     return node
       ? {
           isEntry: node.entry === true,
+          importedIds: Object.keys(graph).filter((other) => graph[other]!.importers.includes(id)),
           importers: node.importers,
           dynamicImporters: node.loadedBy ? [node.loadedBy] : [],
         }
       : null;
   };
   const collect = (sizes: Map<string, number>) =>
-    collectUncopiedStylesheets(sizes, getModuleInfo, "entry");
+    collectUncopiedStylesheets(
+      sizes,
+      collectPagesClientGraph(Object.keys(graph), getModuleInfo),
+      "entry",
+    );
 
   it("keeps the stylesheets of each set of pages that together reach the size", () => {
     const sizes = new Map([
