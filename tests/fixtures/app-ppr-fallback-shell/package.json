@@ -1,4 +1,5 @@
 {
+  "name": "app-ppr-fallback-shell-fixture",
   "private": true,
   "type": "module"
 }
