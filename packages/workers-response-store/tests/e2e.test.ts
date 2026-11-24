@@ -2836,7 +2836,8 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
   const tag = etag.replace(/^W\//, "");
   const beyondFiftyYears = new Date();
   beyondFiftyYears.setUTCFullYear(beyondFiftyYears.getUTCFullYear() + 50);
-  beyondFiftyYears.setUTCDate(beyondFiftyYears.getUTCDate() + 1);
+  // A week clear of the moving cutoff, so the test cannot straddle it.
+  beyondFiftyYears.setUTCDate(beyondFiftyYears.getUTCDate() + 7);
   for (const [header, value] of [
     ["If-None-Match", `garbage, ${etag}`],
     ["If-None-Match", `${tag} suffix`],
@@ -2846,7 +2847,7 @@ test("a conditional revalidation that loses its claim answers 304 only for valid
     ["If-Modified-Since", "Wed, 31 Sep 2026 00:00:00 GMT"],
     ["If-Modified-Since", "Fri, 01 Jan 0099 00:00:00 GMT"],
     ["If-Modified-Since", "Thu, 31 Dec 1998 23:59:60 GMT"],
-    // Just past 50 years ahead, a two-digit year is the earlier century's, whatever its weekday.
+    // Past 50 years ahead, a two-digit year is the earlier century's, whatever its weekday.
     ["If-Modified-Since", rfc850Date(beyondFiftyYears, 0)],
     ["If-Modified-Since", rfc850Date(beyondFiftyYears, -100)],
   ]) {
