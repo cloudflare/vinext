@@ -5,11 +5,13 @@ import { waitForAppRouterHydration } from "../../helpers";
 // `fill` image has no `sizes`, or `sizes="100vw"`, but renders at less than
 // 60% of the viewport width. Unoptimized images, an explicit narrower `sizes`
 // and wide images don't warn, and each message is logged once.
+// The optimized fixtures are 64×64: fill images get a w-descriptor srcSet, and
+// a 1×1 source picked at a density above 1 reports a naturalWidth of 0.
 // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/client/image-component.tsx
 const MISSING_SIZES_WARNING =
-  'Image with src "/get-image-props-dark.png" has "fill" but is missing "sizes" prop. Please add it to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes';
+  'Image with src "/image-fill-sizes-missing.png" has "fill" but is missing "sizes" prop. Please add it to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes';
 const SIZES_100VW_WARNING =
-  'Image with src "/get-image-props-light.png" has "fill" prop and "sizes" prop of "100vw", but image is not rendered at full viewport width. Please adjust "sizes" to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes';
+  'Image with src "/image-fill-sizes-100vw.png" has "fill" prop and "sizes" prop of "100vw", but image is not rendered at full viewport width. Please adjust "sizes" to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes';
 
 test.describe("next/image fill sizes dev warning", () => {
   test.use({ viewport: { width: 1280, height: 800 } });

@@ -5,10 +5,10 @@ export default function ImageFillSizesWarningPage() {
     <main>
       <h1>Image Fill Sizes Warning</h1>
       <div style={{ position: "relative", width: 300, height: 100 }}>
-        <Image id="fill-missing-sizes" src="/get-image-props-dark.png" alt="" fill />
+        <Image id="fill-missing-sizes" src="/image-fill-sizes-missing.png" alt="" fill />
       </div>
       <div style={{ position: "relative", width: 300, height: 100 }}>
-        <Image id="fill-sizes-100vw" src="/get-image-props-light.png" alt="" fill sizes="100vw" />
+        <Image id="fill-sizes-100vw" src="/image-fill-sizes-100vw.png" alt="" fill sizes="100vw" />
       </div>
       <div style={{ position: "relative", width: 300, height: 100 }}>
         <Image
