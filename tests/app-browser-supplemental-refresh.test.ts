@@ -12,6 +12,7 @@ import {
   resolveSupplementalRefreshes,
   SupplementalRefreshError,
   supplyRetainedElements,
+  takesSupplementalRefreshes,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import {
   AppElementsWire,
@@ -173,6 +174,91 @@ describe("parallel route supplemental refreshes", () => {
         supplemental: [() => Promise.reject(new Error("source refresh failed"))],
       }),
     ).resolves.toEqual({ degraded: false, value: primary });
+  });
+
+  // A slot of a layout the whole intercepting route shares with the client's
+  // tree, with only a default there, is left for the client to keep. A
+  // refresh fetches it from the URL it was rendered at, as Next.js refetches
+  // a reused segment, and merges that slot alone: none of the source's own
+  // tree goes into the whole route.
+  it("takes only the slots the whole intercepting route left for the client", () => {
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: "/club/static",
+        layoutIds: ["layout:/", "layout:/club/[slug]"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/static/pics/1",
+        slotBindings: [
+          {
+            activeRouteId: "route:/club/static/pics/1",
+            ownerLayoutId: "layout:/club/[slug]",
+            slotId: "slot:modal:/club/[slug]",
+            state: "active",
+          },
+          { ownerLayoutId: "layout:/", slotId: "slot:sidebar:/", state: "default" },
+        ],
+        wholeInterceptionSource: "/club/static",
+      }),
+      "page:/club/static/pics/1": "club default",
+      "slot:children:/": "club layout",
+      "slot:modal:/club/[slug]": "pic modal",
+    };
+    const sourcePage: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/club/static",
+        slotBindings: [
+          {
+            activeRouteId: "route:/club/static",
+            ownerLayoutId: "layout:/",
+            refreshPathname: "/club/static",
+            slotId: "slot:children:/",
+            state: "active",
+          },
+          {
+            activeRouteId: "route:/club/static",
+            ownerLayoutId: "layout:/",
+            refreshPathname: "/club/static",
+            slotId: "slot:sidebar:/",
+            state: "active",
+          },
+        ],
+      }),
+      "page:/club/static/pics/1": "source's copy",
+      "slot:children:/": "static tree",
+      "slot:sidebar:/": "sidebar static",
+    };
+
+    const merged = mergeRefreshedParallelSlot(primary, sourcePage);
+    expect(merged["slot:sidebar:/"]).toBe("sidebar static");
+    expect(merged["slot:children:/"]).toBe("club layout");
+    expect(merged["page:/club/static/pics/1"]).toBe("club default");
+    expect(merged["slot:modal:/club/[slug]"]).toBe("pic modal");
+    const metadata = AppElementsWire.readMetadata(merged);
+    expect(metadata.wholeInterceptionSource).toBe("/club/static");
+    expect(metadata.slotBindings.find((binding) => binding.slotId === "slot:sidebar:/")).toEqual(
+      expect.objectContaining({ refreshPathname: "/club/static", state: "active" }),
+    );
+    expect(
+      metadata.slotBindings.find((binding) => binding.slotId === "slot:children:/"),
+    ).toBeUndefined();
+
+    // The fan-out's render of the source's URL goes in through the source merge.
+    const sourceMerge = createInterceptionSourceRefreshMerge({
+      previousNextUrl: "/club/static",
+      refreshUrl: new URL("https://example.com/club/static/pics/1"),
+    });
+    expect(takesSupplementalRefreshes(primary)).toBe(true);
+    expect(sourceMerge.takes("/club/static", primary)).toBe(true);
+    expect(
+      sourceMerge.merge(primary, sourceMerge.track("/club/static", sourcePage))["slot:sidebar:/"],
+    ).toBe("sidebar static");
+
+    // Once it holds the slot, the whole route takes nothing more.
+    expect(takesSupplementalRefreshes(merged)).toBe(false);
+    expect(sourceMerge.takes("/club/static", merged)).toBe(false);
   });
 
   it("recovers the active children route when multiple parallel slots are active", () => {

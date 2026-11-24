@@ -119,13 +119,13 @@ import {
 import {
   createInterceptionSourceRefreshMerge,
   createSupplementalRefreshCoordinator,
-  rendersWholeInterceptingRoute,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
   supplyRetainedElements,
+  takesSupplementalRefreshes,
 } from "./app-browser-supplemental-refresh.js";
 import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
 import {
@@ -1052,7 +1052,7 @@ async function commitSameUrlNavigatePayload(
       }
       nextElements = resolveSupplementalRefreshes({
         merge: sourcePageRefreshMerge.merge,
-        mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
+        mergesInto: takesSupplementalRefreshes,
         primary: nextElements,
         signal: supplementalHandle.signal,
         supplemental,
@@ -3071,7 +3071,7 @@ function bootstrapHydration(
           }
           rscPayload = resolveSupplementalRefreshes({
             merge: sourcePageRefreshMerge.merge,
-            mergesInto: (elements) => !rendersWholeInterceptingRoute(elements),
+            mergesInto: takesSupplementalRefreshes,
             primary: primaryPayload,
             signal: navigationAbortHandle.signal,
             supplemental,

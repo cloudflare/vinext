@@ -75,11 +75,66 @@ export function rendersWholeInterceptingRoute(elements: AppElements): boolean {
   return AppElementsWire.readMetadata(elements).wholeInterceptionSource !== null;
 }
 
+// The slots a payload left out for the client to keep: mounted slots of a
+// layout it shares with the client's tree that have only a default there.
+function leftMountedSlotIds(elements: AppElements): string[] {
+  return AppElementsWire.readMetadata(elements)
+    .slotBindings.filter(
+      (binding) => binding.state === "default" && !Object.hasOwn(elements, binding.slotId),
+    )
+    .map((binding) => binding.slotId);
+}
+
+/**
+ * Whether a payload takes a fan-out's renders. The whole intercepting route
+ * takes only the slots it left for the client to keep, which Next.js refetches
+ * from the URL each was rendered at, as it does for any reused segment.
+ */
+export function takesSupplementalRefreshes(elements: AppElements): boolean {
+  return !rendersWholeInterceptingRoute(elements) || leftMountedSlotIds(elements).length > 0;
+}
+
+// The whole intercepting route keeps nothing of another render but the slots
+// it left for the client to keep, which that render supplies.
+function mergeLeftMountedSlots(
+  currentElements: AppElements,
+  refreshedElements: AppElements,
+): AppElements {
+  const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
+  const leftSlotIds = new Set(leftMountedSlotIds(currentElements));
+  const refreshedBindings = refreshedMetadata.slotBindings.filter(
+    (binding) =>
+      binding.state === "active" &&
+      leftSlotIds.has(binding.slotId) &&
+      Object.hasOwn(refreshedElements, binding.slotId),
+  );
+  if (refreshedBindings.length === 0) return currentElements;
+
+  const currentMetadata = AppElementsWire.readMetadata(currentElements);
+  const refreshedSlotIds = refreshedBindings.map((binding) => binding.slotId);
+  const slotBindings = currentMetadata.slotBindings.filter(
+    (binding) => !refreshedSlotIds.includes(binding.slotId),
+  );
+  slotBindings.push(...refreshedBindings);
+  const merged: Record<string, AppElements[keyof AppElements]> = {
+    ...currentElements,
+    [APP_SLOT_BINDINGS_KEY]: normalizeAppElementsSlotBindings(slotBindings, {
+      layoutIds: currentMetadata.layoutIds,
+    }),
+  };
+  for (const slotId of refreshedSlotIds) merged[slotId] = refreshedElements[slotId];
+  copySlotIdentities(merged, currentElements, refreshedElements, refreshedSlotIds);
+  copyRefreshedBranchElements(merged, refreshedElements, { overwrite: false });
+  return merged;
+}
+
 export function mergeRefreshedParallelSlot(
   currentElements: AppElements,
   refreshedElements: AppElements,
 ): AppElements {
-  if (rendersWholeInterceptingRoute(currentElements)) return currentElements;
+  if (rendersWholeInterceptingRoute(currentElements)) {
+    return mergeLeftMountedSlots(currentElements, refreshedElements);
+  }
   const refreshedMetadata = AppElementsWire.readMetadata(refreshedElements);
   const interception = refreshedMetadata.interception;
   if (interception === null) {
@@ -267,7 +322,8 @@ export function mergeInterceptionSourceRefresh(
   currentElements: AppElements,
   sourceElements: AppElements,
 ): AppElements {
-  return isInterceptionSourceRender(currentElements, sourceElements)
+  return rendersWholeInterceptingRoute(currentElements) ||
+    isInterceptionSourceRender(currentElements, sourceElements)
     ? mergeRefreshedParallelSlot(currentElements, sourceElements)
     : currentElements;
 }
@@ -309,7 +365,8 @@ export function createInterceptionSourceRefreshMerge(options: {
   const sourceRenders = new WeakSet<AppElements>();
   const takes = (pathAndSearch: string, primary: AppElements): boolean =>
     pathAndSearch !== sourcePathAndSearch ||
-    AppElementsWire.readMetadata(primary).interception !== null;
+    AppElementsWire.readMetadata(primary).interception !== null ||
+    (rendersWholeInterceptingRoute(primary) && takesSupplementalRefreshes(primary));
   const track = (pathAndSearch: string, elements: AppElements): AppElements => {
     if (pathAndSearch === sourcePathAndSearch) sourceRenders.add(elements);
     return elements;
