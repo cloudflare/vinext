@@ -62,6 +62,23 @@ Only the production image endpoint enforces `images.localPatterns`. The dev serv
 
 `images.localPatterns` and `images.remotePatterns` globs support only `*` and `**`. Next.js matches them with picomatch, which also accepts braces, `?` and character classes. In `remotePatterns` pathnames, `**` matches across segments wherever it appears, where picomatch treats a `**` inside a segment like `*`.
 
+## Dynamic imports
+
+After a client navigation, a `next/dynamic` component with `ssr: false` commits with the page when its loader returns a promise that has already settled, as in Next.js. When the loader calls `import()` again for a module the browser has already loaded, for example `() => import("./widget")` after the same import ran on hover, vinext first shows the `loading` output, or nothing, and then the component about 300 ms later. In Chromium, a native `import()` of a loaded module resolves only after about one task per level of its import graph, so React commits the component's Suspense fallback and then holds the reveal for its 300 ms fallback throttle. Next.js loads chunks through its own runtime, which resolves a loaded chunk within microtasks, so the component appears with the page. To match it, reuse the import promise in the loader:
+
+```ts
+let widget: Promise<typeof import("./widget")> | undefined;
+
+export const loadWidget = () =>
+  (widget ??= import("./widget").catch((error) => {
+    // Let the next call retry a failed import.
+    widget = undefined;
+    throw error;
+  }));
+```
+
+Then call `loadWidget` from every place that loads the module, such as the hover handler and `dynamic(() => loadWidget(), { ssr: false })`.
+
 ## Caching
 
 These differences apply to builds without `cacheComponents`, which follow their own caching rules.
