@@ -2787,6 +2787,29 @@ test("a superseded conditional revalidation answers with the committed entry, st
   assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
+test("a conditional revalidation that loses its claim answers a stored non-2xx response as is", async () => {
+  const path = "/conditional-claim-404";
+  await put(path, "stale-missing", {
+    status: 404,
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 500 },
+  });
+  const first = conditionalRead(path);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("revalidation_claims")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+  const stale = await read(path);
+  assert.equal(stale.status, 404);
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await stale.text(), "stale-missing");
+  const raced = await conditionalRead(path, "If-None-Match", stale.headers.get("ETag")!);
+  assert.equal(raced.status, 404);
+  assert.equal(await raced.text(), "stale-missing");
+  await (await first).text();
+});
+
 test("a conditional revalidation that loses its claim never serves the entry past its stale window", async () => {
   const path = "/conditional-claim-expired";
   await put(path, "stale-body", {

@@ -342,7 +342,9 @@ const ENTITY_TAG = /(?:W\/)?"([^"]*)"/g;
 // needs a 304 to keep its copy: a 200 repeating the cached ETag doesn't reliably replace it.
 // https://developers.cloudflare.com/cache/concepts/revalidation/#origin-requirements-for-revalidation
 // If-None-Match uses the weak comparison and, when present, decides alone (RFC 9110 13.1.2-3).
+// Preconditions only apply to a 2xx response (RFC 9110 13.2.1).
 function isNotModified(request: Request, response: Response): boolean {
+  if (response.status < 200 || response.status > 299) return false;
   const ifNoneMatch = request.headers.get("If-None-Match");
   if (ifNoneMatch !== null) {
     if (ifNoneMatch.trim() === "*") return true;
