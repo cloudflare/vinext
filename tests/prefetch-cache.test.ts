@@ -816,6 +816,14 @@ describe("prefetch cache eviction", () => {
               targetPatternParts: ["photos", ":id"],
               targetRouteId: "route:/photos/:id",
             },
+            {
+              id: "interception:slot:modal:/->/files/:slug+",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:modal:/",
+              sourcePatternParts: [],
+              targetPatternParts: ["files", ":slug+"],
+              targetRouteId: "route:/files/:slug+",
+            },
           ],
           interceptionsBySlotId: [],
           rootBoundaries: [],
@@ -856,6 +864,13 @@ describe("prefetch cache eviction", () => {
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 3);
     expect(
       new Headers(fetch.mock.calls[2]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    ).toBe("/_not-found");
+
+    // A rewrite can add a required catch-all's segments as well.
+    appRouterInstance.prefetch("/files", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 4);
+    expect(
+      new Headers(fetch.mock.calls[3]![1]?.headers).get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
     ).toBe("/_not-found");
   });
 
