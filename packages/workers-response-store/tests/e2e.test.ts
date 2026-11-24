@@ -274,13 +274,14 @@ async function read(
 
 // Miniflare does not run Workers Cache. Inject the header at the cache-bearing
 // entrypoint, where deployed Workers Cache adds it during revalidation.
-async function conditionalRead(path: string, header = "If-None-Match") {
+async function conditionalRead(path: string, header = "If-None-Match", value?: string) {
   const bindings = await mf.getBindings<{
     RESPONSE_STORE_BINDING: Awaited<ReturnType<Miniflare["getWorker"]>>;
   }>("user-worker");
   return bindings.RESPONSE_STORE_BINDING.fetch(`https://cache-key.invalid${path}`, {
     headers: {
-      [header]: header === "If-None-Match" ? 'W/"previous"' : "Tue, 29 Sep 2026 00:00:00 GMT",
+      [header]:
+        value ?? (header === "If-None-Match" ? 'W/"previous"' : "Tue, 29 Sep 2026 00:00:00 GMT"),
     },
   });
 }
@@ -2718,6 +2719,20 @@ test("conditional and unconditional stale reads share one regeneration claim", a
     raced.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
     /^max-age=0, stale-while-revalidate=\d+$/,
   );
+  // Revalidating the copy it already holds, Workers Cache gets a 304 to keep it.
+  const unchanged = await conditionalRead(
+    "/conditional-claim",
+    "If-None-Match",
+    raced.headers.get("ETag")!,
+  );
+  assert.equal(unchanged.status, 304);
+  assert.equal(await unchanged.text(), "");
+  assert.equal(unchanged.headers.get("ETag"), raced.headers.get("ETag"));
+  assert.equal(unchanged.headers.get("Content-Type"), null);
+  assert.match(
+    unchanged.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=0, stale-while-revalidate=\d+$/,
+  );
   assert.equal(await (await read("/conditional-claim")).text(), "stale-body");
   assert.equal(await (await first).text(), "fresh-body");
   const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
@@ -2770,6 +2785,23 @@ test("a superseded conditional revalidation answers with the committed entry, st
   assert.equal(await (await conditionalRead(path)).text(), "fresh-body");
   assert.equal(await metadataRowCount("revalidation_claims"), 0);
   assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("a conditional revalidation that loses its claim never serves the entry past its stale window", async () => {
+  const path = "/conditional-claim-expired";
+  await put(path, "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 500 },
+  });
+  const pending = conditionalRead(path);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("revalidation_claims")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+
+  await invalidate({ pathPrefixes: [path], expire: 0 });
+  await assert.rejects(pending, /revalidation is already in progress or was superseded/);
 });
 
 test("a failed background regeneration releases its claim for a later retry", async () => {

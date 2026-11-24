@@ -336,6 +336,36 @@ function missResponse(revision?: number): Response {
   });
 }
 
+const ENTITY_TAG = /(?:W\/)?"([^"]*)"/g;
+
+// Whether a revalidation's validators match the response the store would send, so Cloudflare
+// needs a 304 to keep its copy: a 200 repeating the cached ETag doesn't reliably replace it.
+// https://developers.cloudflare.com/cache/concepts/revalidation/#origin-requirements-for-revalidation
+// If-None-Match uses the weak comparison and, when present, decides alone (RFC 9110 13.1.2-3).
+function isNotModified(request: Request, response: Response): boolean {
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  if (ifNoneMatch !== null) {
+    if (ifNoneMatch.trim() === "*") return true;
+    const etag = [...(response.headers.get("ETag") ?? "").matchAll(ENTITY_TAG)];
+    if (etag.length !== 1) return false;
+    return [...ifNoneMatch.matchAll(ENTITY_TAG)].some(([, tag]) => tag === etag[0][1]);
+  }
+  const ifModifiedSince = Date.parse(request.headers.get("If-Modified-Since") ?? "");
+  const lastModified = Date.parse(response.headers.get("Last-Modified") ?? "");
+  return Number.isFinite(ifModifiedSince) && Number.isFinite(lastModified)
+    ? lastModified <= ifModifiedSince
+    : false;
+}
+
+function notModifiedResponse(response: Response): Response {
+  void response.body?.cancel().catch(() => {});
+  const headers = new Headers(response.headers);
+  for (const name of ["Content-Encoding", "Content-Length", "Content-Type", "Transfer-Encoding"]) {
+    headers.delete(name);
+  }
+  return new Response(null, { status: 304, statusText: "Not Modified", headers });
+}
+
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
 const PURGE_TOMBSTONE_BATCH_SIZE = 400;
@@ -1425,6 +1455,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
     const metadata = this.getMetadata(keyHash);
     let regenerated: StoreResult;
+    let lostClaim = false;
     if (revalidateStale && now < entry.swrUntil) {
       const result = await this.revalidateEntry(metadata, entry, expectedR2Etag);
       // Another cache location or an unconditional stale read owns the claim, or a claim
@@ -1432,6 +1463,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       // read again below: the replacement once it is published, else the stale entry,
       // which Workers Cache keeps serving and revalidates on its next request, as it does
       // after an error, without the Worker throwing for every revalidation that loses.
+      lostClaim = !result?.published;
       regenerated = result?.published
         ? result
         : { edgePurgeRequired: false, published: false, entry };
@@ -1466,13 +1498,26 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     let response = regenerated.response;
     if (!response) {
       const winner = await this.readR2Metadata(cacheKey);
-      if (winner.entry) {
+      const readAt = Date.now();
+      // A lost claim never serves an entry past its stale window, e.g. after a long render or
+      // an `invalidate({ expire: 0 })`: Workers Cache keeps its copy, as for any failure.
+      if (winner.entry && (!lostClaim || readAt < winner.entry.swrUntil)) {
         response =
-          (await this.readStoredResponse(winner.entry, Date.now(), winner.object)) ?? undefined;
+          (await this.readStoredResponse(winner.entry, readAt, winner.object)) ?? undefined;
+      } else {
+        await winner.object?.body.cancel().catch(() => {});
       }
     }
     if (!response) {
+      if (lostClaim) {
+        throw new Error("Cache entry revalidation is already in progress or was superseded");
+      }
       throw new Error("The committed cache body is unavailable");
+    }
+    // A lost claim answers with the revision Workers Cache already holds until the replacement
+    // is published.
+    if (lostClaim && isNotModified(request, response)) {
+      return notModifiedResponse(response);
     }
 
     return response;
