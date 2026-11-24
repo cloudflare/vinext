@@ -78,6 +78,7 @@ describe("AppElementsWire", () => {
       interceptionContext: "/feed",
       layoutIds: [],
       rootLayoutTreePath: "/",
+      routeGraphId: null,
       routeId: "route:/photos/42\0/feed",
       bfcacheSegmentIdentities: {},
       retainedElementIds: [],
@@ -126,6 +127,7 @@ describe("AppElementsWire", () => {
       interceptionContext: null,
       layoutIds: ["layout:/(dashboard)"],
       rootLayoutTreePath: "/(dashboard)",
+      routeGraphId: "route:/dashboard",
       routeId: AppElementsWire.encodeRouteId("/dashboard", null),
       bfcacheSegmentIdentities: {
         [AppElementsWire.encodeLayoutId("/(dashboard)")]: "/dashboard",
@@ -139,6 +141,7 @@ describe("AppElementsWire", () => {
       [APP_LAYOUT_IDS_KEY]: ["layout:/(dashboard)"],
       [APP_ROOT_LAYOUT_KEY]: "/(dashboard)",
       [APP_ROUTE_KEY]: "route:/dashboard",
+      [AppElementsWire.keys.routeGraphId]: "route:/dashboard",
       [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: {
         "layout:/(dashboard)": "/dashboard",
         "page:/dashboard": "/dashboard",
@@ -323,6 +326,7 @@ describe("AppElementsWire", () => {
         ...AppElementsWire.createMetadataEntries({
           interceptionContext: null,
           rootLayoutTreePath: "/",
+          routeGraphId: "route:/dashboard",
           routeId: AppElementsWire.encodeRouteId("/dashboard", null),
         }),
         [AppElementsWire.encodeLayoutId("/")]: "layout",
@@ -339,6 +343,7 @@ describe("AppElementsWire", () => {
       interceptionContext: null,
       layoutIds: [],
       rootLayoutTreePath: "/",
+      routeGraphId: "route:/dashboard",
       routeId: "route:/dashboard",
       bfcacheSegmentIdentities: {},
       retainedElementIds: [],

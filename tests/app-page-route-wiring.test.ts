@@ -2020,6 +2020,18 @@ describe("app page route wiring helpers", () => {
         route: {
           error: null,
           errors: [null],
+          ids: {
+            layouts: [AppElementsWire.encodeLayoutId("/")],
+            page: "page:/dashboard",
+            rootBoundary: null,
+            route: "route:/dashboard",
+            routeHandler: null,
+            slots: {
+              panel: AppElementsWire.encodeSlotId("panel", "/"),
+              sidebar: AppElementsWire.encodeSlotId("sidebar", "/"),
+            },
+            templates: [],
+          },
           layoutTreePositions: [0],
           layouts: [{ default: RootLayout }],
           loading: null,

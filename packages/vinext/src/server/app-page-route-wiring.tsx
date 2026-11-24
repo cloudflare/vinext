@@ -1447,6 +1447,7 @@ export function buildAppPageElements<
     interceptionContext,
     layoutIds: layoutEntries.map((entry) => entry.id),
     rootLayoutTreePath,
+    routeGraphId: options.route.ids?.route ?? null,
     routeId,
     sourcePage: createAppPageSourcePage(options.sourcePageSegments ?? routeSegments),
     slotBindings,
