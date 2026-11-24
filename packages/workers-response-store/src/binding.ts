@@ -1427,13 +1427,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     let regenerated: StoreResult;
     if (revalidateStale && now < entry.swrUntil) {
       const result = await this.revalidateEntry(metadata, entry, expectedR2Etag);
-      if (!result?.published) {
-        // Another cache location or an unconditional stale read owns the claim.
-        // A claim that expired mid-render also cannot return its old R2 body.
-        // Fail this callback so Workers Cache retains stale and can retry.
-        throw new Error("Cache entry revalidation is already in progress or was superseded");
-      }
-      regenerated = result;
+      // Another cache location or an unconditional stale read owns the claim, or a claim
+      // that expired mid-render lost to its replacement. Answer with the committed entry,
+      // read again below: the replacement once it is published, else the stale entry,
+      // which Workers Cache keeps serving and revalidates on its next request, as it does
+      // after an error, without the Worker throwing for every revalidation that loses.
+      regenerated = result?.published
+        ? result
+        : { edgePurgeRequired: false, published: false, entry };
     } else {
       const regeneration = await metadata.reserveRegeneration(
         keyHash,
