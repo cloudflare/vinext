@@ -263,6 +263,16 @@ export function getWorkersResponseStore(
   return binding({ props });
 }
 
+// An entrypoint method that returns another RPC call's result object as is ends as canceled
+// (client disconnected) in Workers analytics, although its caller receives the result. The
+// entrypoints that forward a mutation answer a copy.
+export function copyMutationResult({
+  backingStoreUpdated,
+  edgePurgeAccepted,
+}: ResponseStoreMutationResult): ResponseStoreMutationResult {
+  return { backingStoreUpdated, edgePurgeAccepted };
+}
+
 export class ResponseStoreService extends WorkerEntrypoint<
   WorkersResponseStoreEnv,
   ResponseStoreServiceProps
@@ -282,34 +292,34 @@ export class ResponseStoreService extends WorkerEntrypoint<
     return this.getStore(invocation).getTagExpiration(tags);
   }
 
-  put(
+  async put(
     request: Request,
     response: Response,
     options: ResponseStorePutOptions,
     invocation: ResponseStoreServiceInvocation,
   ): Promise<ResponseStoreMutationResult> {
-    return this.getStore(invocation).put(request, response, options);
+    return copyMutationResult(await this.getStore(invocation).put(request, response, options));
   }
 
-  refresh(
+  async refresh(
     options: ResponseStoreRefreshOptions,
     invocation: ResponseStoreServiceInvocation,
   ): Promise<ResponseStoreMutationResult> {
-    return this.getStore(invocation).refresh(options);
+    return copyMutationResult(await this.getStore(invocation).refresh(options));
   }
 
-  invalidate(
+  async invalidate(
     options: ResponseStoreInvalidateOptions,
     invocation: ResponseStoreServiceInvocation,
   ): Promise<ResponseStoreMutationResult> {
-    return this.getStore(invocation).invalidate(options);
+    return copyMutationResult(await this.getStore(invocation).invalidate(options));
   }
 
-  purge(
+  async purge(
     options: ResponseStorePurgeOptions,
     invocation: ResponseStoreServiceInvocation,
   ): Promise<ResponseStoreMutationResult> {
-    return this.getStore(invocation).purge(options);
+    return copyMutationResult(await this.getStore(invocation).purge(options));
   }
 }
 
