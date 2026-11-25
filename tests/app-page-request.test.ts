@@ -41,7 +41,6 @@ describe("app page request helpers", () => {
               validateAppPageRouteDynamicParams({
                 dynamicParamsConfig: false,
                 hasGenerateStaticParams: true,
-                isStaticParamsOnlyAtLastDynamicSegment: true,
                 async generateStaticParams() {
                   await (await fetch(url, { cache: "force-cache" })).text();
                   return [{ slug: "known" }];
@@ -79,7 +78,6 @@ describe("app page request helpers", () => {
             validateAppPageRouteDynamicParams({
               dynamicParamsConfig: false,
               hasGenerateStaticParams: true,
-              isStaticParamsOnlyAtLastDynamicSegment: true,
               fetchCache: "force-no-store",
               async generateStaticParams() {
                 await (await fetch(url, { cache: "force-cache" })).text();
@@ -124,7 +122,6 @@ describe("app page request helpers", () => {
               { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
             ],
             hasGenerateStaticParams: false,
-            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params,
@@ -170,7 +167,6 @@ describe("app page request helpers", () => {
               { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
             ],
             hasGenerateStaticParams: false,
-            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params,
@@ -247,7 +243,6 @@ describe("app page request helpers", () => {
               },
             ],
             hasGenerateStaticParams: false,
-            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params,
@@ -283,7 +278,6 @@ describe("app page request helpers", () => {
               { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
             ],
             hasGenerateStaticParams: false,
-            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params: { id: "1", slug: "zzz" },
@@ -321,7 +315,6 @@ describe("app page request helpers", () => {
             { chained: true, generateStaticParams: langs, parentParamNames: ["region"] },
           ],
           hasGenerateStaticParams: false,
-          isStaticParamsOnlyAtLastDynamicSegment: true,
           isDynamicRoute: true,
           isProduction: true,
           params: { lang: "fr", region: "EU", slug: "post" },
@@ -359,7 +352,6 @@ describe("app page request helpers", () => {
               },
             ],
             hasGenerateStaticParams: false,
-            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params,
@@ -390,7 +382,6 @@ describe("app page request helpers", () => {
               { generateStaticParams: async () => [], independentChain: 1, parentParamNames: [] },
             ],
             hasGenerateStaticParams: false,
-            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params,
@@ -414,7 +405,6 @@ describe("app page request helpers", () => {
             dynamicParamsConfig: false,
             generateStaticParams: async () => [{ id: "1" }],
             hasGenerateStaticParams: true,
-            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params: { id: "2" },
@@ -468,7 +458,6 @@ describe("app page request helpers", () => {
           validateAppPageRouteDynamicParams({
             dynamicParamsConfig: false,
             hasGenerateStaticParams: true,
-            isStaticParamsOnlyAtLastDynamicSegment: true,
             async generateStaticParams() {
               await (await fetch(url, { cache: "force-cache" })).text();
               return [{ slug: "known" }];

@@ -953,11 +953,6 @@ type ValidateAppPageRouteDynamicParamsOptions = {
    * segment (`lastDynamicSegmentHasGenerateStaticParams`).
    */
   hasGenerateStaticParams: boolean;
-  /**
-   * Whether `dynamicParams = false` is set at or below the route's last
-   * dynamic segment (`lastDynamicSegmentIsStaticParamsOnly`).
-   */
-  isStaticParamsOnlyAtLastDynamicSegment: boolean;
   isDynamicRoute: boolean;
   isProduction: boolean;
   /** Whether the route prerenders a fallback shell (`cacheComponents`). */
@@ -1051,15 +1046,6 @@ export function checkAppPageRouteDynamicParams(
     options.hasGenerateStaticParams ||
     (options.isProduction &&
       (options.dynamicConfig === "force-static" || options.dynamicConfig === "error"));
-  // Only running the generators tells whether they give every param, and
-  // vinext caches such a route only once this check has shown it, so they
-  // would run on every request of a route it never checks. vinext checks
-  // only where `dynamicParams = false` is set at or below the last dynamic
-  // segment. Set above it, as in an `app/[lang]/layout.tsx`
-  // over `[slug]/page.tsx`, any params render without running them.
-  if (!alwaysBuildsPaths && !options.isStaticParamsOnlyAtLastDynamicSegment) {
-    return Promise.resolve(renderCheck);
-  }
   // Next.js runs generateStaticParams in a work store of its own: the route's
   // implicit tags, no revalidate or force-dynamic default, and the fetchCache
   // of each generator's segment (see applySourceFetchCache). A route without

@@ -460,8 +460,6 @@ export type AppPageStaticParamsWalkSegment = {
   dynamic: boolean;
   /** Whether the segment's layout (or page) exports `generateStaticParams`. */
   generateStaticParams: boolean;
-  /** Whether the segment's layout (or page) sets `dynamicParams = false`. */
-  staticParamsOnly: boolean;
   /**
    * The segment name and the file that supplies its module. Next.js visits
    * each distinct pair once, so a slot's layout-less `[slug]` folder that
@@ -516,28 +514,6 @@ export function lastDynamicSegmentHasGenerateStaticParams(
   }
 
   return hasGenerateStaticParams;
-}
-
-/**
- * Whether `dynamicParams = false` is set on a segment with no dynamic segment
- * beneath it: a branch's last dynamic segment, a layout below that, or a
- * page. A layout above a dynamic segment, such as `app/[lang]/layout.tsx`
- * over `[slug]/page.tsx`, doesn't count. Each branch is read on its own, so
- * a slot's dynamic segment leaves the main page's setting standing.
- */
-export function lastDynamicSegmentIsStaticParamsOnly(
-  segments: readonly AppPageStaticParamsWalkSegment[],
-): boolean {
-  return segments.some(
-    (segment) =>
-      segment.staticParamsOnly &&
-      !segments.some(
-        (other) =>
-          other.dynamic &&
-          other.treePath.length > segment.treePath.length &&
-          segment.treePath.every((index, depth) => other.treePath[depth] === index),
-      ),
-  );
 }
 
 const PAGE_SEGMENT_NAME = "__PAGE__";
@@ -602,7 +578,6 @@ export function collectAppPageStaticParamsWalkSegments(
       segments.push({
         dynamic: position > 0 && isDynamicSegment(name),
         generateStaticParams: hasGenerateStaticParamsExport(layout),
-        staticParamsOnly: layout?.dynamicParams === false,
         identity: [name, layout],
         treePath,
       });
@@ -610,7 +585,6 @@ export function collectAppPageStaticParamsWalkSegments(
       segments.push({
         dynamic: false,
         generateStaticParams: hasGenerateStaticParamsExport(options.page),
-        staticParamsOnly: options.page?.dynamicParams === false,
         identity: [PAGE_SEGMENT_NAME, options.page ?? undefined],
         treePath,
       });
@@ -627,7 +601,6 @@ export function collectAppPageStaticParamsWalkSegments(
         segments.push({
           dynamic: false,
           generateStaticParams: hasGenerateStaticParamsExport(branch.page),
-          staticParamsOnly: branch.page?.dynamicParams === false,
           identity: [DEFAULT_SEGMENT_NAME, branch.page ?? undefined],
           treePath: slotPath,
         });
@@ -639,7 +612,6 @@ export function collectAppPageStaticParamsWalkSegments(
       segments.push({
         dynamic: false,
         generateStaticParams: hasGenerateStaticParamsExport(options.page),
-        staticParamsOnly: options.page?.dynamicParams === false,
         identity: [DEFAULT_SEGMENT_NAME, options.page ?? undefined],
         treePath: [...treePath, 0],
       });
@@ -665,7 +637,6 @@ function collectActiveSlotSegments(
     {
       dynamic: false,
       generateStaticParams: hasGenerateStaticParamsExport(branch.layout),
-      staticParamsOnly: branch.layout?.dynamicParams === false,
       identity: [`@${branch.name ?? ""}`, branch.layout ?? undefined],
       treePath: slotPath,
     },
@@ -682,7 +653,6 @@ function collectActiveSlotSegments(
     segments.push({
       dynamic: name !== undefined && isDynamicSegment(name),
       generateStaticParams: hasGenerateStaticParamsExport(layout),
-      staticParamsOnly: layout?.dynamicParams === false,
       identity: [name ?? "", layout],
       treePath,
     });
@@ -690,7 +660,6 @@ function collectActiveSlotSegments(
   segments.push({
     dynamic: false,
     generateStaticParams: hasGenerateStaticParamsExport(branch.page),
-    staticParamsOnly: branch.page?.dynamicParams === false,
     identity: [PAGE_SEGMENT_NAME, branch.page ?? undefined],
     treePath: [...treePath, 0],
   });

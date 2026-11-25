@@ -5,7 +5,6 @@ import {
   isAppPageStaticEligible,
   isEdgeRuntime,
   lastDynamicSegmentHasGenerateStaticParams,
-  lastDynamicSegmentIsStaticParamsOnly,
   resolveAppPageDynamicParamsConfig,
   resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime,
@@ -68,8 +67,6 @@ export type AppPageInterceptSegmentConfig = {
   hasAnyGenerateStaticParams: boolean;
   /** Whether one sits at or below the interception's last dynamic segment. */
   hasGenerateStaticParams: boolean;
-  /** Whether `dynamicParams = false` is set at or below it. */
-  isStaticParamsOnlyAtLastDynamicSegment: boolean;
   /** Whether the interception's own segments choose the edge runtime. */
   isEdgeRuntime: boolean;
   /** Whether the interception's route has a dynamic segment. */
@@ -349,7 +346,6 @@ export function resolveAppPageInterceptSegmentConfig(
       revalidateSeconds: config.revalidateSeconds,
     }),
     isStaticGenerationEdgeRuntime,
-    isStaticParamsOnlyAtLastDynamicSegment: lastDynamicSegmentIsStaticParamsOnly(walkSegments),
     revalidateSeconds: config.revalidateSeconds,
     staticParamsDynamicConfig: staticParamsConfig.dynamicConfig,
     staticParamsRevalidateSeconds: staticParamsConfig.revalidateSeconds,

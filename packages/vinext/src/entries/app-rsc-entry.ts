@@ -1055,7 +1055,6 @@ import {
   isAppPageStaticEligible as __isAppPageStaticEligible,
   isEdgeRuntime as __isEdgeRuntime,
   lastDynamicSegmentHasGenerateStaticParams as __lastDynamicSegmentHasGenerateStaticParams,
-  lastDynamicSegmentIsStaticParamsOnly as __lastDynamicSegmentIsStaticParamsOnly,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime as __resolveAppPageStaticGenerationRuntime,
@@ -1274,7 +1273,6 @@ function __resolveRouteStaticGeneration(route, segmentConfigBranches) {
   });
   return {
     hasGenerateStaticParams: __lastDynamicSegmentHasGenerateStaticParams(walkSegments),
-    isStaticParamsOnlyAtLastDynamicSegment: __lastDynamicSegmentIsStaticParamsOnly(walkSegments),
     isStaticGenerationEdgeRuntime: __isEdgeRuntime(
       __resolveAppPageStaticGenerationRuntime(
         __collectAppPageStaticGenerationRuntimes({
@@ -1701,8 +1699,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       },
       hasAnyGenerateStaticParams: __generateStaticParams.length > 0,
       hasGenerateStaticParams: __staticGeneration.hasGenerateStaticParams,
-      isStaticParamsOnlyAtLastDynamicSegment:
-        __staticGeneration.isStaticParamsOnlyAtLastDynamicSegment,
       hasPageDefaultExport: !!PageComponent,
       hasPageModule: !!route.page,
       handlerStart,

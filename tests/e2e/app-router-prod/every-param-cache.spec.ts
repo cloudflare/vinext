@@ -15,6 +15,26 @@ test("caches a route whose layout generator gives every param", async ({ request
   expect(miss.headers()["cache-control"]).toContain("no-store");
 });
 
+// A parent layout's `dynamicParams = false` applies to the page below it.
+test("caches a route whose dynamicParams = false is set only on a parent layout", async ({
+  request,
+}) => {
+  const first = await request.get("/every-param-cache/layout-only/en/a");
+  expect(first.status()).toBe(200);
+  const second = await request.get("/every-param-cache/layout-only/en/a");
+  expect(second.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(await second.text()).toBe(await first.text());
+
+  for (const path of [
+    "/every-param-cache/layout-only/en/zzz",
+    "/every-param-cache/layout-only/de/a",
+  ]) {
+    const miss = await request.get(path);
+    expect(miss.status()).toBe(404);
+    expect(miss.headers()["cache-control"]).toContain("no-store");
+  }
+});
+
 // A row without a param leaves Next.js with no prerendered paths, so each
 // request renders.
 test("never caches a route whose generator gives a row without a param", async ({ request }) => {

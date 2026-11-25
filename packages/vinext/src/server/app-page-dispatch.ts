@@ -438,11 +438,6 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    * dynamic segment (`lastDynamicSegmentHasGenerateStaticParams`).
    */
   hasGenerateStaticParams: boolean;
-  /**
-   * Whether `dynamicParams = false` is set at or below the route's last
-   * dynamic segment (`lastDynamicSegmentIsStaticParamsOnly`).
-   */
-  isStaticParamsOnlyAtLastDynamicSegment: boolean;
   /** Whether any segment of the route exports `generateStaticParams`. */
   hasAnyGenerateStaticParams: boolean;
   hasPageDefaultExport: boolean;
@@ -786,7 +781,6 @@ type AppPageInterceptStaticParams = {
   hasGenerateStaticParams: boolean;
   isDynamicRoute: boolean;
   isStaticGenerationEdgeRuntime: boolean;
-  isStaticParamsOnlyAtLastDynamicSegment: boolean;
   params: AppPageParams;
   revalidateSeconds: number | null;
   rootParamNames: readonly string[];
@@ -847,7 +841,6 @@ async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
     hasGenerateStaticParams: config.hasGenerateStaticParams,
     isDynamicRoute: config.isDynamicRoute,
     isStaticGenerationEdgeRuntime: config.isStaticGenerationEdgeRuntime,
-    isStaticParamsOnlyAtLastDynamicSegment: config.isStaticParamsOnlyAtLastDynamicSegment,
     params: interceptState.intercept.matchedParams,
     revalidateSeconds: config.staticParamsRevalidateSeconds,
     // The interception renders below the source's root layout.
@@ -867,7 +860,6 @@ async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
     hasAnyGenerateStaticParams: config.hasAnyGenerateStaticParams,
     hasGenerateStaticParams: config.hasGenerateStaticParams,
     isEdgeRuntime: config.isEdgeRuntime,
-    isStaticParamsOnlyAtLastDynamicSegment: config.isStaticParamsOnlyAtLastDynamicSegment,
     isStaticGenerationEdgeRuntime: config.isStaticGenerationEdgeRuntime,
     revalidateSeconds: config.revalidateSeconds,
   };
@@ -904,10 +896,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Next.js also prerenders a route whose last dynamic segment has no
   // generator when its generators give every row every param. Only running
   // them tells, so vinext learns it from the `dynamicParams = false` check,
-  // which runs them anyway where that segment, a layout below it or the page
-  // sets it. Such a route's GET and HEAD requests read the cache, and a miss
-  // is stored only once the check shows every parent's rows have every param.
-  // An entry is stored only after that check, so a hit needs none.
+  // which runs them anyway. Such a route's GET and HEAD requests read the
+  // cache, and a miss is stored only once the check shows every parent's rows
+  // have every param. An entry is stored only after that check, so a hit
+  // needs none.
   const method = options.request.method.toUpperCase();
   const isEveryParamCacheCandidate =
     options.isProduction &&
@@ -915,7 +907,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     !isNextStaticEligible &&
     route.isDynamic &&
     options.dynamicParamsConfig === false &&
-    options.isStaticParamsOnlyAtLastDynamicSegment &&
     options.hasAnyGenerateStaticParams === true &&
     options.interceptStaticParams === undefined &&
     options.skipStaticParamsValidation !== true &&
@@ -1464,8 +1455,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               isProduction: options.isProduction,
               isRoutePPREnabled: options.pprRuntime !== undefined,
               isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
-              isStaticParamsOnlyAtLastDynamicSegment:
-                options.isStaticParamsOnlyAtLastDynamicSegment,
               params: options.staticParamsValidationParams ?? options.params,
               pathname: options.cleanPathname,
               revalidateSeconds: options.revalidateSeconds,

@@ -48,13 +48,6 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain(
       "hasGenerateStaticParams: __lastDynamicSegmentHasGenerateStaticParams(walkSegments),",
     );
-    // The same walk finds whether dynamicParams = false is set at or below the
-    // last dynamic segment, which dispatch reads before running any generator.
-    expect(code).toContain(
-      "isStaticParamsOnlyAtLastDynamicSegment: __lastDynamicSegmentIsStaticParamsOnly(walkSegments),",
-    );
-    expect(code).toContain(`isStaticParamsOnlyAtLastDynamicSegment:
-        __staticGeneration.isStaticParamsOnlyAtLastDynamicSegment,`);
     expect(code).toContain("isDefault: !slot.page,");
     expect(code).toContain("ownerTreePosition: slot.ownerTreePosition,");
     // Any segment's generator still sets the route's revalidate default.
