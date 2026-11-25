@@ -1,6 +1,7 @@
 import { exports as workerExports, WorkerEntrypoint } from "cloudflare:workers";
 
 import {
+  copyMutationResult,
   getWorkersResponseStore,
   ResponseStoreBinding,
   type RevalidationInput,
@@ -158,30 +159,34 @@ export function createWorkersResponseStoreClient<
       return this.service.getTagExpiration(tags, this.getInvocation());
     }
 
-    put(
+    async put(
       request: Request,
       response: Response,
       putOptions: Parameters<WorkersResponseStore["put"]>[2] = {},
     ): ReturnType<WorkersResponseStore["put"]> {
-      return this.service.put(request, response, putOptions, this.getInvocation());
+      return copyMutationResult(
+        await this.service.put(request, response, putOptions, this.getInvocation()),
+      );
     }
 
-    refresh(
+    async refresh(
       refreshOptions: Parameters<WorkersResponseStore["refresh"]>[0],
     ): ReturnType<WorkersResponseStore["refresh"]> {
-      return this.service.refresh(refreshOptions, this.getInvocation());
+      return copyMutationResult(await this.service.refresh(refreshOptions, this.getInvocation()));
     }
 
-    invalidate(
+    async invalidate(
       invalidateOptions: Parameters<WorkersResponseStore["invalidate"]>[0],
     ): ReturnType<WorkersResponseStore["invalidate"]> {
-      return this.service.invalidate(invalidateOptions, this.getInvocation());
+      return copyMutationResult(
+        await this.service.invalidate(invalidateOptions, this.getInvocation()),
+      );
     }
 
-    purge(
+    async purge(
       purgeOptions: Parameters<WorkersResponseStore["purge"]>[0],
     ): ReturnType<WorkersResponseStore["purge"]> {
-      return this.service.purge(purgeOptions, this.getInvocation());
+      return copyMutationResult(await this.service.purge(purgeOptions, this.getInvocation()));
     }
   }
 
