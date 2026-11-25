@@ -289,6 +289,72 @@ export async function createIsolatedFixture(
   return tmpDir;
 }
 
+export type WorkerdWorker = { baseUrl: string; teardown(): Promise<void> };
+
+/**
+ * Runs a built Worker in workerd through the wrangler copy under `root`'s
+ * node_modules (wrangler's unstable_startWorker).
+ */
+export async function startWorkerdWorker(root: string, config: string): Promise<WorkerdWorker> {
+  const wranglerPath = path.join(root, "node_modules/wrangler/wrangler-dist/cli.js");
+  const wrangler = (await import(pathToFileURL(wranglerPath).href)) as {
+    unstable_startWorker(options: {
+      config: string;
+      dev: {
+        remote: false;
+        persist: false;
+        logLevel: "none";
+        watch: false;
+        server: { hostname: string; port: 0 };
+        inspector: false;
+      };
+    }): Promise<{
+      url: Promise<URL>;
+      raw: {
+        once(
+          event: "error",
+          listener: (error: Error | { source: string; reason: string; cause?: unknown }) => void,
+        ): void;
+        teardown(): Promise<void>;
+      };
+    }>;
+  };
+  const started = await wrangler.unstable_startWorker({
+    config,
+    dev: {
+      remote: false,
+      persist: false,
+      logLevel: "none",
+      watch: false,
+      server: { hostname: "127.0.0.1", port: 0 },
+      // The tests never use the inspector. With it on, wrangler probes for a
+      // free port near 9229, which parallel test processes can race for, and
+      // waits on an inspector WebSocket that never settles `url` if it errors.
+      inspector: false,
+    },
+  });
+  // `dispose()` waits for a startup that may never finish; tear down directly.
+  const teardown = () => started.raw.teardown();
+  // wrangler reports startup failures as `error` events and leaves `url`
+  // pending, so fail with the cause instead of waiting out the hook timeout.
+  const startupError = new Promise<never>((_, reject) => {
+    started.raw.once("error", (error) => {
+      reject(
+        error instanceof Error
+          ? error
+          : new Error(`${error.source}: ${error.reason}`, { cause: error.cause }),
+      );
+    });
+  });
+  try {
+    const url = await Promise.race([started.url, startupError]);
+    return { baseUrl: url.origin, teardown };
+  } catch (error) {
+    await teardown().catch(() => {});
+    throw error;
+  }
+}
+
 export async function requestNodeServerWithHost(
   port: number,
   requestPath: string,

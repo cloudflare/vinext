@@ -5,7 +5,12 @@ import { pathToFileURL } from "node:url";
 import { createBuilder, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
+import {
+  createIsolatedFixture,
+  startFixtureServer,
+  startWorkerdWorker,
+  type WorkerdWorker,
+} from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/middleware-matcher-auth");
 const CLOUDFLARE_NODE_MODULES = path.resolve(
@@ -562,7 +567,7 @@ describe("valid middleware matcher auth guards", () => {
 
   describe("built Cloudflare Worker", () => {
     let root = "";
-    let worker: { url: Promise<URL>; dispose(): Promise<void> } | undefined;
+    let worker: WorkerdWorker | undefined;
     let baseUrl = "";
 
     beforeAll(async () => {
@@ -592,35 +597,12 @@ describe("valid middleware matcher auth guards", () => {
       });
       await builder.buildApp();
 
-      const wranglerPath = path.join(root, "node_modules/wrangler/wrangler-dist/cli.js");
-      const wrangler = (await import(pathToFileURL(wranglerPath).href)) as {
-        unstable_startWorker(options: {
-          config: string;
-          dev: {
-            remote: false;
-            persist: false;
-            logLevel: "none";
-            watch: false;
-            server: { hostname: string; port: 0 };
-          };
-        }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
-      };
-      worker = await wrangler.unstable_startWorker({
-        config: path.join(root, "dist/server/wrangler.json"),
-        dev: {
-          remote: false,
-          persist: false,
-          logLevel: "none",
-          watch: false,
-          server: { hostname: "127.0.0.1", port: 0 },
-        },
-      });
-      await worker.url;
-      baseUrl = (await worker.url).origin;
+      worker = await startWorkerdWorker(root, path.join(root, "dist/server/wrangler.json"));
+      baseUrl = worker.baseUrl;
     }, 180_000);
 
     afterAll(async () => {
-      await worker?.dispose();
+      await worker?.teardown();
       if (root) await fs.rm(root, { recursive: true, force: true });
     });
 

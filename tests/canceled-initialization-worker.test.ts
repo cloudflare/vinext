@@ -16,7 +16,7 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { createIsolatedFixture } from "./helpers.js";
+import { createIsolatedFixture, startWorkerdWorker, type WorkerdWorker } from "./helpers.js";
 
 const CF_APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/cf-app-basic");
 const CLOUDFLARE_NODE_MODULES = path.join(CF_APP_FIXTURE_DIR, "node_modules");
@@ -24,24 +24,6 @@ const CLOUDFLARE_NODE_MODULES = path.join(CF_APP_FIXTURE_DIR, "node_modules");
 type CloudflarePluginFactory = (options?: {
   viteEnvironment: { name: string; childEnvironments: string[] };
 }) => import("vite").Plugin;
-
-type StartedWorker = {
-  url: Promise<URL>;
-  dispose(): Promise<void>;
-};
-
-type Wrangler = {
-  unstable_startWorker(options: {
-    config: string;
-    dev: {
-      remote: false;
-      persist: false;
-      logLevel: "none";
-      watch: false;
-      server: { hostname: string; port: 0 };
-    };
-  }): Promise<StartedWorker>;
-};
 
 // A client disconnect over a local socket does not cancel the request, but
 // aborting a subrequest does. The Worker forwards `?cancel` to itself through
@@ -118,22 +100,15 @@ function describeCanceledSharedWork(
 ): void {
   describe(name, () => {
     let root = "";
-    let wrangler: Wrangler | undefined;
-    let worker: StartedWorker | undefined;
+    let worker: WorkerdWorker | undefined;
 
     /** A fresh worker has a fresh isolate, so its first request creates the memo. */
     async function startWorker(): Promise<string> {
-      worker = await wrangler!.unstable_startWorker({
-        config: path.join(root, options.workerOutDir, "wrangler.json"),
-        dev: {
-          remote: false,
-          persist: false,
-          logLevel: "none",
-          watch: false,
-          server: { hostname: "127.0.0.1", port: 0 },
-        },
-      });
-      const origin = (await worker.url).origin;
+      worker = await startWorkerdWorker(
+        root,
+        path.join(root, options.workerOutDir, "wrangler.json"),
+      );
+      const origin = worker.baseUrl;
       const warm = await fetch(`${origin}/__warm`);
       expect(await warm.text()).toBe("warm");
       return origin;
@@ -170,13 +145,10 @@ function describeCanceledSharedWork(
         logLevel: "silent",
       });
       await builder.buildApp();
-
-      const wranglerPath = path.join(root, "node_modules/wrangler/wrangler-dist/cli.js");
-      wrangler = (await import(pathToFileURL(wranglerPath).href)) as Wrangler;
     }, 180_000);
 
     afterEach(async () => {
-      await worker?.dispose();
+      await worker?.teardown();
       worker = undefined;
     });
 
