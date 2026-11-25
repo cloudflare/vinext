@@ -79,6 +79,16 @@ export const loadWidget = () =>
 
 Then call `loadWidget` from every place that loads the module, such as `dynamic(() => loadWidget(), { ssr: false })` and a hover handler. A preload that nothing awaits should handle its own failure, so it doesn't become an unhandled rejection: `onMouseEnter={() => void loadWidget().catch(() => {})}`. `dynamic()` still sees the error when it loads the component.
 
+## Scripts
+
+In the App Router, vinext moves `<Script strategy="beforeInteractive">` scripts to the start of `<head>`, so they run while the browser parses the page, ahead of stylesheets and the client bootstrap. Next.js queues them where they render and runs them from its bootstrap, just before hydration. As a result:
+
+- inline scripts run earlier than in Next.js, before stylesheets load, so a theme script can set classes before the first paint;
+- a `src` script is a plain `<script src>` that blocks parsing until it loads, where Next.js preloads it and waits for it only before hydrating;
+- an inline `type="module"` script runs as soon as its imports load. Next.js inserts each script only after the previous `src` script has loaded, so in vinext an inline module can run before an earlier `beforeInteractive` `src` script marked `defer` or `type="module"`. If the module depends on that script, load the dependency with `import` inside the module.
+
+As in Next.js, render these scripts in the root layout. In a streamed response, one inside a `<Suspense>` boundary that resolves after the shell doesn't run, which is also what usually happens in Next.js.
+
 ## Caching
 
 These differences apply to builds without `cacheComponents`, which follow their own caching rules.
