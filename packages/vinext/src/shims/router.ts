@@ -56,6 +56,7 @@ import {
 } from "./internal/pages-data-fetch-dedup.js";
 import { resolveDirectHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-direct.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
+import { Portal, RouteAnnouncer } from "../client/route-announcer.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import { sortRoutes, splitPathSegments } from "../routing/utils.js";
@@ -4090,7 +4091,20 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   const content = createElement(
     RouterContext.Provider,
     { value: router },
-    createElement(Fragment, null, children, createElement(PagesRouterHydrationMarker)),
+    createElement(
+      Fragment,
+      null,
+      children,
+      // Next.js mounts its announcer after the app, inside the router context
+      // (packages/next/src/client/index.tsx). It renders nothing on the server
+      // or during hydration, so both render the same tree.
+      createElement(
+        Portal,
+        { type: "next-route-announcer" },
+        createElement(RouteAnnouncer, { asPath }),
+      ),
+      createElement(PagesRouterHydrationMarker),
+    ),
   );
   return AppRouterContext
     ? createElement(AppRouterContext.Provider, { value: appRouter }, content)
