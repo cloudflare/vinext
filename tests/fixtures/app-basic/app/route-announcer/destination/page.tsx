@@ -9,6 +9,12 @@ export default function RouteAnnouncerDestinationPage() {
       <Link href="/route-announcer" id="to-start">
         Back to start
       </Link>
+      <Link href="/route-announcer/destination?same=1" id="to-destination-again">
+        Same title, another URL
+      </Link>
+      <Link href="/route-announcer/untitled" id="to-untitled">
+        Go to the untitled page
+      </Link>
     </main>
   );
 }
