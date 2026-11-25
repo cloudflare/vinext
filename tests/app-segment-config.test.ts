@@ -6,6 +6,7 @@ import {
   isAppPageStaticEligible,
   isEdgeRuntime,
   lastDynamicSegmentHasGenerateStaticParams,
+  lastDynamicSegmentIsStaticParamsOnly,
   resolveAppPageDynamicConfig,
   resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig,
@@ -865,6 +866,58 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
     ).toBe(false);
   });
 
+  it("finds dynamicParams = false at or below the last dynamic segment", () => {
+    // app/[lang]/layout.tsx, app/[lang]/blog/[slug]/(group)/layout.tsx and
+    // the page beneath them.
+    const isStaticParamsOnly = (
+      langLayout: Record<string, unknown>,
+      groupLayout: Record<string, unknown>,
+      page: Record<string, unknown>,
+    ) =>
+      lastDynamicSegmentIsStaticParamsOnly(
+        collectAppPageStaticParamsWalkSegments({
+          layouts: [{}, langLayout, groupLayout],
+          layoutTreePositions: [0, 1, 4],
+          page,
+          routeSegments: ["[lang]", "blog", "[slug]", "(group)"],
+        }),
+      );
+    const staticOnly = { dynamicParams: false };
+    expect(isStaticParamsOnly(staticOnly, {}, {})).toBe(false);
+    expect(isStaticParamsOnly({}, staticOnly, {})).toBe(true);
+    expect(isStaticParamsOnly({}, {}, staticOnly)).toBe(true);
+    expect(isStaticParamsOnly({}, {}, { dynamicParams: true })).toBe(false);
+  });
+
+  it("reads dynamicParams = false on each branch apart from the slots beside it", () => {
+    // app/[lang]/[slug]/page.tsx beside app/[lang]/@modal/[slug]/layout.tsx and
+    // its page. The slot repeats [slug] with its own layout, so its segment is
+    // visited after the main page.
+    const isStaticParamsOnly = (page: Record<string, unknown>, slotPage: Record<string, unknown>) =>
+      lastDynamicSegmentIsStaticParamsOnly(
+        collectAppPageStaticParamsWalkSegments({
+          layouts: [{}],
+          layoutTreePositions: [0],
+          page,
+          parallelBranches: [
+            {
+              configLayouts: [{}],
+              configLayoutTreePositions: [1],
+              name: "modal",
+              ownerTreePosition: 1,
+              page: slotPage,
+              routeSegments: ["[slug]"],
+            },
+          ],
+          routeSegments: ["[lang]", "[slug]"],
+        }),
+      );
+    const staticOnly = { dynamicParams: false };
+    expect(isStaticParamsOnly(staticOnly, {})).toBe(true);
+    expect(isStaticParamsOnly({}, staticOnly)).toBe(true);
+    expect(isStaticParamsOnly({}, {})).toBe(false);
+  });
+
   it("orders slot folder names by UTF-8 bytes", () => {
     // @豈 (U+F900) sorts before @𐀀 (U+10000) by UTF-8 bytes, but after it by
     // UTF-16 code units.
@@ -991,18 +1044,21 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
         {
           dynamic: false,
           generateStaticParams: true,
+          staticParamsOnly: false,
           identity: ["__PAGE__", "page"],
           treePath: [1, 0],
         },
         {
           dynamic: true,
           generateStaticParams: false,
+          staticParamsOnly: false,
           identity: ["[slug]", undefined],
           treePath: [1],
         },
         {
           dynamic: true,
           generateStaticParams: false,
+          staticParamsOnly: false,
           identity: ["[id]", "slot"],
           treePath: [0, 0],
         },

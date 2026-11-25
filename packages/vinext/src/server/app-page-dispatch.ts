@@ -435,9 +435,14 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   /**
    * Whether `generateStaticParams` is exported at or below the route's last
-   * dynamic segment (`hasAppPageGenerateStaticParamsAtLastDynamicSegment`).
+   * dynamic segment (`lastDynamicSegmentHasGenerateStaticParams`).
    */
   hasGenerateStaticParams: boolean;
+  /**
+   * Whether `dynamicParams = false` is set at or below the route's last
+   * dynamic segment (`lastDynamicSegmentIsStaticParamsOnly`).
+   */
+  isStaticParamsOnlyAtLastDynamicSegment: boolean;
   /** Whether any segment of the route exports `generateStaticParams`. */
   hasAnyGenerateStaticParams: boolean;
   hasPageDefaultExport: boolean;
@@ -781,6 +786,7 @@ type AppPageInterceptStaticParams = {
   hasGenerateStaticParams: boolean;
   isDynamicRoute: boolean;
   isStaticGenerationEdgeRuntime: boolean;
+  isStaticParamsOnlyAtLastDynamicSegment: boolean;
   params: AppPageParams;
   revalidateSeconds: number | null;
   rootParamNames: readonly string[];
@@ -841,6 +847,7 @@ async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
     hasGenerateStaticParams: config.hasGenerateStaticParams,
     isDynamicRoute: config.isDynamicRoute,
     isStaticGenerationEdgeRuntime: config.isStaticGenerationEdgeRuntime,
+    isStaticParamsOnlyAtLastDynamicSegment: config.isStaticParamsOnlyAtLastDynamicSegment,
     params: interceptState.intercept.matchedParams,
     revalidateSeconds: config.staticParamsRevalidateSeconds,
     // The interception renders below the source's root layout.
@@ -860,6 +867,7 @@ async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
     hasAnyGenerateStaticParams: config.hasAnyGenerateStaticParams,
     hasGenerateStaticParams: config.hasGenerateStaticParams,
     isEdgeRuntime: config.isEdgeRuntime,
+    isStaticParamsOnlyAtLastDynamicSegment: config.isStaticParamsOnlyAtLastDynamicSegment,
     isStaticGenerationEdgeRuntime: config.isStaticGenerationEdgeRuntime,
     revalidateSeconds: config.revalidateSeconds,
   };
@@ -1422,6 +1430,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               isProduction: options.isProduction,
               isRoutePPREnabled: options.pprRuntime !== undefined,
               isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
+              isStaticParamsOnlyAtLastDynamicSegment:
+                options.isStaticParamsOnlyAtLastDynamicSegment,
               params: options.staticParamsValidationParams ?? options.params,
               pathname: options.cleanPathname,
               revalidateSeconds: options.revalidateSeconds,

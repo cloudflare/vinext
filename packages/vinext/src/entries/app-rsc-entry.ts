@@ -1051,9 +1051,11 @@ import {
 } from ${JSON.stringify(appPageRequestPath)};
 import {
   collectAppPageStaticGenerationRuntimes as __collectAppPageStaticGenerationRuntimes,
-  hasAppPageGenerateStaticParamsAtLastDynamicSegment as __hasAppPageGenerateStaticParamsAtLastDynamicSegment,
+  collectAppPageStaticParamsWalkSegments as __collectAppPageStaticParamsWalkSegments,
   isAppPageStaticEligible as __isAppPageStaticEligible,
   isEdgeRuntime as __isEdgeRuntime,
+  lastDynamicSegmentHasGenerateStaticParams as __lastDynamicSegmentHasGenerateStaticParams,
+  lastDynamicSegmentIsStaticParamsOnly as __lastDynamicSegmentIsStaticParamsOnly,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime as __resolveAppPageStaticGenerationRuntime,
@@ -1262,15 +1264,17 @@ function __resolveRouteGenerateStaticParams(route) {
 // The parts of a route's static generation classification that come from its
 // module tree rather than its effective segment config.
 function __resolveRouteStaticGeneration(route, segmentConfigBranches) {
+  const walkSegments = __collectAppPageStaticParamsWalkSegments({
+    childrenSlot: route.childrenSlot,
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: segmentConfigBranches,
+    routeSegments: route.routeSegments,
+  });
   return {
-    hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
-      childrenSlot: route.childrenSlot,
-      layouts: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page: route.page,
-      parallelBranches: segmentConfigBranches,
-      routeSegments: route.routeSegments,
-    }),
+    hasGenerateStaticParams: __lastDynamicSegmentHasGenerateStaticParams(walkSegments),
+    isStaticParamsOnlyAtLastDynamicSegment: __lastDynamicSegmentIsStaticParamsOnly(walkSegments),
     isStaticGenerationEdgeRuntime: __isEdgeRuntime(
       __resolveAppPageStaticGenerationRuntime(
         __collectAppPageStaticGenerationRuntimes({
@@ -1697,6 +1701,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       },
       hasAnyGenerateStaticParams: __generateStaticParams.length > 0,
       hasGenerateStaticParams: __staticGeneration.hasGenerateStaticParams,
+      isStaticParamsOnlyAtLastDynamicSegment:
+        __staticGeneration.isStaticParamsOnlyAtLastDynamicSegment,
       hasPageDefaultExport: !!PageComponent,
       hasPageModule: !!route.page,
       handlerStart,

@@ -426,6 +426,7 @@ type CreateDispatchOptionsOverrides = {
   hasAnyGenerateStaticParams?: DispatchOptions["hasAnyGenerateStaticParams"];
   hasGenerateStaticParams?: DispatchOptions["hasGenerateStaticParams"];
   isStaticGenerationEdgeRuntime?: DispatchOptions["isStaticGenerationEdgeRuntime"];
+  isStaticParamsOnlyAtLastDynamicSegment?: DispatchOptions["isStaticParamsOnlyAtLastDynamicSegment"];
   formState?: DispatchOptions["formState"];
   getSourceRoute?: DispatchOptions["getSourceRoute"];
   getNavigationContext?: DispatchOptions["getNavigationContext"];
@@ -514,6 +515,9 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
       typeof overrides.generateStaticParams === "function",
     hasGenerateStaticParams:
       overrides.hasGenerateStaticParams ?? typeof overrides.generateStaticParams === "function",
+    // The page sets the route's dynamicParams unless a test says otherwise.
+    isStaticParamsOnlyAtLastDynamicSegment:
+      overrides.isStaticParamsOnlyAtLastDynamicSegment ?? overrides.dynamicParamsConfig === false,
     hasPageDefaultExport: true,
     hasPageModule: true,
     handlerStart: 10,
@@ -1687,6 +1691,7 @@ describe("app page dispatch", () => {
         validateAppPageRouteDynamicParams({
           dynamicParamsConfig: false,
           hasGenerateStaticParams: true,
+          isStaticParamsOnlyAtLastDynamicSegment: true,
           generateStaticParams: [
             {
               chained: true,
@@ -4020,6 +4025,34 @@ describe("app page dispatch", () => {
       }
     });
 
+    // vinext can't cache such a route, so learning whether its generators
+    // give every param would run them on each request.
+    it("runs no generator when dynamicParams = false is set only above the last dynamic segment", async () => {
+      const generateStaticParams = vi.fn(async () => [{ id: "1", slug: "acme" }]);
+      const generators = [{ chained: true as const, generateStaticParams, parentParamNames: [] }];
+      for (const isProduction of [true, false]) {
+        const response = await dispatchClub(
+          "2",
+          { isProduction, isStaticParamsOnlyAtLastDynamicSegment: false },
+          generators,
+        );
+        expect(response.status).toBe(200);
+      }
+      expect(generateStaticParams).not.toHaveBeenCalled();
+
+      // A route Next.js always prerenders still checks.
+      const forceStatic = await dispatchClub(
+        "2",
+        {
+          dynamicConfig: "force-static",
+          isProduction: true,
+          isStaticParamsOnlyAtLastDynamicSegment: false,
+        },
+        generators,
+      );
+      expect(forceStatic.status).toBe(404);
+    });
+
     it("renders any params when one generated row lacks a param", async () => {
       const response = await dispatchClub("2", {}, [
         ownerGenerator([{ id: "1", slug: "acme" }, { slug: "other" }]),
@@ -5251,18 +5284,14 @@ describe("app page dispatch", () => {
     });
 
     it("rejects an interception miss when the owner's generator gives every param", async () => {
+      const generateStaticParams = vi.fn(async () => [{ id: "1", slug: "acme" }]);
       const sourceRoute = createClubSource({
-        layouts: [
-          {
-            default: () => null,
-            dynamicParams: false,
-            generateStaticParams: async () => [{ id: "1", slug: "acme" }],
-          } as Record<string, unknown>,
-        ],
+        layouts: [{ default: () => null, generateStaticParams } as Record<string, unknown>],
       });
+      const page = { dynamicParams: false };
       const hit = createClubOptions(
         sourceRoute,
-        {},
+        page,
         { cleanPathname: "/club/acme/pics/1" },
         {
           matchedParams: { id: "1", slug: "acme" },
@@ -5270,8 +5299,22 @@ describe("app page dispatch", () => {
       );
       expect((await dispatchAppPage(hit.options)).status).toBe(200);
 
-      const miss = createClubOptions(sourceRoute, {});
+      const miss = createClubOptions(sourceRoute, page);
       expect((await dispatchAppPage(miss.options)).status).toBe(404);
+
+      // Set only above the last dynamic segment, it runs no generator.
+      generateStaticParams.mockClear();
+      const ownerOnlyRoute = createClubSource({
+        layouts: [
+          { default: () => null, dynamicParams: false, generateStaticParams } as Record<
+            string,
+            unknown
+          >,
+        ],
+      });
+      const ownerOnly = createClubOptions(ownerOnlyRoute, {});
+      expect((await dispatchAppPage(ownerOnly.options)).status).toBe(200);
+      expect(generateStaticParams).not.toHaveBeenCalled();
     });
 
     it("intercepts any params when the intercepting route sets revalidate = 0 in production", async () => {
