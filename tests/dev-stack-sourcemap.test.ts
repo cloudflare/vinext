@@ -59,6 +59,7 @@ function createServer(
   const server = {
     environments: {
       client: {
+        config: { server: { fs: { strict: false } } },
         async transformRequest(viteUrl: string) {
           transformRequests.push(`client:${viteUrl}`);
           return { map: sourceMap };

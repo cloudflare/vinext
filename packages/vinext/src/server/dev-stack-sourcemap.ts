@@ -590,6 +590,10 @@ async function loadServerSourceMapForLocalPath(
   server: ViteDevServer,
   localPath: string,
 ): Promise<SourceMapPayload | null> {
+  // The mapped frames go to the browser, so apply the client environment's
+  // file access rules. Vite 8.4 resolves `server.fs` per environment; earlier
+  // versions expose the top-level `server.fs` through this config too.
+  const clientConfig = server.environments.client.config;
   for (const environmentName of ["rsc", "ssr"]) {
     const environment = server.environments[environmentName];
     if (!environment) continue;
@@ -603,7 +607,7 @@ async function loadServerSourceMapForLocalPath(
       // HTTP; real server frames name virtual modules by id, not by disk path.
       const resolved = await environment.pluginContainer.resolveId(localPath);
       if (!resolved || resolved.external || resolved.id.startsWith("\0")) continue;
-      if (!isFileLoadingAllowed(server.config, stripQuery(resolved.id))) continue;
+      if (!isFileLoadingAllowed(clientConfig, stripQuery(resolved.id))) continue;
       // transformRequest resolves its argument itself, so pass the same id that
       // was just resolved and checked. Passing the resolved id would resolve it
       // a second time, which an alias chain could point at an unchecked file.
