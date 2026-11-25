@@ -94,3 +94,15 @@ export function RouteAnnouncer({ asPath }: { asPath: string }) {
     routeAnnouncement,
   );
 }
+
+/**
+ * The announcer as Next.js's client/index.tsx mounts it, registered by the
+ * Pages client entry with `_registerPagesRouteAnnouncer` (next/router).
+ */
+export function PagesRouteAnnouncer({ asPath }: { asPath: string }) {
+  return createElement(
+    Portal,
+    { type: "next-route-announcer" },
+    createElement(RouteAnnouncer, { asPath }),
+  );
+}

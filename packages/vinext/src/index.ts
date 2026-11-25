@@ -3699,6 +3699,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "instrumentation-client",
             ),
             "vinext/dev-error-overlay": path.resolve(__dirname, "client", "dev-error-overlay"),
+            "vinext/route-announcer": path.resolve(__dirname, "client", "route-announcer"),
             "vinext/html": path.resolve(__dirname, "server", "html"),
             ...(clientInjectModule === null
               ? {

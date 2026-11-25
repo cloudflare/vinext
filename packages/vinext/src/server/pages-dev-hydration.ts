@@ -84,7 +84,10 @@ import ${safeJsonStringify(reactInstanceBootstrapPath)};
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
+import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData, _registerPagesRouteAnnouncer } from "next/router";
+import { PagesRouteAnnouncer } from "vinext/route-announcer";
+
+_registerPagesRouteAnnouncer(PagesRouteAnnouncer);
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {
