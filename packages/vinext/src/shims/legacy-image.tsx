@@ -20,7 +20,7 @@ export type { ImageLoader, ImageLoaderProps, ImageProps };
 
 function LegacyImage(props: ImageProps): React.ReactElement {
   const {
-    layout = "intrinsic",
+    layout: layoutProp,
     objectFit,
     objectPosition,
     onLoadingComplete,
@@ -33,6 +33,10 @@ function LegacyImage(props: ImageProps): React.ReactElement {
     lazyBoundary: _lazyBoundary,
     ...rest
   } = props;
+
+  // Like Next.js, a missing or empty layout defaults to responsive when
+  // `sizes` is set and intrinsic otherwise.
+  const layout = layoutProp || (rest.sizes ? "responsive" : "intrinsic");
 
   // Translate legacy props to modern Image props
   const modernStyle: React.CSSProperties = { ...style };
