@@ -2,34 +2,41 @@
  * POST /api/compatibility/classify
  *
  * Upserts the router-classification metadata for Next.js e2e test files.
- * One row per test file; primary-keyed on `suite` so subsequent submissions
- * (Next.js ref bump, override-file edit, heuristic improvement) overwrite
- * in place.
+ * One row per test file per Next.js ref; primary-keyed on (`nextRef`,
+ * `suite`) so subsequent submissions for a ref (override-file edit,
+ * heuristic improvement) overwrite in place without touching other refs.
  *
  * Decoupled from /api/compatibility (the results-ingest endpoint) on
  * purpose: classifications conceptually describe test files, not runs.
  * Re-classifying does not require re-running tests, and a partial test run
  * (e.g. all shards failed) still gets a fresh classification snapshot.
  *
- * The /compatibility UI joins compat_file_results.suite to
- * compat_suite_meta.suite at query time; result rows without a matching
- * meta row render as "unknown".
+ * The /compatibility UI joins each result row to the meta row with the
+ * same suite and the run's next_ref at query time; result rows without a
+ * matching meta row render as "unknown".
  *
  * Auth: requires `X-Compat-Secret` header (same secret as the results
  * ingest endpoint).
  *
  * Body:
  *   {
- *     classifiedAt?: number,        // optional unix millis; defaults to now
+ *     nextRef: string,              // Next.js ref the checkout was at, e.g. v16.2.6
+ *     classifiedAt?: number,        // optional unix millis; defaults to now. The
+ *                                   // workflow sends its run's start time.
  *     suites: Array<{
  *       suite: string,              // test file path
  *       router: "app" | "pages" | "both" | "unknown",
  *     }>,
  *   }
  *
- * Returns `{ ok: true, upserted: N }`.
+ * A row whose stored `classifiedAt` is newer than the submission's is left
+ * as is, so an older workflow run that overlaps a newer one and posts later
+ * can't replace the newer classifications.
+ *
+ * Returns `{ ok: true, upserted: N }`, where N counts the rows submitted.
  */
 import { sql } from "drizzle-orm";
+import { isValidNextRef } from "../../../lib/compat-version";
 import { getDb } from "@/app/lib/db/client";
 import { compatSuiteMeta, type RouterKind } from "@/app/lib/db/schema";
 import { requireIngestAuth } from "../_auth";
@@ -40,6 +47,7 @@ type SubmitSuite = {
 };
 
 type SubmitBody = {
+  nextRef: string;
   classifiedAt?: number;
   suites: SubmitSuite[];
 };
@@ -67,10 +75,14 @@ const MIN_CLASSIFIED_AT_MS = Date.UTC(2023, 0, 1);
 function isValidBody(body: unknown): body is SubmitBody {
   if (!body || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
+  if (!isValidNextRef(b.nextRef)) return false;
   if (b.classifiedAt !== undefined) {
     if (typeof b.classifiedAt !== "number") return false;
-    if (!Number.isFinite(b.classifiedAt)) return false;
+    if (!Number.isSafeInteger(b.classifiedAt)) return false;
     if (b.classifiedAt < MIN_CLASSIFIED_AT_MS) return false;
+    // Older submissions never replace a stored row, so a future timestamp
+    // would block every later classification.
+    if (b.classifiedAt > Date.now()) return false;
   }
   if (!Array.isArray(b.suites)) return false;
   if (b.suites.length === 0) return false;
@@ -125,14 +137,16 @@ async function writeClassifications(body: SubmitBody): Promise<Response> {
   const bySuite = new Map<string, SubmitSuite>();
   for (const s of body.suites) bySuite.set(s.suite, s);
   const rows = Array.from(bySuite.values()).map((s) => ({
+    nextRef: body.nextRef,
     suite: s.suite,
     router: s.router,
     classifiedAt,
   }));
 
   // D1 enforces SQLite's 100-variable cap per statement; each row binds
-  // 3 columns (suite, router, classified_at), so up to 33 rows per INSERT.
-  const COLUMNS_PER_ROW = 3;
+  // 4 columns (next_ref, suite, router, classified_at), so up to 25 rows
+  // per INSERT.
+  const COLUMNS_PER_ROW = 4;
   const MAX_VARS = 100;
   const CHUNK = Math.floor(MAX_VARS / COLUMNS_PER_ROW);
 
@@ -145,11 +159,12 @@ async function writeClassifications(body: SubmitBody): Promise<Response> {
         .insert(compatSuiteMeta)
         .values(rows.slice(i, i + CHUNK))
         .onConflictDoUpdate({
-          target: compatSuiteMeta.suite,
+          target: [compatSuiteMeta.nextRef, compatSuiteMeta.suite],
           set: {
             router: sqlExcluded("router"),
             classifiedAt: sqlExcluded("classified_at"),
           },
+          setWhere: sql`${sqlExcluded("classified_at")} >= ${compatSuiteMeta.classifiedAt}`,
         }),
     );
   }
@@ -160,7 +175,7 @@ async function writeClassifications(body: SubmitBody): Promise<Response> {
 
 /**
  * Columns of `compat_suite_meta` that we want to update on conflict.
- * The PK (`suite`) is intentionally excluded — by definition it can't
+ * The PK (`next_ref`, `suite`) is intentionally excluded — by definition it can't
  * change on conflict, and including it here would let a refactor
  * accidentally feed it into `sqlExcluded` below.
  */

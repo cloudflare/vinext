@@ -43,7 +43,10 @@ export const compatRuns = sqliteTable(
     runKey: text("run_key").notNull(),
     /** vinext branch or sha that produced these results. */
     vinextRef: text("vinext_ref"),
-    /** Next.js ref the suite was run against (e.g. v16.2.6). */
+    /**
+     * Next.js ref the suite was run against (e.g. v16.2.6). Each ref is its
+     * own series: /compatibility shows one at a time.
+     */
     nextRef: text("next_ref"),
     /** vinext commit sha. */
     commitSha: text("commit_sha"),
@@ -55,8 +58,18 @@ export const compatRuns = sqliteTable(
     skipped: integer("skipped").notNull().default(0),
   },
   (table) => ({
-    kindRunKey: uniqueIndex("compat_runs_kind_run_key").on(table.kind, table.runKey),
-    kindCreated: index("idx_compat_runs_kind_created").on(table.kind, table.createdAt),
+    // One GitHub Actions run tests several Next.js versions, so the run key
+    // is only unique per version.
+    kindNextRefRunKey: uniqueIndex("compat_runs_kind_next_ref_run_key").on(
+      table.kind,
+      table.nextRef,
+      table.runKey,
+    ),
+    kindNextRefCreated: index("idx_compat_runs_kind_next_ref_created").on(
+      table.kind,
+      table.nextRef,
+      table.createdAt,
+    ),
   }),
 );
 
@@ -84,31 +97,33 @@ export const compatFileResults = sqliteTable(
 );
 
 /**
- * Per-test-file metadata. One row per Next.js test file, globally —
- * classifications are conceptually about the test file, not about a run.
+ * Per-test-file metadata. One row per Next.js test file per Next.js ref —
+ * classifications are conceptually about the test file, not about a run,
+ * but a test file's fixture can change between Next.js versions.
  *
  * Populated independently of result ingestion by the workflow's
  * "Classify Next.js suites" step (which POSTs to /api/compatibility/classify
  * after building the suite → router map from the Next.js checkout). This
  * decouples classification cadence from result cadence:
- *   - Bumping the Next.js ref can re-classify everything in one POST.
+ *   - Each Next.js ref is classified from its own checkout in one POST.
  *   - Fixing a heuristic bug or adding an override can update the table
  *     without re-running tests.
- *   - The /compatibility UI joins on `suite` to colour each result row.
+ *   - The /compatibility UI joins on (`next_ref`, `suite`) to colour each
+ *     result row.
  *
- * Trade-off: classification changes are retroactive (historical pass
- * rates split-by-router shift when a suite is reclassified). This is
- * usually what you want — corrections heal the whole history — but means
- * the chart isn't a strict point-in-time record. `classified_at` lets
- * you tie a reclassification to a moment in time; if you also need the
- * Next.js ref that produced it, join against the most recent
- * compat_runs row at or before that timestamp.
+ * Trade-off: classification changes are retroactive within a ref
+ * (historical pass rates split-by-router shift when a suite is
+ * reclassified). This is usually what you want — corrections heal the
+ * whole history — but means the chart isn't a strict point-in-time record.
+ * `classified_at` lets you tie a reclassification to a moment in time.
  */
 export const compatSuiteMeta = sqliteTable(
   "compat_suite_meta",
   {
+    /** Next.js ref the classification was computed from; joins to compat_runs.next_ref. */
+    nextRef: text("next_ref").notNull(),
     /** Test file path, e.g. test/e2e/app-dir/foo.test.ts. */
-    suite: text("suite").primaryKey(),
+    suite: text("suite").notNull(),
     /**
      * Which Next.js router(s) the test fixture exercises:
      *   - "app"     — App Router only (fixture has app/ with real routes, no pages/)
@@ -122,6 +137,7 @@ export const compatSuiteMeta = sqliteTable(
     classifiedAt: integer("classified_at").notNull(),
   },
   (table) => ({
+    primaryKey: primaryKey({ columns: [table.nextRef, table.suite] }),
     routerIdx: index("idx_compat_suite_meta_router").on(table.router),
   }),
 );

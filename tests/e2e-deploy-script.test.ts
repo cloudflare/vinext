@@ -24,7 +24,7 @@ describe("Next.js deploy harness", () => {
 
   it("enables Next.js test-only client instrumentation in deploy shards", () => {
     const workflow = fs.readFileSync(
-      path.resolve(".github/workflows/nextjs-deploy-suite.yml"),
+      path.resolve(".github/workflows/nextjs-deploy-suite-run.yml"),
       "utf8",
     );
     const deployShard = workflow.match(
@@ -38,7 +38,7 @@ describe("Next.js deploy harness", () => {
 
   it("keeps historical compatibility backfills explicit and isolated", () => {
     const workflow = fs.readFileSync(
-      path.resolve(".github/workflows/nextjs-deploy-suite.yml"),
+      path.resolve(".github/workflows/nextjs-deploy-suite-run.yml"),
       "utf8",
     );
 
@@ -51,7 +51,9 @@ describe("Next.js deploy harness", () => {
     );
     expect(workflow).toContain("`backfill:${backfillDate}:${process.env.VINEXT_REF}`");
     expect(workflow).toContain("{ createdAt: backfillCreatedAt }");
-    expect(workflow).toContain("inputs.backfill-date != '' && github.ref == 'refs/heads/main'");
+    expect(workflow).toMatch(
+      /if \[ -n "\$\{BACKFILL_DATE\}" \]; then\n\s+if \[ "\$\{EVENT_NAME\}" = workflow_dispatch \] && \[ "\$\{TRIGGER_REF\}" = refs\/heads\/main \]; then\n\s+results=true/,
+    );
   });
 
   it("does not recursively append failure diagnostics to deploy logs", () => {

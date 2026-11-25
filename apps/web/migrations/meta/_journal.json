@@ -64,6 +64,13 @@
       "when": 1791285866254,
       "tag": "0008_performance_query_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1795616093507,
+      "tag": "0009_compat_next_ref_series",
+      "breakpoints": true
     }
   ]
 }
