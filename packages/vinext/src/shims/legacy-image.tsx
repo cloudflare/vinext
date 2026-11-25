@@ -59,6 +59,9 @@ function LegacyImage(props: ImageProps): React.ReactElement {
     // Responsive: takes full width, maintains aspect ratio
     modernStyle.width = "100%";
     modernStyle.height = "auto";
+  } else if (layout === "intrinsic") {
+    modernStyle.maxWidth = "100%";
+    modernStyle.height = "auto";
   }
 
   // For "fixed" and "intrinsic", pass width/height directly
