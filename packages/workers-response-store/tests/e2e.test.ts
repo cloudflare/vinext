@@ -75,9 +75,19 @@ beforeEach(async () => {
                 ResponseStoreBinding as BaseBinding,
               } from "./worker.js";
               export { ResponseStoreRevalidator } from "./worker.js";
+              const R2_ERROR_MESSAGES = {
+                10001: "We encountered an internal error. Please try again.",
+                10020: "The specified object name is not valid.",
+                10043: "Service unavailable.",
+                10054: "Client disconnected before the request completed.",
+                10058: "Reduce your concurrent request rate for the same object.",
+              };
+              let r2ErrorCode = 10058;
+              const r2Error = () => new Error(\`put: \${R2_ERROR_MESSAGES[r2ErrorCode]} (\${r2ErrorCode})\`);
               let purgeMode;
               let metadataR2DelayMs = 0;
               let failMetadataR2Write = false;
+              let rateLimitedMetadataR2Writes = 0;
               let failAlarm = false;
               export class CacheMetadata extends BaseMetadata {
                 constructor(ctx, env) {
@@ -88,6 +98,10 @@ beforeEach(async () => {
                         const value = Reflect.get(bucket, key);
                         if (key === "put" && failMetadataR2Write) {
                           return () => Promise.reject(new Error("R2 rewrite failed"));
+                        }
+                        if (key === "put" && rateLimitedMetadataR2Writes > 0) {
+                          rateLimitedMetadataR2Writes--;
+                          return () => Promise.reject(r2Error());
                         }
                         if (["get", "head", "put"].includes(key) && metadataR2DelayMs) {
                           return async (...args) => {
@@ -120,6 +134,9 @@ beforeEach(async () => {
               let exposeInvalidate = false;
               let edgeCalls = [];
               let failR2Write = false;
+              let rateLimitedR2Writes = 0;
+              let lostR2Responses = 0;
+              let r2Gets = 0;
               let delayFirstPurgeMs = 0;
               let acceptFirst = 0;
               export class ResponseStoreBinding extends BaseBinding {
@@ -132,7 +149,19 @@ beforeEach(async () => {
                           failR2Write = false;
                           throw new Error("R2 publication failed");
                         };
+                        if (key === "put" && rateLimitedR2Writes > 0) {
+                          rateLimitedR2Writes--;
+                          return () => Promise.reject(r2Error());
+                        }
                         const value = Reflect.get(bucket, key);
+                        if (key === "get") r2Gets++;
+                        if (key === "put" && lostR2Responses > 0) {
+                          lostR2Responses--;
+                          return async (...args) => {
+                            await value.apply(bucket, args);
+                            throw r2Error();
+                          };
+                        }
                         return typeof value === "function" ? value.bind(bucket) : value;
                       },
                     }),
@@ -167,6 +196,18 @@ beforeEach(async () => {
                     failR2Write = new URL(request.url).searchParams.has("fail-r2");
                     failAlarm = new URL(request.url).searchParams.has("fail-alarm");
                     failMetadataR2Write = new URL(request.url).searchParams.has("fail-metadata-r2");
+                    rateLimitedR2Writes = Number(
+                      new URL(request.url).searchParams.get("rate-limit-r2") ?? 0,
+                    );
+                    lostR2Responses = Number(
+                      new URL(request.url).searchParams.get("lose-r2-response") ?? 0,
+                    );
+                    r2ErrorCode = Number(
+                      new URL(request.url).searchParams.get("r2-error-code") ?? 10058,
+                    );
+                    rateLimitedMetadataR2Writes = Number(
+                      new URL(request.url).searchParams.get("rate-limit-metadata-r2") ?? 0,
+                    );
                     metadataR2DelayMs = Number(
                       new URL(request.url).searchParams.get("metadata-r2-delay-ms") ?? 0,
                     );
@@ -175,10 +216,14 @@ beforeEach(async () => {
                       new URL(request.url).searchParams.get("delay-first-ms") ?? 0,
                     );
                     edgeCalls = [];
+                    r2Gets = 0;
                     return new Response("ok");
                   }
                   if (new URL(request.url).pathname === "/admin/edge-calls") {
                     return Response.json(edgeCalls);
+                  }
+                  if (new URL(request.url).pathname === "/admin/r2-gets") {
+                    return Response.json(r2Gets);
                   }
                   return worker.fetch(request);
                 },
@@ -4669,4 +4714,78 @@ test("a 10 MiB response body is stored in and refilled from R2", async () => {
   assert.equal(returned.byteLength, size);
   assert.equal(returned[0], 97);
   assert.equal(returned.at(-1), 97);
+});
+
+test("a write that R2 rate-limits backs off and publishes", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&rate-limit-r2=2");
+  const write = await put("/r2-rate-limited", "first");
+  assert.deepEqual(write.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(await (await read("/r2-rate-limited")).text(), "first");
+});
+
+test("a write that R2 fails with a transient error retries and publishes", async () => {
+  for (const code of [10001, 10043, 10054]) {
+    await worker.fetch(
+      `https://user.test/admin/edge-purge?mode=success&rate-limit-r2=2&r2-error-code=${code}`,
+    );
+    const write = await put(`/r2-transient-${code}`, "first");
+    assert.deepEqual(write.json, { backingStoreUpdated: true, edgePurgeAccepted: true }, `${code}`);
+    assert.equal(await (await read(`/r2-transient-${code}`)).text(), "first");
+  }
+});
+
+test("a regeneration whose landed R2 PUT lost its response answers without rereading R2", async () => {
+  const regenerate = async (path: string, query: string) => {
+    await put(path, "first", {
+      cacheControl: "public, max-age=0",
+      revalidator: { body: "regenerated" },
+    });
+    await worker.fetch(`https://user.test/admin/edge-purge?mode=success${query}`);
+    const response = await read(path);
+    assert.equal(await response.text(), "regenerated", path);
+    return (await (await worker.fetch("https://user.test/admin/r2-gets")).json()) as number;
+  };
+  const gets = await regenerate("/r2-response-delivered", "");
+  // A disconnect after R2 stored the body: the retry finds its own revision.
+  const retried = await regenerate("/r2-response-lost", "&lose-r2-response=1&r2-error-code=10054");
+  assert.equal(retried, gets);
+  assert.equal(await (await read("/r2-response-lost")).text(), "regenerated");
+});
+
+test("a write that R2 rejects with a non-retryable error is not retried", async () => {
+  await worker.fetch(
+    "https://user.test/admin/edge-purge?mode=success&rate-limit-r2=1&r2-error-code=10020",
+  );
+  await assert.rejects(put("/r2-not-retried", "first"), /R2 response publication failed/);
+  assert.equal((await read("/r2-not-retried")).status, 404);
+});
+
+test("a write that R2 keeps rate-limiting fails after its last attempt", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&rate-limit-r2=5");
+  await assert.rejects(put("/r2-rate-limited-out", "first"), /R2 response publication failed/);
+  assert.equal((await read("/r2-rate-limited-out")).status, 404);
+});
+
+test("a purge whose R2 tombstone write is rate-limited backs off and completes", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  await put("/r2-rate-limited-purge", "first", { tags: ["r2-rate-limited-purge"] });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&rate-limit-metadata-r2=2");
+  const result = await purge({ tags: ["r2-rate-limited-purge"] });
+  assert.equal(result.response.status, 200, JSON.stringify(result.json));
+  assert.equal((await read("/r2-rate-limited-purge")).status, 404);
+});
+
+test("an invalidation whose R2 stale rewrite is rate-limited backs off and completes", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const options = {
+    cacheControl: "public, max-age=60, stale-while-revalidate=60",
+    tags: ["r2-rate-limited-invalidate"],
+  };
+  await put("/r2-rate-limited-invalidate", "first", options);
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success&rate-limit-metadata-r2=2");
+  const result = await invalidate({ tags: options.tags });
+  assert.equal(result.response.status, 200, JSON.stringify(result.json));
+  const stale = await read("/r2-rate-limited-invalidate");
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await stale.text(), "first");
 });

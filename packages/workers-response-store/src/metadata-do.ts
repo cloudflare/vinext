@@ -10,7 +10,12 @@ import type {
   SerializableValue,
   StoredEntry,
 } from "./binding";
-import { mapSettledWithR2Concurrency } from "./r2-concurrency";
+import {
+  MAX_R2_CAS_ATTEMPTS,
+  isRetryableR2Error,
+  mapSettledWithR2Concurrency,
+  waitBeforeR2Retry,
+} from "./r2-concurrency";
 
 type RevalidationClaim = {
   claimId: string;
@@ -223,7 +228,6 @@ const ORPHAN_CLEANUP_RETRY_MS = 60 * 1000;
 // A multiple of the 100 tags a Workers Cache purge takes, so a flush's requests are full.
 const PENDING_TOMBSTONE_FLUSH_LIMIT = 400;
 const EDGE_FLUSH_BACKLOG_KEY = "edgeFlushBacklog";
-const MAX_R2_CAS_ATTEMPTS = 3;
 
 type CacheMetadataEnv = {
   CACHE_BODIES: R2Bucket;
@@ -1771,51 +1775,65 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     // Workers Cache must not refetch a tombstoned key's stale response.
     const completed = (tombstoned: boolean): PurgedEntry =>
       tombstoned ? { ...updated, edgeInvalidate: false } : updated;
+    let failure: Error | undefined;
     for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
-      const object = stale ? await this.env.CACHE_BODIES.get(entry.objectKey) : null;
-      const current = stale ? object : await this.env.CACHE_BODIES.head(entry.objectKey);
-      const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-      const tombstoned = current?.customMetadata?.tombstoned === "1";
-      if (currentRevision !== undefined && currentRevision >= entry.revision) {
-        await object?.body.cancel();
-        return completed(tombstoned);
-      }
-      // A stale rewrite republishes the source revision, or a stale copy of it
-      // an earlier invalidation wrote. When R2 does not hold either (the source
-      // write is still in flight or failed), tombstone the key instead so that
-      // late write cannot publish it as fresh.
-      const restale =
-        stale !== undefined &&
-        !tombstoned &&
-        currentRevision !== undefined &&
-        currentRevision >= stale.sourceRevision;
-      if (object && !restale) await object.body.cancel();
+      if (attempt > 0) await waitBeforeR2Retry(attempt);
+      let object: R2ObjectBody | null = null;
+      try {
+        object = stale ? await this.env.CACHE_BODIES.get(entry.objectKey) : null;
+        const current = stale ? object : await this.env.CACHE_BODIES.head(entry.objectKey);
+        const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
+        const tombstoned = current?.customMetadata?.tombstoned === "1";
+        if (currentRevision !== undefined && currentRevision >= entry.revision) {
+          await object?.body.cancel();
+          return completed(tombstoned);
+        }
+        // A stale rewrite republishes the source revision, or a stale copy of it
+        // an earlier invalidation wrote. When R2 does not hold either (the source
+        // write is still in flight or failed), tombstone the key instead so that
+        // late write cannot publish it as fresh.
+        const restale =
+          stale !== undefined &&
+          !tombstoned &&
+          currentRevision !== undefined &&
+          currentRevision >= stale.sourceRevision;
+        if (object && !restale) await object.body.cancel();
 
-      const stored = await this.env.CACHE_BODIES.put(
-        entry.objectKey,
-        restale && object ? object.body : new Uint8Array(),
-        {
-          onlyIf: current ? { etagMatches: current.etag } : { etagDoesNotMatch: "*" },
-          customMetadata:
-            restale && object
-              ? {
-                  ...object.customMetadata,
-                  latestRevision: String(entry.revision),
-                  freshUntil: String(stale.freshUntil),
-                  swrUntil: String(stale.swrUntil),
-                }
-              : { latestRevision: String(entry.revision), tombstoned: "1" },
-        },
-      );
-      if (stored) return completed(!restale);
+        const stored = await this.env.CACHE_BODIES.put(
+          entry.objectKey,
+          restale && object ? object.body : new Uint8Array(),
+          {
+            onlyIf: current ? { etagMatches: current.etag } : { etagDoesNotMatch: "*" },
+            customMetadata:
+              restale && object
+                ? {
+                    ...object.customMetadata,
+                    latestRevision: String(entry.revision),
+                    freshUntil: String(stale.freshUntil),
+                    swrUntil: String(stale.swrUntil),
+                  }
+                : { latestRevision: String(entry.revision), tombstoned: "1" },
+          },
+        );
+        if (stored) return completed(!restale);
+        failure = undefined;
+      } catch (error) {
+        if (!isRetryableR2Error(error)) throw error;
+        // A put that failed can leave the stale copy's body unread, holding its R2 connection.
+        if (object && !object.body.locked) await object.body.cancel().catch(() => {});
+        failure = error;
+      }
     }
     const current = await this.env.CACHE_BODIES.head(entry.objectKey);
     const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
     if (currentRevision !== undefined && currentRevision >= entry.revision) {
       return completed(current?.customMetadata?.tombstoned === "1");
     }
-    throw new Error(
-      `R2 revision ${entry.revision} could not be ${stale ? "invalidated" : "tombstoned"} after concurrent writes`,
+    throw (
+      failure ??
+      new Error(
+        `R2 revision ${entry.revision} could not be ${stale ? "invalidated" : "tombstoned"} after concurrent writes`,
+      )
     );
   }
 

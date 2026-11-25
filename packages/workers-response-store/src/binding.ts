@@ -2,6 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { deriveCachePolicy, edgeCacheControl, representationAge } from "./cache-policy";
 import { IsolateNegativeCache } from "./isolate-negative-cache";
+import { MAX_R2_CAS_ATTEMPTS, isRetryableR2Error, waitBeforeR2Retry } from "./r2-concurrency";
 import type {
   CacheMetadataStub,
   PurgeReservation,
@@ -439,7 +440,6 @@ const PURGE_TOMBSTONE_BATCH_SIZE = 400;
 const REFRESH_CONCURRENCY = 6;
 const ISOLATE_MISS_CACHE_CAPACITY = 1_024;
 const ISOLATE_MISS_CACHE_TTL_MS = 1_000;
-const MAX_R2_CAS_ATTEMPTS = 3;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const R2_CUSTOM_METADATA_SAFE_BYTES = 7 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
@@ -1015,29 +1015,45 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     expectedEtag?: string | null,
   ): Promise<boolean> {
     let etag: string | null | undefined = expectedEtag;
+    let failure: Error | undefined;
 
-    // A conditional PUT can lose to another revision between HEAD and PUT.
-    // Retry against the winner's ETag, but never spin indefinitely under load.
+    // A conditional PUT can lose to another revision between HEAD and PUT, and R2 rate-limits
+    // concurrent writes of one key. Back off and retry against the winner's ETag, but never spin
+    // indefinitely under load.
     for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
-      if (etag === undefined) {
-        const current = await this.env.CACHE_BODIES.head(objectKey);
-        const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-        if (currentRevision !== undefined && currentRevision >= revision) return false;
-        etag = current?.etag ?? null;
-      }
+      if (attempt > 0) await waitBeforeR2Retry(attempt);
+      try {
+        if (etag === undefined) {
+          const current = await this.env.CACHE_BODIES.head(objectKey);
+          const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
+          // A PUT whose response was lost can still have landed: its own revision means published.
+          if (currentRevision !== undefined && currentRevision >= revision) {
+            return currentRevision === revision;
+          }
+          etag = current?.etag ?? null;
+        }
 
-      const stored = await this.env.CACHE_BODIES.put(objectKey, body, {
-        onlyIf: etag === null ? { etagDoesNotMatch: "*" } : { etagMatches: etag },
-        customMetadata,
-      });
-      if (stored) return true;
+        const stored = await this.env.CACHE_BODIES.put(objectKey, body, {
+          onlyIf: etag === null ? { etagDoesNotMatch: "*" } : { etagMatches: etag },
+          customMetadata,
+        });
+        if (stored) return true;
+        failure = undefined;
+      } catch (error) {
+        if (!isRetryableR2Error(error)) throw error;
+        failure = error;
+      }
       etag = undefined;
     }
 
     const current = await this.env.CACHE_BODIES.head(objectKey);
     const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
-    if (currentRevision !== undefined && currentRevision >= revision) return false;
-    throw new Error(`R2 revision ${revision} could not be published after concurrent writes`);
+    if (currentRevision !== undefined && currentRevision >= revision) {
+      return currentRevision === revision;
+    }
+    throw (
+      failure ?? new Error(`R2 revision ${revision} could not be published after concurrent writes`)
+    );
   }
 
   private async writeR2Response(
