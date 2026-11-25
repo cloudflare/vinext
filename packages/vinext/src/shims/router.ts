@@ -451,6 +451,8 @@ type PagesRouterRuntimeState = {
    */
   committedRouterSnapshot: CommittedRouterSnapshot | null;
   publicRouter?: Record<string, unknown>;
+  /** Registered by the Pages client entry; see `_registerPagesRouteAnnouncer`. */
+  routeAnnouncer?: ComponentType<{ asPath: string }>;
 };
 
 type PagesRouterRuntimeComponents = {
@@ -4003,6 +4005,16 @@ function adoptCommittedRouterSnapshot(prev: RouterSnapshotState): RouterSnapshot
   return { snapshot: committed.snapshot, commitToken: committed.token };
 }
 
+/**
+ * Mount the route announcer in every Pages Router render. Called by the Pages
+ * client entry before hydration, like Next.js's client/index.tsx mounting
+ * `<RouteAnnouncer />`, so server bundles never import it.
+ * @internal
+ */
+export function _registerPagesRouteAnnouncer(component: ComponentType<{ asPath: string }>): void {
+  routerRuntimeState.routeAnnouncer = component;
+}
+
 function PagesRouterProvider({ children }: { children: ReactNode }): ReactElement {
   const [routerState, setState] = useState(takeRouterSnapshot);
   // A client navigation records its route snapshot and then calls
@@ -4090,7 +4102,20 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   const content = createElement(
     RouterContext.Provider,
     { value: router },
-    createElement(Fragment, null, children, createElement(PagesRouterHydrationMarker)),
+    createElement(
+      Fragment,
+      null,
+      children,
+      // Next.js mounts its announcer after the app, inside the router context
+      // (packages/next/src/client/index.tsx). Only the client entry registers
+      // it, so the server renders null in its place: the same child count, so
+      // useId values match on hydration, and the announcer renders nothing
+      // until it has mounted.
+      routerRuntimeState.routeAnnouncer
+        ? createElement(routerRuntimeState.routeAnnouncer, { asPath })
+        : null,
+      createElement(PagesRouterHydrationMarker),
+    ),
   );
   return AppRouterContext
     ? createElement(AppRouterContext.Provider, { value: appRouter }, content)

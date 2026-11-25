@@ -19,6 +19,7 @@ import {
 import { flushSync } from "react-dom";
 import { createRoot, hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
+import { AppRouterAnnouncer } from "../client/app-router-announcer.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   __basePath,
@@ -1667,6 +1668,9 @@ function BrowserRoot({
       createAppRouteTree({
         elements: treeState.elements,
         historyCommit: createElement(NavigationHistoryCommit, { renderId: treeState.renderId }),
+        // Keyed on the committed route payload, like Next.js keys its
+        // announcer on the committed router tree.
+        routeAnnouncer: createElement(AppRouterAnnouncer, { tree: treeState.elements }),
         routeId: treeState.routeId,
       }),
     ),
