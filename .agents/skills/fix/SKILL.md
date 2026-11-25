@@ -53,7 +53,7 @@ After the fix and focused validation pass, spawn one independent review sub-agen
 
 1. Watch the required checks on the exact current head. A queued or in-progress check is not green.
 2. Read the logs of each failure and separate code failures from infrastructure flakes. Fix code failures at their root and push.
-3. Rerun failed jobs without code changes only when the evidence shows a flake (`gh run rerun <id> --failed`, on the newest run for the head). For Next.js deploy-suite tests, decide flakiness from the last ~25 full runs' `deploy-suite-report` artifacts, never a dispatched rerun.
+3. Rerun failed jobs without code changes only when the evidence shows a flake (`gh run rerun <id> --failed`, on the newest run for the head). For Next.js deploy-suite tests, decide flakiness from the last ~25 full runs' `deploy-suite-report-<next-ref>` artifacts for the same Next.js version (runs before multi-version support name it `deploy-suite-report`), never a dispatched rerun.
 4. If the e2e suites pass in CI on the head, failures seen only locally are local noise.
 5. Check `gh pr view --json mergeable` after each push. A conflicting PR gets no CI runs: rebase it.
 

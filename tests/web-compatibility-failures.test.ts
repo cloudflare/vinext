@@ -71,6 +71,7 @@ describe("GET /api/compatibility/failures", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       kind: "deploy",
+      nextRef: "v16.2.6",
       run: {
         id: 42,
         runKey: "1234",
@@ -104,7 +105,28 @@ describe("GET /api/compatibility/failures", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ kind: "vitest", run: null, failures: [] });
+    expect(await response.json()).toEqual({
+      kind: "vitest",
+      nextRef: "v16.2.6",
+      run: null,
+      failures: [],
+    });
+  });
+
+  it("reads the Next.js version selected by ?version=", async () => {
+    getDb.mockReturnValue(createDb([[]]));
+
+    const response = await GET(
+      new Request("https://example.com/api/compatibility/failures?version=v16.4.6"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      kind: "deploy",
+      nextRef: "v16.4.6",
+      run: null,
+      failures: [],
+    });
   });
 
   it("returns 500 when the database query fails", async () => {

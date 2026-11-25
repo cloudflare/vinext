@@ -5,7 +5,7 @@ const getIngestSecret = vi.fn();
 
 vi.mock("@/app/lib/db/client", () => ({ getDb, getIngestSecret }));
 vi.mock("@/app/lib/db/schema", () => ({
-  compatRuns: { kind: "kind", runKey: "runKey" },
+  compatRuns: { kind: "kind", nextRef: "nextRef", runKey: "runKey" },
   compatFileResults: { runId: "runId" },
 }));
 
@@ -30,7 +30,7 @@ function createDb() {
   return { db, inserted };
 }
 
-function request(createdAt: unknown, backfill = true) {
+function request(createdAt: unknown, backfill = true, overrides: Record<string, unknown> = {}) {
   const commitSha = "0123456789abcdef0123456789abcdef01234567";
   return new Request("https://example.com/api/compatibility", {
     method: "POST",
@@ -51,6 +51,7 @@ function request(createdAt: unknown, backfill = true) {
           skipped: 0,
         },
       ],
+      ...overrides,
     }),
   });
 }
@@ -84,6 +85,30 @@ describe("POST /api/compatibility", () => {
     expect(inserted[0]).toMatchObject({ createdAt: expect.any(Number) });
     expect((inserted[0] as { createdAt: number }).createdAt).toBeGreaterThanOrEqual(before);
   });
+
+  it("keys each run by its Next.js version", async () => {
+    const { db, inserted } = createDb();
+    getDb.mockReturnValue(db);
+
+    const response = await POST(request(undefined, false, { nextRef: "v16.4.6" }));
+
+    expect(response.status).toBe(200);
+    expect(inserted[0]).toMatchObject({ nextRef: "v16.4.6", runKey: "1234" });
+    const upsert = db.insert.mock.results[0].value.values.mock.results[0].value;
+    expect(upsert.onConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ target: ["kind", "nextRef", "runKey"] }),
+    );
+  });
+
+  it.each([undefined, "", "refs/heads/canary", "v".repeat(65)])(
+    "rejects an invalid Next.js version: %s",
+    async (nextRef) => {
+      const response = await POST(request(undefined, false, { nextRef }));
+
+      expect(response.status).toBe(400);
+      expect(getDb).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([undefined, -1, 1.5, Date.now() + 86_400_000, "2026-04-01"])(
     "rejects an invalid historical timestamp: %s",

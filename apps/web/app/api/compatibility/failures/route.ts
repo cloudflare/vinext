@@ -2,10 +2,13 @@
  * GET /api/compatibility/failures
  *
  * Returns the failing suites from the most recently ingested compatibility
- * run. The optional `kind` query parameter defaults to `deploy`.
+ * run. The optional `kind` query parameter defaults to `deploy`, and the
+ * optional `version` query parameter (a Next.js ref) defaults to the version
+ * /compatibility shows publicly.
  */
 import { and, desc, eq, gt } from "drizzle-orm";
 import { tracing } from "cloudflare:workers";
+import { resolveNextRef } from "../../../lib/compat-version";
 import { getDb } from "../../../lib/db/client";
 import { compatFileResults, compatRuns } from "../../../lib/db/schema";
 
@@ -13,20 +16,22 @@ const DEFAULT_KIND = "deploy";
 
 export async function GET(request: Request): Promise<Response> {
   return tracing.enterSpan("vinext.web.compatibilityFailures", async () => {
-    const kind = new URL(request.url).searchParams.get("kind")?.trim() || DEFAULT_KIND;
+    const searchParams = new URL(request.url).searchParams;
+    const kind = searchParams.get("kind")?.trim() || DEFAULT_KIND;
+    const nextRef = resolveNextRef(searchParams.get("version"));
 
     try {
       const db = getDb();
       const latestRuns = await db
         .select()
         .from(compatRuns)
-        .where(eq(compatRuns.kind, kind))
+        .where(and(eq(compatRuns.kind, kind), eq(compatRuns.nextRef, nextRef)))
         .orderBy(desc(compatRuns.createdAt), desc(compatRuns.id))
         .limit(1);
       const run = latestRuns[0];
 
       if (!run) {
-        return Response.json({ kind, run: null, failures: [] });
+        return Response.json({ kind, nextRef, run: null, failures: [] });
       }
 
       const failures = await db
@@ -50,6 +55,7 @@ export async function GET(request: Request): Promise<Response> {
 
       return Response.json({
         kind,
+        nextRef,
         run: {
           id: run.id,
           runKey: run.runKey,

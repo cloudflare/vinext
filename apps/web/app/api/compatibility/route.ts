@@ -16,9 +16,9 @@
  * Body:
  *   {
  *     kind: "deploy" | string,
- *     runKey: string,         // GitHub run_id or other stable id
+ *     runKey: string,         // GitHub run_id or other stable id; unique per nextRef
  *     vinextRef?: string,
- *     nextRef?: string,
+ *     nextRef: string,        // Next.js ref tested, e.g. v16.2.6; one series per ref
  *     commitSha?: string,
  *     createdAt?: number,     // Unix millis; authenticated historical backfills only
  *     files: Array<{
@@ -36,6 +36,7 @@
 import { getDb } from "@/app/lib/db/client";
 import { compatRuns, compatFileResults, type FileStatus } from "@/app/lib/db/schema";
 import { eq } from "drizzle-orm";
+import { isValidNextRef } from "../../lib/compat-version";
 import { requireIngestAuth } from "./_auth";
 
 type SubmitFile = {
@@ -50,7 +51,7 @@ type SubmitBody = {
   kind: string;
   runKey: string;
   vinextRef?: string;
-  nextRef?: string;
+  nextRef: string;
   commitSha?: string;
   createdAt?: number;
   files: SubmitFile[];
@@ -75,6 +76,7 @@ function isValidBody(body: unknown): body is SubmitBody {
   const b = body as Record<string, unknown>;
   if (typeof b.kind !== "string" || b.kind.length === 0) return false;
   if (typeof b.runKey !== "string" || b.runKey.length === 0) return false;
+  if (!isValidNextRef(b.nextRef)) return false;
   if (b.createdAt === undefined && b.runKey.startsWith("backfill:")) return false;
   if (b.createdAt !== undefined) {
     if (
@@ -150,16 +152,17 @@ async function writeRun(body: SubmitBody): Promise<Response> {
     skipped += f.skipped;
   }
 
-  // Atomic upsert by (kind, runKey). Drizzle compiles this to a single
-  // INSERT ... ON CONFLICT(kind, run_key) DO UPDATE SET ... — no race
-  // window between SELECT and INSERT for concurrent retried CI runs.
+  // Atomic upsert by (kind, nextRef, runKey): one GitHub Actions run
+  // publishes one run per Next.js version. Drizzle compiles this to a single
+  // INSERT ... ON CONFLICT(kind, next_ref, run_key) DO UPDATE SET ... — no
+  // race window between SELECT and INSERT for concurrent retried CI runs.
   const upserted = await db
     .insert(compatRuns)
     .values({
       kind: body.kind,
       runKey: body.runKey,
       vinextRef: body.vinextRef ?? null,
-      nextRef: body.nextRef ?? null,
+      nextRef: body.nextRef,
       commitSha: body.commitSha ?? null,
       createdAt,
       total,
@@ -168,10 +171,9 @@ async function writeRun(body: SubmitBody): Promise<Response> {
       skipped,
     })
     .onConflictDoUpdate({
-      target: [compatRuns.kind, compatRuns.runKey],
+      target: [compatRuns.kind, compatRuns.nextRef, compatRuns.runKey],
       set: {
         vinextRef: body.vinextRef ?? null,
-        nextRef: body.nextRef ?? null,
         commitSha: body.commitSha ?? null,
         createdAt,
         total,
