@@ -111,7 +111,7 @@ describe("POST /api/compatibility", () => {
     expect(inserted[0]).toMatchObject({ createdAt: startedAt });
   });
 
-  it.each([Date.now() + 86_400_000, 1.5, 0])(
+  it.each([Date.now() + 86_400_000, 1.5, 0, 1_790_000_000])(
     "rejects an invalid run start: %s",
     async (startedAt) => {
       const response = await POST(request(undefined, false, { startedAt }));

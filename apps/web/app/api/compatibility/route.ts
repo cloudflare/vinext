@@ -21,7 +21,7 @@
  *     nextRef: string,        // Next.js ref tested, e.g. v16.2.6; one series per ref
  *     commitSha?: string,
  *     createdAt?: number,     // Unix millis; authenticated historical backfills only
- *     startedAt?: number,     // Unix millis the workflow run started; orders the run
+ *     startedAt?: number,     // Unix millis the workflow run was created; orders the run
  *     files: Array<{
  *       suite: string,        // test file path; joins to compat_suite_meta.suite
  *       total: number,
@@ -73,9 +73,18 @@ function deriveStatus(f: SubmitFile): FileStatus {
   return "skip";
 }
 
+/**
+ * Earliest accepted `startedAt`/`createdAt` (2023-01-01 UTC). Both are Unix
+ * millis; anything earlier is almost certainly seconds sent by mistake.
+ */
+const MIN_TIMESTAMP_MS = Date.UTC(2023, 0, 1);
+
 function isPastTimestamp(value: unknown): value is number {
   return (
-    typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= Date.now()
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= MIN_TIMESTAMP_MS &&
+    value <= Date.now()
   );
 }
 
@@ -142,7 +151,7 @@ export async function POST(request: Request): Promise<Response> {
 
 async function writeRun(body: SubmitBody): Promise<Response> {
   const db = getDb();
-  // Runs are ordered by when their workflow started, not when they finish,
+  // Runs are ordered by when their workflow run was created, not when they finish,
   // so an older run that overlaps a newer one and posts later doesn't become
   // the latest run.
   const createdAt = body.createdAt ?? body.startedAt ?? Date.now();

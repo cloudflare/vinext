@@ -60,9 +60,13 @@ jobs:
     name: Resolve Next.js versions
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # read this run's creation time
     outputs:
       next-refs: ${{ steps.resolve.outputs.next-refs }}
       vinext-sha: ${{ steps.vinext.outputs.sha }}
+      run-created-at: ${{ steps.created.outputs.at }}
     steps:
       - name: Checkout vinext
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,6 +111,19 @@ jobs:
         id: vinext
         run: echo "sha=$(git -C pinned-vinext rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # Published results and classifications are ordered by when their
+      # workflow run was created (not when a runner picked it up), so an
+      # older run that queued longer still sorts before a newer one.
+      - name: Resolve run creation time
+        id: created
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          created_at="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq .created_at)"
+          echo "at=$(node -p 'Date.parse(process.argv[1])' "${created_at}")" >> "$GITHUB_OUTPUT"
+
   suite:
     name: Next.js ${{ matrix.next-ref }}
     needs: versions
@@ -118,6 +135,7 @@ jobs:
     with:
       vinext-ref: ${{ inputs.vinext-ref || '' }}
       vinext-sha: ${{ needs.versions.outputs.vinext-sha }}
+      run-created-at: ${{ needs.versions.outputs.run-created-at }}
       next-ref: ${{ matrix.next-ref }}
       suite-filter: ${{ inputs.suite-filter || 'all' }}
       test-path: ${{ inputs.test-path || '' }}

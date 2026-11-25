@@ -16,6 +16,10 @@ on:
         description: Commit `vinext-ref` resolved to, shared by every version of one run
         required: true
         type: string
+      run-created-at:
+        description: When the calling workflow run was created (Unix ms). Orders published results and classifications, so overlapping runs can finish in any order.
+        required: true
+        type: string
       next-ref:
         description: Next.js ref to test against
         required: true
@@ -56,15 +60,8 @@ jobs:
     timeout-minutes: 40 # includes up to 10 minutes of classification retries
     outputs:
       publish-results: ${{ steps.publish.outputs.results }}
-      started-at: ${{ steps.started.outputs.at }}
       slug: ${{ steps.publish.outputs.slug }}
     steps:
-      # Published results and classifications are ordered by when their run
-      # started, so overlapping runs can finish in any order.
-      - name: Record run start
-        id: started
-        run: echo "at=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
-
       # Decide once whether this run is published to /compatibility. Results
       # are stored per Next.js version, so every release tag (e.g. v16.4.6)
       # gets its own series; the site only shows its public version unless
@@ -293,7 +290,7 @@ jobs:
           COMPAT_INGEST_URL: ${{ vars.COMPAT_INGEST_URL || 'https://vinext-web.vinext.workers.dev/api/compatibility' }}
           COMPAT_INGEST_SECRET: ${{ secrets.COMPAT_INGEST_SECRET }}
           NEXT_REF: ${{ inputs.next-ref }}
-          STARTED_AT: ${{ steps.started.outputs.at }}
+          STARTED_AT: ${{ inputs.run-created-at }}
         run: |
           if [ -z "${COMPAT_INGEST_SECRET:-}" ]; then
             echo "COMPAT_INGEST_SECRET not configured; skipping classification submission."
@@ -490,7 +487,7 @@ jobs:
           NEXT_REF: ${{ inputs.next-ref }}
           SUITE_FILTER: ${{ inputs.suite-filter }}
           BACKFILL_DATE: ${{ inputs.backfill-date }}
-          STARTED_AT: ${{ needs.build.outputs.started-at }}
+          STARTED_AT: ${{ inputs.run-created-at }}
         with:
           script: |
             const fs = require('node:fs');
@@ -611,8 +608,8 @@ jobs:
                   // A backfill's ref is already a full SHA, and the API checks
                   // that `commitSha` equals it exactly, so keep its case.
                   commitSha: backfillDate ? process.env.VINEXT_REF : process.env.VINEXT_SHA,
-                  // A backfill is dated by its date input; a live run by when it
-                  // started, so overlapping runs keep their order.
+                  // A backfill is dated by its date input; a live run by when its
+                  // workflow run was created, so overlapping runs keep their order.
                   ...(backfillCreatedAt === undefined
                     ? { startedAt: Number(process.env.STARTED_AT) }
                     : { createdAt: backfillCreatedAt }),
