@@ -608,7 +608,9 @@ jobs:
                     : String(context.runId),
                   vinextRef: process.env.VINEXT_REF,
                   nextRef: process.env.NEXT_REF,
-                  commitSha: process.env.VINEXT_SHA,
+                  // A backfill's ref is already a full SHA, and the API checks
+                  // that `commitSha` equals it exactly, so keep its case.
+                  commitSha: backfillDate ? process.env.VINEXT_REF : process.env.VINEXT_SHA,
                   // A backfill is dated by its date input; a live run by when it
                   // started, so overlapping runs keep their order.
                   ...(backfillCreatedAt === undefined

@@ -77,11 +77,12 @@ if [ "${NEXTJS_PREPARE:-0}" = "1" ]; then
     run_pnpm install
     # Raise older Next.js checkouts to Playwright 1.60.0; newer ones (v16.4
     # pins 1.61.0) keep their own version rather than being downgraded.
+    playwright_version="$(node -p 'require("playwright/package.json").version')"
     if node -e '
-      const [major, minor] = require("playwright/package.json").version.split(".").map(Number)
+      const [major, minor] = process.argv[1].split(".").map(Number)
       process.exit(major > 1 || (major === 1 && minor >= 60) ? 1 : 0)
-    '; then
-      echo ">>> $(date -Iseconds) bump playwright to 1.60.0"
+    ' "${playwright_version}"; then
+      echo ">>> $(date -Iseconds) bump playwright ${playwright_version} to 1.60.0"
       run_pnpm add -w playwright@1.60.0 playwright-chromium@1.60.0
     fi
     echo ">>> $(date -Iseconds) pnpm build"
