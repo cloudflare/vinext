@@ -114,6 +114,7 @@ import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   resolveServerActionOperationLane,
+  resolveServerActionReturnValue,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
 } from "./app-browser-action-result.js";
@@ -986,13 +987,14 @@ async function commitSameUrlNavigatePayload(
     if (routeManifestLoad !== null) routeManifestLoaded = await routeManifestLoad;
     // Persisted interceptions and commit approval need the manifest. An action
     // that still owns the router reloads its page, like a hard-navigate commit
-    // decision. A superseded one goes on to the commit below, which discards it.
+    // decision, and still settles with its result. A superseded one goes on to
+    // the commit below, which discards it.
     if (
       !routeManifestLoaded &&
       browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
     ) {
       browserNavigationController.performHardNavigation(actionInitiation.href);
-      return undefined;
+      return resolveServerActionReturnValue(returnValue);
     }
   }
   if (revalidation !== "none" && routeManifestLoaded) {

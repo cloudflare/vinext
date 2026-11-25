@@ -5483,7 +5483,8 @@ describe("app browser navigation controller", () => {
       expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
       expect(assign).not.toHaveBeenCalled();
 
-      await expect(commitAction(controller.beginNavigation())).resolves.toBeUndefined();
+      // The reload does not swallow the action's result (#4836).
+      await expect(commitAction(controller.beginNavigation())).resolves.toBe("action-result");
       expect(assign).toHaveBeenCalledWith("https://example.com/settings");
       expect(stateRef.current.routeId).toBe("route:/settings");
     } finally {
@@ -5743,14 +5744,15 @@ describe("app browser navigation controller", () => {
       const result = await controller.commitSameUrlNavigatePayload(
         nextElements,
         stateRef.current.navigationSnapshot,
-        undefined,
+        { data: "action-result", ok: true },
         undefined,
         {
           targetHref: actionTargetHref,
         },
       );
 
-      expect(result).toBeUndefined();
+      // Like Next.js, the action settles with its result (#4836).
+      expect(result).toBe("action-result");
       expect(assign).toHaveBeenCalledWith(actionTargetHref);
       expect(stateRef.current.routeId).toBe("route:/marketing");
     } finally {
