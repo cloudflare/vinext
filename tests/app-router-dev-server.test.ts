@@ -2111,9 +2111,12 @@ describe("App Router integration", () => {
     expect(unknown.status).toBe(404);
   });
 
-  it("returns 404 when dynamicParams = false has no generateStaticParams sources", async () => {
+  // Next.js builds no paths for a route without generateStaticParams, so its
+  // dynamicParams = false rejects nothing.
+  it("renders any params when dynamicParams = false has no generateStaticParams sources", async () => {
     const res = await fetch(`${baseUrl}/layout-segment-config/no-gsp/anything`);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('data-testid="layout-segment-config-no-gsp"');
   });
 
   it("passes parent-only params to nested generateStaticParams during dynamicParams validation", async () => {

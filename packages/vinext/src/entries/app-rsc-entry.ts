@@ -1560,19 +1560,23 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   ensureRouteLoaded: __ensureRouteLoaded,
   async isDynamicParamsMiss(route, params, pathname) {
     if (!route.isDynamic) return false;
-    const __segmentConfig = __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route));
+    const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
+    const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
     if (!__isAppPageStaticParamsOnly(__segmentConfig.dynamicParamsConfig, process.env.NODE_ENV === "production")) {
       return false;
     }
     return (await __validateAppPageRouteDynamicParams({
+      ...__resolveRouteStaticGeneration(route, __segmentConfigBranches),
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
       fetchCache: __segmentConfig.fetchCache ?? null,
       generateStaticParams: __resolveRouteGenerateStaticParams(route),
       isDynamicRoute: route.isDynamic,
       isProduction: process.env.NODE_ENV === "production",
+      isRoutePPREnabled: ${cacheComponents},
       params,
       pathname,
+      revalidateSeconds: __segmentConfig.revalidateSeconds,
       rootParamNames: route.rootParamNames ?? [],
       routePattern: route.pattern,
       routeSegments: route.routeSegments,

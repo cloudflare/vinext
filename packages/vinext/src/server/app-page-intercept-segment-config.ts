@@ -5,7 +5,6 @@ import {
   hasAppPageGenerateStaticParamsAtLastDynamicSegment,
   isAppPageStaticEligible,
   isEdgeRuntime,
-  resolveAppPageDynamicConfig,
   resolveAppPageDynamicParamsConfig,
   resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime,
@@ -79,6 +78,8 @@ export type AppPageInterceptSegmentConfig = {
   revalidateSeconds: number | null;
   /** The `dynamic` of the interception's own tree, which its params check reads. */
   staticParamsDynamicConfig: string | undefined;
+  /** The `revalidate` of the interception's own tree, which its params check reads. */
+  staticParamsRevalidateSeconds: number | null;
 };
 
 /**
@@ -265,15 +266,8 @@ export function resolveAppPageInterceptSegmentConfig(
   };
   const dynamicParamsTree = {
     layouts: layoutChain.map((entry) => entry.module),
-    layoutTreePositions: layoutChain.map((entry) => entry.position),
     page,
-    parallelBranches: defaults.map(({ module, ownerTreePosition }) => ({
-      isDefault: true,
-      ownerTreePosition:
-        ownerTreePosition === ownerPosition ? ownerTreePosition - slotDepth : ownerTreePosition,
-      page: module,
-    })),
-    routeSegments: siblingTree.routeSegments,
+    parallelBranches: defaults.map(({ module }) => ({ isDefault: true, page: module })),
   };
   // The intercepting page and its layouts are the route's own segments, so
   // their `dynamic` applies as a page's would, in a slot as well.
@@ -323,6 +317,7 @@ export function resolveAppPageInterceptSegmentConfig(
     page,
     parallelBranches: staticParamsBranches,
   };
+  const staticParamsConfig = resolveAppPageSegmentConfig(staticParamsTreeConfig);
   const walkSegments = collectAppPageStaticParamsWalkSegments(staticGenerationTree);
   const hasGenerateStaticParams =
     hasAppPageGenerateStaticParamsAtLastDynamicSegment(staticGenerationTree);
@@ -353,7 +348,8 @@ export function resolveAppPageInterceptSegmentConfig(
     }),
     isStaticGenerationEdgeRuntime,
     revalidateSeconds: config.revalidateSeconds,
-    staticParamsDynamicConfig: resolveAppPageDynamicConfig(staticParamsTreeConfig),
+    staticParamsDynamicConfig: staticParamsConfig.dynamicConfig,
+    staticParamsRevalidateSeconds: staticParamsConfig.revalidateSeconds,
     // As Next.js's interception page, `club/[slug]/(.)pics/[id]`, names it.
     routeSegments: [...ownerSegments, ...(interceptOpts.interceptBranchSegments ?? [])],
   };

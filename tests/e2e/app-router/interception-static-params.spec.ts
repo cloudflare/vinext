@@ -49,7 +49,8 @@ test.describe("interception dynamicParams", () => {
   });
 
   // An owner's `dynamicParams = false` enforces only where the interception's
-  // last dynamic segment generates its params.
+  // last dynamic segment generates its params, or its generators give every
+  // param.
   test("keeps an intercepting page without generators below that owner", async ({ page }) => {
     await openClub(page, "owner/club/acme");
     expect(await navigate(page, "Info 1", "owner/club/acme/info/1")).toBe(200);
@@ -210,6 +211,21 @@ test.describe("interception dynamicParams", () => {
     await expect(page.getByTestId("shot-page")).toHaveText("Shot page: 3");
     await expect(page.getByTestId("shot-modal")).toHaveCount(0);
   });
+
+  // Next.js enforces `dynamicParams = false` only where it builds the
+  // interception's paths: not without a generator at its last dynamic
+  // segment, nor on the edge runtime.
+  for (const base of ["no-generator", "edge"]) {
+    test(`intercepts any params where Next.js builds no paths (${base})`, async ({ page }) => {
+      for (const id of ["1", "2"]) {
+        await openClub(page, `${base}/club/acme`);
+        expect(await navigate(page, `Pics ${id}`, `${base}/club/acme/pics/${id}`)).toBe(200);
+        await expect(page.getByTestId("item-modal")).toHaveText(`Pic modal: acme ${id}`);
+        await expect(page.getByTestId("club-page")).toHaveText("Club page: acme");
+        await expectSoftNavigation(page, true);
+      }
+    });
+  }
 
   test("ignores the target page's dynamicParams", async ({ page }) => {
     await openClub(page, "target/club/acme");

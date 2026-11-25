@@ -778,8 +778,11 @@ type AppPageInterceptStaticParams = {
   dynamicParamsConfig: boolean | undefined;
   fetchCache: FetchCacheMode | null;
   generateStaticParams: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
+  hasGenerateStaticParams: boolean;
   isDynamicRoute: boolean;
+  isStaticGenerationEdgeRuntime: boolean;
   params: AppPageParams;
+  revalidateSeconds: number | null;
   rootParamNames: readonly string[];
   routeSegments: readonly string[];
 };
@@ -833,8 +836,13 @@ async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
     // interception's breadth-first chain sets its own segment's.
     fetchCache: null,
     generateStaticParams: config.generateStaticParams,
+    // Next.js prerenders the interception's paths from that tree, on its
+    // runtime, whatever the target's.
+    hasGenerateStaticParams: config.hasGenerateStaticParams,
     isDynamicRoute: config.isDynamicRoute,
+    isStaticGenerationEdgeRuntime: config.isStaticGenerationEdgeRuntime,
     params: interceptState.intercept.matchedParams,
+    revalidateSeconds: config.staticParamsRevalidateSeconds,
     // The interception renders below the source's root layout.
     rootParamNames: configRoute.rootParamNames ?? [],
     routeSegments: config.routeSegments,
@@ -1399,6 +1407,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           ? {
               ...interceptStaticParams,
               isProduction: options.isProduction,
+              isRoutePPREnabled: options.pprRuntime !== undefined,
               pathname: options.cleanPathname,
               routePattern: route.pattern,
             }
@@ -1408,10 +1417,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               fetchCache: options.fetchCache,
               routeSegments: route.routeSegments,
               generateStaticParams: options.generateStaticParams,
+              hasGenerateStaticParams: options.hasGenerateStaticParams,
               isDynamicRoute: route.isDynamic,
               isProduction: options.isProduction,
+              isRoutePPREnabled: options.pprRuntime !== undefined,
+              isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
               params: options.staticParamsValidationParams ?? options.params,
               pathname: options.cleanPathname,
+              revalidateSeconds: options.revalidateSeconds,
               rootParamNames: route.rootParamNames ?? [],
               routePattern: route.pattern,
             },
