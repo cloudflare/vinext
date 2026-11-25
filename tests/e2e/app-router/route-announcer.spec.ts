@@ -8,7 +8,8 @@ const BASE = "http://localhost:4174";
 // test/e2e/app-dir/app-a11y suite: a <next-route-announcer> element whose
 // shadow root holds a <div role="alert" aria-live="assertive">, which receives
 // the new document.title after each committed soft navigation, but not on
-// first load.
+// first load. The region holds the bare title, the innerHTML that app-a11y
+// checks.
 async function readAnnouncer(page: Page) {
   return page.evaluate(() => {
     const host = document.getElementsByTagName("next-route-announcer")[0];
@@ -43,7 +44,11 @@ test.describe("App Router route announcer", () => {
 
     await expect
       .poll(() => readAnnouncer(page))
-      .toMatchObject({ role: "alert", text: "Route Announcer Destination" });
+      .toEqual({
+        role: "alert",
+        text: "Route Announcer Destination",
+        html: "Route Announcer Destination",
+      });
 
     // Browser translation (Chrome Translate) swaps the announcement's text
     // node for <font> elements, as in vercel/next.js#99353. The next
@@ -64,7 +69,7 @@ test.describe("App Router route announcer", () => {
     expect(await page.evaluate(() => (window as any).__ANNOUNCER_NAV_MARKER__)).toBe(true);
     await expect
       .poll(() => readAnnouncer(page))
-      .toMatchObject({ role: "alert", text: "Route Announcer Start" });
+      .toEqual({ role: "alert", text: "Route Announcer Start", html: "Route Announcer Start" });
 
     // A single announcer host, however many navigations commit.
     expect(

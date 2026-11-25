@@ -1,5 +1,4 @@
-import { createElement, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState } from "react";
 
 // Ported from Next.js's App Router announcer
 // (packages/next/src/client/components/app-router-announcer.tsx).
@@ -33,13 +32,12 @@ function getAnnouncerNode(): HTMLElement {
  * like Next.js keys it on the committed FlightRouterState.
  */
 export function AppRouterAnnouncer({ tree }: { tree: unknown }) {
-  const [portalNode, setPortalNode] = useState<HTMLElement | null>(null);
+  const announcerNode = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    const announcer = getAnnouncerNode();
-    // oxlint-disable-next-line react/set-state-in-effect -- the portal host lives outside React's tree and only exists after mount
-    setPortalNode(announcer);
+    announcerNode.current = getAnnouncerNode();
     return () => {
+      announcerNode.current = null;
       const container = document.getElementsByTagName(ANNOUNCER_TYPE)[0];
       if (container?.isConnected) {
         document.body.removeChild(container);
@@ -69,17 +67,15 @@ export function AppRouterAnnouncer({ tree }: { tree: unknown }) {
     previousTitle.current = currentTitle;
   }, [tree]);
 
-  // A keyed element, not bare text (vercel/next.js#98314, for #99353): browser
-  // translation replaces the text node, and React would then update or remove
-  // a detached node, leaving the region stale or throwing on removeChild.
-  // Changing the key replaces the whole span on every announcement. With
-  // nothing to announce the region stays empty, as in Next.js.
-  return portalNode
-    ? createPortal(
-        routeAnnouncement
-          ? createElement("span", { key: routeAnnouncement }, routeAnnouncement)
-          : null,
-        portalNode,
-      )
-    : null;
+  // Next.js portals the announcement into the region as a bare text node.
+  // vinext writes the same text with textContent, so React owns no node there:
+  // browser translation replaces that text node (vercel/next.js#99353), and
+  // React would then update or remove a detached node, leaving the region
+  // stale or throwing on removeChild. textContent replaces whatever the
+  // translation left, and the region's markup stays the same as Next.js's.
+  useEffect(() => {
+    if (announcerNode.current) announcerNode.current.textContent = routeAnnouncement;
+  }, [routeAnnouncement]);
+
+  return null;
 }
