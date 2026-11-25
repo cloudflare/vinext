@@ -411,7 +411,7 @@
           "pull": "{{trigger.pull_request.number}}",
           "approvedBy": "",
           "state": "in_review",
-          "note": "{{ steps.author.outputs.login }} reviewed it with findings, which are being addressed."
+          "note": "{{#if trigger.checks.commit}}Its checks failed on {{trigger.checks.commit}}{{else}}{{ trigger.review.author }} reviewed it with findings{{/if}}, which are being addressed."
         }
       },
       {
@@ -1027,7 +1027,7 @@
       ["checks_left", "stall_human", "yes"],
       ["checks", "checks_current"],
       ["checks_current", "checks_failed", "yes"],
-      ["checks_failed", "rounds", "yes"],
+      ["checks_failed", "was_ready", "yes"],
       ["checks_failed", "approvals", "no"],
       ["checks_failed", "bonk_unasked", "no"],
       ["bonk_unasked", "first_bonk", "yes"],

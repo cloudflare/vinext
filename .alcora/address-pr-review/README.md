@@ -149,8 +149,9 @@ stack. A fix of one pull request is a stack of one.
 
 ## Checks
 
-Checks finishing on the head start a round too. When they failed, **Address
-it** works on them as on a review, and BigBonk is asked to review what it
+Checks finishing on the head start a round too. When they failed, a fix
+that was ready goes back in progress first, as after a review's findings
+(**Was it ready?**), and **Address it** works on them as on a review, and BigBonk is asked to review what it
 pushed. When the agent finds every failure was a flake or the
 infrastructure's, it pushes nothing, and **Re-run them** re-runs the failed
 jobs of the GitHub Actions workflows that failed, each at most twice; when
