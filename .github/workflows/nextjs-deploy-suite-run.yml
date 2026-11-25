@@ -12,6 +12,10 @@ on:
         required: false
         default: ""
         type: string
+      vinext-sha:
+        description: Commit `vinext-ref` resolved to, shared by every version of one run
+        required: true
+        type: string
       next-ref:
         description: Next.js ref to test against
         required: true
@@ -125,7 +129,7 @@ jobs:
           persist-credentials: false
           # Backfills retain the current workflow harness in the workspace and
           # check out the historical vinext source separately below.
-          ref: ${{ inputs.backfill-date && github.sha || inputs.vinext-ref || github.ref }}
+          ref: ${{ inputs.backfill-date && github.sha || inputs.vinext-sha }}
 
       - name: Validate backfill inputs
         if: inputs.backfill-date != ''
@@ -482,6 +486,7 @@ jobs:
           # break the generated JS — and not exploitable in practice but
           # cleaner this way.
           VINEXT_REF: ${{ inputs.vinext-ref || github.ref }}
+          VINEXT_SHA: ${{ inputs.vinext-sha }}
           NEXT_REF: ${{ inputs.next-ref }}
           SUITE_FILTER: ${{ inputs.suite-filter }}
           BACKFILL_DATE: ${{ inputs.backfill-date }}
@@ -603,7 +608,7 @@ jobs:
                     : String(context.runId),
                   vinextRef: process.env.VINEXT_REF,
                   nextRef: process.env.NEXT_REF,
-                  commitSha: backfillDate ? process.env.VINEXT_REF : context.sha,
+                  commitSha: process.env.VINEXT_SHA,
                   // A backfill is dated by its date input; a live run by when it
                   // started, so overlapping runs keep their order.
                   ...(backfillCreatedAt === undefined

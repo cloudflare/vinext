@@ -62,6 +62,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       next-refs: ${{ steps.resolve.outputs.next-refs }}
+      vinext-sha: ${{ steps.vinext.outputs.sha }}
     steps:
       - name: Checkout vinext
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,6 +91,22 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `next-refs=${JSON.stringify(unique)}\n`)
           EOF
 
+      # Resolve `vinext-ref` to one commit here, so every version tests (and
+      # is labelled with) the same vinext commit even if the branch moves
+      # while the version jobs start.
+      - name: Checkout vinext-ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.vinext-ref || github.sha }}
+          path: pinned-vinext
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve vinext commit
+        id: vinext
+        run: echo "sha=$(git -C pinned-vinext rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   suite:
     name: Next.js ${{ matrix.next-ref }}
     needs: versions
@@ -100,6 +117,7 @@ jobs:
     uses: ./.github/workflows/nextjs-deploy-suite-run.yml
     with:
       vinext-ref: ${{ inputs.vinext-ref || '' }}
+      vinext-sha: ${{ needs.versions.outputs.vinext-sha }}
       next-ref: ${{ matrix.next-ref }}
       suite-filter: ${{ inputs.suite-filter || 'all' }}
       test-path: ${{ inputs.test-path || '' }}
