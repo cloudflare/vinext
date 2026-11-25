@@ -30,6 +30,8 @@ type PutOptions = {
   cdnCacheControl?: string;
   cloudflareCacheControl?: string;
   coalesce?: boolean;
+  contentDigest?: string;
+  contentRange?: string;
   contentType?: string;
   etag?: string;
   expiryBehavior?: "regenerate" | "miss";
@@ -217,6 +219,8 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
       options.cacheControl ?? "public, max-age=60, stale-while-revalidate=60",
   });
   if (options.tags) headers.set("X-Response-Cache-Tag", options.tags.join(","));
+  if (options.contentDigest) headers.set("X-Response-Content-Digest", options.contentDigest);
+  if (options.contentRange) headers.set("X-Response-Content-Range", options.contentRange);
   if (options.etag) headers.set("X-Response-ETag", options.etag);
   if (options.lastModified) headers.set("X-Response-Last-Modified", options.lastModified);
   if (options.host) headers.set("X-Cache-Host", options.host);
@@ -272,15 +276,25 @@ async function read(
   return worker.fetch(`https://user.test/cache${path}`, { headers });
 }
 
+// An RFC 850 date for `date`, with the weekday of the same day `yearOffset` years away.
+function rfc850Date(date: Date, yearOffset: number) {
+  const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const weekday = new Date(date);
+  weekday.setUTCFullYear(date.getUTCFullYear() + yearOffset);
+  const [, day, month, year] = date.toUTCString().split(" ");
+  return `${weekdays[weekday.getUTCDay()]}, ${day}-${month}-${year.slice(2)} 00:00:00 GMT`;
+}
+
 // Miniflare does not run Workers Cache. Inject the header at the cache-bearing
 // entrypoint, where deployed Workers Cache adds it during revalidation.
-async function conditionalRead(path: string, header = "If-None-Match") {
+async function conditionalRead(path: string, header = "If-None-Match", value?: string) {
   const bindings = await mf.getBindings<{
     RESPONSE_STORE_BINDING: Awaited<ReturnType<Miniflare["getWorker"]>>;
   }>("user-worker");
   return bindings.RESPONSE_STORE_BINDING.fetch(`https://cache-key.invalid${path}`, {
     headers: {
-      [header]: header === "If-None-Match" ? 'W/"previous"' : "Tue, 29 Sep 2026 00:00:00 GMT",
+      [header]:
+        value ?? (header === "If-None-Match" ? 'W/"previous"' : "Tue, 29 Sep 2026 00:00:00 GMT"),
     },
   });
 }
@@ -339,6 +353,22 @@ async function metadataStub() {
 
 async function metadata(): Promise<any[]> {
   return (await metadataStub()).inspect();
+}
+
+// Holds the only entry's regeneration claim, as another invocation's render does, until released.
+async function holdRevalidationClaim(): Promise<() => Promise<void>> {
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const claim = await stub.claimRevalidation(
+    entry.keyHash,
+    entry.activeRevision,
+    entry.cacheKey,
+    `${r2Root}/${entry.keyHash}`,
+    Date.now(),
+    30_000,
+  );
+  assert.ok(claim);
+  return () => stub.releaseWrite(entry.keyHash, claim.objectKey, claim.claimId);
 }
 
 async function metadataRowCount(table: string, name = metadataName): Promise<number> {
@@ -2711,9 +2741,26 @@ test("conditional and unconditional stale reads share one regeneration claim", a
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(await metadataRowCount("revalidation_claims"), 1);
-  await assert.rejects(
-    conditionalRead("/conditional-claim"),
-    /revalidation is already in progress/,
+  const raced = await conditionalRead("/conditional-claim");
+  assert.equal(await raced.text(), "stale-body");
+  assert.equal(raced.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.match(
+    raced.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=0, stale-while-revalidate=\d+$/,
+  );
+  // Revalidating the copy it already holds, Workers Cache gets a 304 to keep it.
+  const unchanged = await conditionalRead(
+    "/conditional-claim",
+    "If-None-Match",
+    raced.headers.get("ETag")!,
+  );
+  assert.equal(unchanged.status, 304);
+  assert.equal(await unchanged.text(), "");
+  assert.equal(unchanged.headers.get("ETag"), raced.headers.get("ETag"));
+  assert.equal(unchanged.headers.get("Content-Type"), null);
+  assert.match(
+    unchanged.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=0, stale-while-revalidate=\d+$/,
   );
   assert.equal(await (await read("/conditional-claim")).text(), "stale-body");
   assert.equal(await (await first).text(), "fresh-body");
@@ -2727,7 +2774,7 @@ test("conditional and unconditional stale reads share one regeneration claim", a
   assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
-test("a superseded conditional revalidation never returns the old active body", async () => {
+test("a superseded conditional revalidation answers with the committed entry, still stale", async () => {
   const path = "/conditional-lease-expiry";
   await put(path, "stale-body", {
     cacheControl: "public, max-age=0, stale-while-revalidate=60",
@@ -2752,7 +2799,14 @@ test("a superseded conditional revalidation never returns the old active body", 
     30_000,
   );
   assert.ok(replacement);
-  await assert.rejects(pending, /revalidation is already in progress or was superseded/);
+  const superseded = await pending;
+  assert.equal(await superseded.text(), "stale-body");
+  assert.equal(superseded.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(superseded.headers.get("X-Workers-Response-Store-Revision"), "1");
+  assert.match(
+    superseded.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=0, stale-while-revalidate=\d+$/,
+  );
   assert.equal((await metadata())[0].activeRevision, 1);
   assert.equal(await metadataRowCount("revalidation_claims"), 1);
 
@@ -2760,6 +2814,96 @@ test("a superseded conditional revalidation never returns the old active body", 
   assert.equal(await (await conditionalRead(path)).text(), "fresh-body");
   assert.equal(await metadataRowCount("revalidation_claims"), 0);
   assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("a conditional revalidation that loses its claim answers 304 only for valid validators", async () => {
+  const path = "/conditional-claim-validators";
+  // Just after the leap second that ended 1998.
+  const lastModified = "Fri, 01 Jan 1999 00:00:00 GMT";
+  await put(path, "stale-part", {
+    status: 206,
+    contentDigest: "sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:",
+    contentRange: "bytes 0-9/100",
+    lastModified,
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60" },
+  });
+  const release = await holdRevalidationClaim();
+  const raced = await conditionalRead(path);
+  assert.equal(raced.status, 206);
+  await raced.arrayBuffer();
+  const etag = raced.headers.get("ETag")!;
+  const tag = etag.replace(/^W\//, "");
+  const beyondFiftyYears = new Date();
+  beyondFiftyYears.setUTCFullYear(beyondFiftyYears.getUTCFullYear() + 50);
+  // A week clear of the moving cutoff, so the test cannot straddle it.
+  beyondFiftyYears.setUTCDate(beyondFiftyYears.getUTCDate() + 7);
+  for (const [header, value] of [
+    ["If-None-Match", `garbage, ${etag}`],
+    ["If-None-Match", `${tag} suffix`],
+    ["If-None-Match", `w/${tag}`],
+    ["If-None-Match", `*, ${etag}`],
+    ["If-Modified-Since", "2026-09-30"],
+    ["If-Modified-Since", "Wed, 31 Sep 2026 00:00:00 GMT"],
+    ["If-Modified-Since", "Fri, 01 Jan 0099 00:00:00 GMT"],
+    ["If-Modified-Since", "Thu, 31 Dec 1998 23:59:60 GMT"],
+    // Past 50 years ahead, a two-digit year is the earlier century's, whatever its weekday.
+    ["If-Modified-Since", rfc850Date(beyondFiftyYears, 0)],
+    ["If-Modified-Since", rfc850Date(beyondFiftyYears, -100)],
+  ]) {
+    const response = await conditionalRead(path, header, value);
+    assert.equal(response.status, 206, `${header}: ${value}`);
+    assert.equal(await response.text(), "stale-part", `${header}: ${value}`);
+  }
+  for (const [header, value] of [
+    ["If-None-Match", `"other", , W/${tag}`],
+    ["If-Modified-Since", lastModified],
+    ["If-Modified-Since", "Friday, 01-Jan-99 00:00:00 GMT"],
+    ["If-Modified-Since", "Fri Jan  1 00:00:00 1999"],
+    ["If-Modified-Since", "Tue, 29 Sep 2026 23:59:60 GMT"],
+  ]) {
+    const response = await conditionalRead(path, header, value);
+    assert.equal(response.status, 304, `${header}: ${value}`);
+    assert.equal(response.headers.get("Content-Range"), null, `${header}: ${value}`);
+    assert.equal(response.headers.get("Content-Digest"), null, `${header}: ${value}`);
+    assert.equal(await response.text(), "", `${header}: ${value}`);
+  }
+  await release();
+});
+
+test("a conditional revalidation that loses its claim answers a stored non-2xx response as is", async () => {
+  const path = "/conditional-claim-404";
+  await put(path, "stale-missing", {
+    status: 404,
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60" },
+  });
+  const release = await holdRevalidationClaim();
+  const stale = await read(path);
+  assert.equal(stale.status, 404);
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await stale.text(), "stale-missing");
+  const raced = await conditionalRead(path, "If-None-Match", stale.headers.get("ETag")!);
+  assert.equal(raced.status, 404);
+  assert.equal(await raced.text(), "stale-missing");
+  await release();
+});
+
+test("a conditional revalidation that loses its claim never serves the entry past its stale window", async () => {
+  const path = "/conditional-claim-expired";
+  await put(path, "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+    revalidator: { body: "fresh-body", cacheControl: "public, max-age=60", delayMs: 500 },
+  });
+  const pending = conditionalRead(path);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("revalidation_claims")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+
+  await invalidate({ pathPrefixes: [path], expire: 0 });
+  await assert.rejects(pending, /revalidation is already in progress or was superseded/);
 });
 
 test("a failed background regeneration releases its claim for a later retry", async () => {

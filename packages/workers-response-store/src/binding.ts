@@ -336,6 +336,93 @@ function missResponse(revision?: number): Response {
   });
 }
 
+const ENTITY_TAG = String.raw`(?:W/)?"[\x21\x23-\x7e\x80-\xff]*"`;
+const CURRENT_ENTITY_TAG = new RegExp(`^${ENTITY_TAG}$`);
+// A list may hold empty members (RFC 9110 5.6.1.2).
+const ENTITY_TAG_LIST = new RegExp(
+  `^[ \\t,]*${ENTITY_TAG}(?:[ \\t]*,[ \\t,]*${ENTITY_TAG})*[ \\t,]*$`,
+);
+const OPAQUE_TAG = /"([^"]*)"/g;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// IMF-fixdate and the obsolete RFC 850 and asctime formats (RFC 9110 5.6.7).
+const HTTP_DATES = [
+  /^(?<weekday>Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?<day>\d{2}) (?<month>[A-Z][a-z]{2}) (?<year>\d{4}) (?<time>\d{2}:\d{2}:\d{2}) GMT$/,
+  /^(?<weekday>Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (?<day>\d{2})-(?<month>[A-Z][a-z]{2})-(?<year>\d{2}) (?<time>\d{2}:\d{2}:\d{2}) GMT$/,
+  /^(?<weekday>Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?<month>[A-Z][a-z]{2}) (?<day>[ \d]\d) (?<time>\d{2}:\d{2}:\d{2}) (?<year>\d{4})$/,
+];
+
+function parseHttpDate(value: string | null): number {
+  const groups = HTTP_DATES.map((format) => format.exec(value ?? "")?.groups).find(Boolean);
+  if (!groups) return Number.NaN;
+  const month = MONTHS.indexOf(groups.month);
+  const day = Number(groups.day);
+  const [hours, minutes, seconds] = groups.time.split(":").map(Number);
+  let year = Number(groups.year);
+  // RFC 850's two-digit year is the latest one whose date is not more than 50 years ahead.
+  if (groups.year.length === 2) {
+    const now = new Date();
+    year += now.getUTCFullYear() - (now.getUTCFullYear() % 100);
+    const limit = new Date(now);
+    limit.setUTCFullYear(now.getUTCFullYear() + 50);
+    if (Date.UTC(year, month, day, hours, minutes, seconds) > limit.getTime()) year -= 100;
+  }
+  // A leap second (60) is valid: check the calendar without it, then place it inside the
+  // preceding second, so it stays before the next minute.
+  const date = new Date(Date.UTC(year, month, day, hours, minutes, Math.min(seconds, 59)));
+  // Impossible dates and times, and the wrong weekday, are invalid rather than rolled over.
+  // HTTP-date years are 1900 or later (RFC 5322 3.3); Date.UTC maps 0-99 to 1900-1999.
+  return month >= 0 &&
+    year >= 1900 &&
+    seconds <= 60 &&
+    date.getUTCDate() === day &&
+    date.getUTCHours() === hours &&
+    date.getUTCMinutes() === minutes &&
+    date.toUTCString().startsWith(groups.weekday.slice(0, 3))
+    ? date.getTime() + (seconds === 60 ? 999 : 0)
+    : Number.NaN;
+}
+
+// Whether a revalidation's validators match the response the store would send, so Cloudflare
+// needs a 304 to keep its copy: a 200 repeating the cached ETag doesn't reliably replace it.
+// https://developers.cloudflare.com/cache/concepts/revalidation/#origin-requirements-for-revalidation
+// If-None-Match uses the weak comparison and, when present, decides alone (RFC 9110 13.1.2-3).
+// Preconditions only apply to a 2xx response (RFC 9110 13.2.1), and a malformed validator
+// leaves the response unchanged.
+function isNotModified(request: Request, response: Response): boolean {
+  if (response.status < 200 || response.status > 299) return false;
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  if (ifNoneMatch !== null) {
+    // Optional whitespace is only SP and HTAB (RFC 9110 5.6.3).
+    if (/^[ \t]*\*[ \t]*$/.test(ifNoneMatch)) return true;
+    const etag = response.headers.get("ETag") ?? "";
+    if (!CURRENT_ENTITY_TAG.test(etag) || !ENTITY_TAG_LIST.test(ifNoneMatch)) return false;
+    const [, current] = [...etag.matchAll(OPAQUE_TAG)][0];
+    return [...ifNoneMatch.matchAll(OPAQUE_TAG)].some(([, tag]) => tag === current);
+  }
+  const ifModifiedSince = parseHttpDate(request.headers.get("If-Modified-Since"));
+  const lastModified = parseHttpDate(response.headers.get("Last-Modified"));
+  return Number.isFinite(ifModifiedSince) && Number.isFinite(lastModified)
+    ? lastModified <= ifModifiedSince
+    : false;
+}
+
+function notModifiedResponse(response: Response): Response {
+  void response.body?.cancel().catch(() => {});
+  const headers = new Headers(response.headers);
+  // Content-Digest covers the message content, which a 304 has none of (RFC 9530 2).
+  for (const name of [
+    "Content-Digest",
+    "Content-Encoding",
+    "Content-Length",
+    "Content-Range",
+    "Content-Type",
+    "Transfer-Encoding",
+  ]) {
+    headers.delete(name);
+  }
+  return new Response(null, { status: 304, statusText: "Not Modified", headers });
+}
+
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
 const PURGE_TOMBSTONE_BATCH_SIZE = 400;
@@ -1425,15 +1512,18 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
     const metadata = this.getMetadata(keyHash);
     let regenerated: StoreResult;
+    let lostClaim = false;
     if (revalidateStale && now < entry.swrUntil) {
       const result = await this.revalidateEntry(metadata, entry, expectedR2Etag);
-      if (!result?.published) {
-        // Another cache location or an unconditional stale read owns the claim.
-        // A claim that expired mid-render also cannot return its old R2 body.
-        // Fail this callback so Workers Cache retains stale and can retry.
-        throw new Error("Cache entry revalidation is already in progress or was superseded");
-      }
-      regenerated = result;
+      // Another cache location or an unconditional stale read owns the claim, or a claim
+      // that expired mid-render lost to its replacement. Answer with the committed entry,
+      // read again below: the replacement once it is published, else the stale entry,
+      // which Workers Cache keeps serving and revalidates on its next request, as it does
+      // after an error, without the Worker throwing for every revalidation that loses.
+      lostClaim = !result?.published;
+      regenerated = result?.published
+        ? result
+        : { edgePurgeRequired: false, published: false, entry };
     } else {
       const regeneration = await metadata.reserveRegeneration(
         keyHash,
@@ -1465,13 +1555,26 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     let response = regenerated.response;
     if (!response) {
       const winner = await this.readR2Metadata(cacheKey);
-      if (winner.entry) {
+      const readAt = Date.now();
+      // A lost claim never serves an entry past its stale window, e.g. after a long render or
+      // an `invalidate({ expire: 0 })`: Workers Cache keeps its copy, as for any failure.
+      if (winner.entry && (!lostClaim || readAt < winner.entry.swrUntil)) {
         response =
-          (await this.readStoredResponse(winner.entry, Date.now(), winner.object)) ?? undefined;
+          (await this.readStoredResponse(winner.entry, readAt, winner.object)) ?? undefined;
+      } else {
+        await winner.object?.body.cancel().catch(() => {});
       }
     }
     if (!response) {
+      if (lostClaim) {
+        throw new Error("Cache entry revalidation is already in progress or was superseded");
+      }
       throw new Error("The committed cache body is unavailable");
+    }
+    // A lost claim answers with the revision Workers Cache already holds until the replacement
+    // is published.
+    if (lostClaim && isNotModified(request, response)) {
+      return notModifiedResponse(response);
     }
 
     return response;
