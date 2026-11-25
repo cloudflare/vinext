@@ -991,7 +991,7 @@
       ["verdict", "was_ready", "findings"],
       ["was_ready", "reopen", "yes"],
       ["reopen", "label_reopen"],
-      ["reopen", "rounds"],
+      ["label_reopen", "rounds"],
       ["was_ready", "rounds", "no"],
       ["rounds", "address", "yes"],
       ["rounds", "stall_rounds", "no"],
