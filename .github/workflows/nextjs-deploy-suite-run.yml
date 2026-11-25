@@ -2,7 +2,8 @@ name: Next.js Deploy Suite (one Next.js version)
 
 # Runs the whole deploy suite against one Next.js ref. nextjs-deploy-suite.yml
 # calls this once per Next.js version, in parallel, so every artifact, cache
-# key and published run below is scoped to `inputs.next-ref`.
+# key and published run below is scoped to `inputs.next-ref`. Artifact and
+# cache names use the build job's `slug` output, a name-safe form of the ref.
 on:
   workflow_call:
     inputs:
@@ -48,10 +49,11 @@ jobs:
     # Browsers come from the Next.js checkout's pinned Playwright, which
     # doesn't support Ubuntu 26.04 (what ubuntu-latest runs), so stay on 24.04.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40 # includes up to 10 minutes of classification retries
     outputs:
       publish-results: ${{ steps.publish.outputs.results }}
       started-at: ${{ steps.started.outputs.at }}
+      slug: ${{ steps.publish.outputs.slug }}
     steps:
       # Published results and classifications are ordered by when their run
       # started, so overlapping runs can finish in any order.
@@ -91,11 +93,14 @@ jobs:
           BACKFILL_DATE: ${{ inputs.backfill-date }}
           RUN_SKIPPED: ${{ inputs.run-skipped-deployment-tests }}
         run: |
-          # The ref also names this run's artifacts and cache entries.
-          if [[ ! "${NEXT_REF}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "::error::next-ref '${NEXT_REF}' may only contain letters, digits, '.', '_' and '-'"
-            exit 1
+          # Artifact and cache names can't hold every character a Git ref
+          # can (e.g. `/`), so they use a slug. A ref that needed changing
+          # gets a hash suffix, so two refs never share a slug.
+          slug="${NEXT_REF//[^A-Za-z0-9._-]/-}"
+          if [ "${slug}" != "${NEXT_REF}" ]; then
+            slug="${slug}-$(printf '%s' "${NEXT_REF}" | sha256sum | cut -c1-8)"
           fi
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
           results=false
           classify=false
           if [ "${SUITE_FILTER}" = all ] && [ -z "${TEST_PATH}" ] && [ "${RUN_SKIPPED}" != true ] \
@@ -309,7 +314,10 @@ jobs:
           '
           CLASSIFY_URL="${COMPAT_INGEST_URL%/api/compatibility}/api/compatibility/classify"
           echo "Submitting classifications to ${CLASSIFY_URL}"
+          # Retries cover transient 5xx responses, including the few minutes
+          # between a web deploy's D1 migration and its Worker going live.
           if ! curl --silent --show-error --fail-with-body \
+            --retry 10 --retry-delay 60 \
             -X POST "${CLASSIFY_URL}" \
             -H "Content-Type: application/json" \
             -H "X-Compat-Secret: ${COMPAT_INGEST_SECRET}" \
@@ -323,7 +331,7 @@ jobs:
       - name: Upload suite router classification
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: nextjs-suite-routers-${{ inputs.next-ref }}
+          name: nextjs-suite-routers-${{ steps.publish.outputs.slug }}
           path: |
             nextjs-suite-routers.json
             nextjs-classify-payload.json
@@ -341,7 +349,7 @@ jobs:
             .
             ~/.cache/ms-playwright
             nextjs-deploy-manifest.json
-          key: nextjs-deploy-build-${{ github.sha }}-${{ github.run_id }}-${{ inputs.next-ref }}
+          key: nextjs-deploy-build-${{ github.sha }}-${{ github.run_id }}-${{ steps.publish.outputs.slug }}
 
   test:
     name: Deploy suite (${{ matrix.group }})
@@ -381,7 +389,7 @@ jobs:
             .
             ~/.cache/ms-playwright
             nextjs-deploy-manifest.json
-          key: nextjs-deploy-build-${{ github.sha }}-${{ github.run_id }}-${{ inputs.next-ref }}
+          key: nextjs-deploy-build-${{ github.sha }}-${{ github.run_id }}-${{ needs.build.outputs.slug }}
 
       - uses: ./.github/actions/setup
         with:
@@ -434,7 +442,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-results-${{ inputs.next-ref }}-${{ strategy.job-index }}
+          name: test-results-${{ needs.build.outputs.slug }}@${{ strategy.job-index }}
           path: next.js/test/**/*.results.json
           if-no-files-found: ignore
           retention-days: 14
@@ -443,7 +451,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: deploy-debug-${{ inputs.next-ref }}-${{ strategy.job-index }}
+          name: deploy-debug-${{ needs.build.outputs.slug }}@${{ strategy.job-index }}
           path: reports/nextjs-deploy-debug/
           # e2e-deploy.sh and e2e-cleanup.sh preserve .vinext-deploy-*.log files.
           include-hidden-files: true
@@ -455,12 +463,12 @@ jobs:
     needs: [build, test]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15 # includes up to 10 minutes of ingest retries
     steps:
       - name: Download all test results
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: test-results-${{ inputs.next-ref }}-*
+          pattern: test-results-${{ needs.build.outputs.slug }}@*
           path: results
           merge-multiple: true
 
@@ -674,7 +682,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: deploy-suite-report-${{ inputs.next-ref }}
+          name: deploy-suite-report-${{ needs.build.outputs.slug }}
           # Include both files: the human-readable report and the
           # /compatibility ingest payload. Keeping the ingest payload
           # archived lets us manually re-POST a run if the live ingest
@@ -707,7 +715,10 @@ jobs:
           # --fail-with-body keeps stdout/stderr but exits non-zero on HTTP errors.
           # We still don't want the report job to fail if ingest hiccups, so trap
           # the exit and just log.
+          # Retries cover transient 5xx responses, including the few minutes
+          # between a web deploy's D1 migration and its Worker going live.
           if ! curl --silent --show-error --fail-with-body \
+            --retry 10 --retry-delay 60 \
             -X POST "${COMPAT_INGEST_URL}" \
             -H "Content-Type: application/json" \
             -H "X-Compat-Secret: ${COMPAT_INGEST_SECRET}" \

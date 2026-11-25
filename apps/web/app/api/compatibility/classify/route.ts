@@ -78,8 +78,11 @@ function isValidBody(body: unknown): body is SubmitBody {
   if (!isValidNextRef(b.nextRef)) return false;
   if (b.classifiedAt !== undefined) {
     if (typeof b.classifiedAt !== "number") return false;
-    if (!Number.isFinite(b.classifiedAt)) return false;
+    if (!Number.isSafeInteger(b.classifiedAt)) return false;
     if (b.classifiedAt < MIN_CLASSIFIED_AT_MS) return false;
+    // Older submissions never replace a stored row, so a future timestamp
+    // would block every later classification.
+    if (b.classifiedAt > Date.now()) return false;
   }
   if (!Array.isArray(b.suites)) return false;
   if (b.suites.length === 0) return false;

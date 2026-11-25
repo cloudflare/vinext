@@ -62,6 +62,16 @@ describe("POST /api/compatibility/classify", () => {
     expect(setWhere).toBeDefined();
   });
 
+  it.each([Date.now() + 86_400_000, 1_790_000_000_000.5])(
+    "rejects an invalid classification time: %s",
+    async (classifiedAt) => {
+      const response = await POST(request({ classifiedAt }));
+
+      expect(response.status).toBe(400);
+      expect(getDb).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([undefined, "", "refs/heads/canary"])(
     "rejects an invalid Next.js version: %s",
     async (nextRef) => {
