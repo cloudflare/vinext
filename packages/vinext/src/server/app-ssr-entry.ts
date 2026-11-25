@@ -1175,9 +1175,9 @@ export async function handleSsr(
         // By that point React Fizz has rendered the layout's `<head>` children
         // (which is where the Script shim registers), so the captured array is
         // populated. We deliberately return a snapshot — `flushBuffered` will
-        // not re-invoke us. A beforeInteractive Script that renders later
-        // (inside a Suspense boundary that resolves after the shell) still
-        // registers and returns null, so it is never emitted. A render that
+        // not re-invoke us. A beforeInteractive Script that renders after this
+        // snapshot (for example inside a Suspense boundary that resolves
+        // later) still registers and returns null, so it is never emitted. A render that
         // waits for `allReady` first registers every such Script before this
         // runs. Next.js renders a late Script's queue push in place, but its
         // bootstrap has usually drained the queue by then, so it doesn't run
