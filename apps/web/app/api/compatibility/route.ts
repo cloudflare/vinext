@@ -21,6 +21,7 @@
  *     nextRef: string,        // Next.js ref tested, e.g. v16.2.6; one series per ref
  *     commitSha?: string,
  *     createdAt?: number,     // Unix millis; authenticated historical backfills only
+ *     startedAt?: number,     // Unix millis the workflow run started; orders the run
  *     files: Array<{
  *       suite: string,        // test file path; joins to compat_suite_meta.suite
  *       total: number,
@@ -54,6 +55,7 @@ type SubmitBody = {
   nextRef: string;
   commitSha?: string;
   createdAt?: number;
+  startedAt?: number;
   files: SubmitFile[];
 };
 
@@ -71,6 +73,12 @@ function deriveStatus(f: SubmitFile): FileStatus {
   return "skip";
 }
 
+function isPastTimestamp(value: unknown): value is number {
+  return (
+    typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= Date.now()
+  );
+}
+
 function isValidBody(body: unknown): body is SubmitBody {
   if (!body || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
@@ -78,15 +86,11 @@ function isValidBody(body: unknown): body is SubmitBody {
   if (typeof b.runKey !== "string" || b.runKey.length === 0) return false;
   if (!isValidNextRef(b.nextRef)) return false;
   if (b.createdAt === undefined && b.runKey.startsWith("backfill:")) return false;
+  if (b.startedAt !== undefined) {
+    if (b.createdAt !== undefined || !isPastTimestamp(b.startedAt)) return false;
+  }
   if (b.createdAt !== undefined) {
-    if (
-      typeof b.createdAt !== "number" ||
-      !Number.isSafeInteger(b.createdAt) ||
-      b.createdAt <= 0 ||
-      b.createdAt > Date.now()
-    ) {
-      return false;
-    }
+    if (!isPastTimestamp(b.createdAt)) return false;
     const timestamp = new Date(b.createdAt).toISOString();
     if (
       !timestamp.endsWith("T02:00:00.000Z") ||
@@ -138,7 +142,10 @@ export async function POST(request: Request): Promise<Response> {
 
 async function writeRun(body: SubmitBody): Promise<Response> {
   const db = getDb();
-  const createdAt = body.createdAt ?? Date.now();
+  // Runs are ordered by when their workflow started, not when they finish,
+  // so an older run that overlaps a newer one and posts later doesn't become
+  // the latest run.
+  const createdAt = body.createdAt ?? body.startedAt ?? Date.now();
 
   // Aggregate totals.
   let total = 0;

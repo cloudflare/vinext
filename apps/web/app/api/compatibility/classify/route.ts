@@ -21,14 +21,19 @@
  * Body:
  *   {
  *     nextRef: string,              // Next.js ref the checkout was at, e.g. v16.2.6
- *     classifiedAt?: number,        // optional unix millis; defaults to now
+ *     classifiedAt?: number,        // optional unix millis; defaults to now. The
+ *                                   // workflow sends its run's start time.
  *     suites: Array<{
  *       suite: string,              // test file path
  *       router: "app" | "pages" | "both" | "unknown",
  *     }>,
  *   }
  *
- * Returns `{ ok: true, upserted: N }`.
+ * A row whose stored `classifiedAt` is newer than the submission's is left
+ * as is, so an older workflow run that overlaps a newer one and posts later
+ * can't replace the newer classifications.
+ *
+ * Returns `{ ok: true, upserted: N }`, where N counts the rows submitted.
  */
 import { sql } from "drizzle-orm";
 import { isValidNextRef } from "../../../lib/compat-version";
@@ -156,6 +161,7 @@ async function writeClassifications(body: SubmitBody): Promise<Response> {
             router: sqlExcluded("router"),
             classifiedAt: sqlExcluded("classified_at"),
           },
+          setWhere: sql`${sqlExcluded("classified_at")} >= ${compatSuiteMeta.classifiedAt}`,
         }),
     );
   }

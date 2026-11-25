@@ -18,7 +18,7 @@ export async function GET(request: Request): Promise<Response> {
   return tracing.enterSpan("vinext.web.compatibilityFailures", async () => {
     const searchParams = new URL(request.url).searchParams;
     const kind = searchParams.get("kind")?.trim() || DEFAULT_KIND;
-    const nextRef = resolveNextRef(searchParams.get("version"));
+    const nextRef = resolveNextRef(searchParams);
 
     try {
       const db = getDb();

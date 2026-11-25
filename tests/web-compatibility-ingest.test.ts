@@ -100,6 +100,36 @@ describe("POST /api/compatibility", () => {
     );
   });
 
+  it("orders a live run by when its workflow started", async () => {
+    const startedAt = Date.now() - 600_000;
+    const { db, inserted } = createDb();
+    getDb.mockReturnValue(db);
+
+    const response = await POST(request(undefined, false, { startedAt }));
+
+    expect(response.status).toBe(200);
+    expect(inserted[0]).toMatchObject({ createdAt: startedAt });
+  });
+
+  it.each([Date.now() + 86_400_000, 1.5, 0])(
+    "rejects an invalid run start: %s",
+    async (startedAt) => {
+      const response = await POST(request(undefined, false, { startedAt }));
+
+      expect(response.status).toBe(400);
+      expect(getDb).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a run start alongside a backfill date", async () => {
+    const response = await POST(
+      request(Date.parse("2026-04-01T02:00:00Z"), true, { startedAt: Date.now() - 600_000 }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(getDb).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "", "refs/heads/canary", "v".repeat(65)])(
     "rejects an invalid Next.js version: %s",
     async (nextRef) => {

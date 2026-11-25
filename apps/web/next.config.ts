@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { NEXT_REF_PATTERN_SOURCE } from "./app/lib/compat-version";
 
 const nextConfig: NextConfig = {
   async rewrites() {
@@ -9,7 +10,7 @@ const nextConfig: NextConfig = {
       beforeFiles: [
         {
           source: "/compatibility",
-          has: [{ type: "query", key: "version", value: "(?<version>[A-Za-z0-9._-]+)" }],
+          has: [{ type: "query", key: "version", value: `(?<version>${NEXT_REF_PATTERN_SOURCE})` }],
           destination: "/compatibility/version/:version",
         },
       ],

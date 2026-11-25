@@ -9,17 +9,23 @@
 export const PUBLIC_NEXT_REF = "v16.2.6";
 
 /**
- * Next.js refs accepted on the wire. The workflow uses the ref in artifact
- * names, so it already only produces these characters.
+ * Next.js refs accepted on the wire and by `?version=`. The /compatibility
+ * rewrite in next.config.ts matches the same pattern. The workflow uses the
+ * ref in artifact names, so it already only produces these characters.
  */
-const NEXT_REF_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+export const NEXT_REF_PATTERN_SOURCE = "[A-Za-z0-9._-]{1,64}";
+const NEXT_REF_PATTERN = new RegExp(`^${NEXT_REF_PATTERN_SOURCE}$`);
 
 export function isValidNextRef(value: unknown): value is string {
   return typeof value === "string" && NEXT_REF_PATTERN.test(value);
 }
 
-/** The version a `?version=` value selects, defaulting to the public one. */
-export function resolveNextRef(value: string | null | undefined): string {
-  const ref = value?.trim();
-  return ref || PUBLIC_NEXT_REF;
+/**
+ * The version `?version=` selects, matching the /compatibility rewrite: the
+ * last `version` value wins (as in Next.js `has` matching), and anything
+ * outside the pattern falls back to the public version.
+ */
+export function resolveNextRef(searchParams: URLSearchParams): string {
+  const ref = searchParams.getAll("version").at(-1);
+  return isValidNextRef(ref) ? ref : PUBLIC_NEXT_REF;
 }

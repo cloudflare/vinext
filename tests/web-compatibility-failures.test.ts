@@ -113,20 +113,23 @@ describe("GET /api/compatibility/failures", () => {
     });
   });
 
-  it("reads the Next.js version selected by ?version=", async () => {
+  it.each([
+    ["version=v16.4.6", "v16.4.6"],
+    // Like the /compatibility rewrite, the last value wins...
+    ["version=v16.2.6&version=v16.4.6", "v16.4.6"],
+    // ...and a value the rewrite doesn't match selects the public version.
+    ["version=bad%2Fref", "v16.2.6"],
+    ["version=", "v16.2.6"],
+    [`version=${"v".repeat(65)}`, "v16.2.6"],
+  ])("selects the Next.js version for ?%s", async (query, nextRef) => {
     getDb.mockReturnValue(createDb([[]]));
 
     const response = await GET(
-      new Request("https://example.com/api/compatibility/failures?version=v16.4.6"),
+      new Request(`https://example.com/api/compatibility/failures?${query}`),
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      kind: "deploy",
-      nextRef: "v16.4.6",
-      run: null,
-      failures: [],
-    });
+    expect(await response.json()).toEqual({ kind: "deploy", nextRef, run: null, failures: [] });
   });
 
   it("returns 500 when the database query fails", async () => {
