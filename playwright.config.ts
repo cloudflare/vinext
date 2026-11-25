@@ -117,6 +117,7 @@ const projectServers = {
       "app-router-prod/prefetched-shell-async-metadata.spec.ts",
       "app-router-prod/soft-nav-rsc-cache.spec.ts",
       "app-router-prod/rsc-miss-document.spec.ts",
+      "app-router-prod/every-param-cache.spec.ts",
       "app-router-prod/image-local-patterns.spec.ts",
       "app-router-prod/image-source-cache-control.spec.ts",
       "app-router/font-navigation.spec.ts",

@@ -10,6 +10,7 @@ import {
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageGenerateStaticParamsSources,
   validateAppPageDynamicParams,
+  checkAppPageRouteDynamicParams,
   validateAppPageRouteDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
 import {
@@ -141,6 +142,127 @@ describe("app page request helpers", () => {
     expect(ids).toHaveBeenLastCalledWith({ params: { slug: "acme" } });
     // `other` keeps a row without `id`, so its params render.
     expect(await check({ id: "2", slug: "other" })).toBeNull();
+  });
+
+  // A route vinext stores only when Next.js prerenders it: every parent's rows
+  // have every param. A match confirms that by running the other parents'
+  // generators once, reusing the request's results.
+  it("confirms every parent's rows have every param for a match", async () => {
+    const ids = vi.fn(async ({ params }: { params: Record<string, unknown> }) =>
+      params.slug === "acme" ? [{ id: "1" }] : params.slug === "beta" ? [{ id: "3" }] : [],
+    );
+    const check = (
+      params: { id: string; slug: string },
+      slugs: readonly Record<string, string>[],
+      confirmEveryParamGenerated = true,
+    ) =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          checkAppPageRouteDynamicParams({
+            confirmEveryParamGenerated,
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                chained: true,
+                generateStaticParams: async () => slugs,
+                parentParamNames: [],
+              },
+              { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
+            ],
+            hasGenerateStaticParams: false,
+            isStaticParamsOnlyAtLastDynamicSegment: true,
+            isDynamicRoute: true,
+            isProduction: true,
+            params,
+            pathname: `/club/${params.slug}/pics/${params.id}`,
+            routePattern: "/club/:slug/pics/:id",
+            routeSegments: ["club", "[slug]", "(group)", "pics", "[id]"],
+          }),
+        ),
+      );
+
+    const complete = await check({ id: "1", slug: "acme" }, [{ slug: "acme" }, { slug: "beta" }]);
+    expect(complete).toEqual({ response: null, generatesEveryParam: true });
+    expect(ids.mock.calls.map(([{ params }]) => params.slug)).toEqual(["acme", "beta"]);
+
+    // `other` generates a row without `id`, so Next.js prerenders nothing.
+    ids.mockClear();
+    const mixed = await check({ id: "1", slug: "acme" }, [{ slug: "acme" }, { slug: "other" }]);
+    expect(mixed).toEqual({ response: null, generatesEveryParam: false });
+
+    // A miss is a 404 from the request's rows alone.
+    ids.mockClear();
+    const miss = await check({ id: "2", slug: "acme" }, [{ slug: "acme" }, { slug: "beta" }]);
+    expect(miss.response?.status).toBe(404);
+    expect(miss.generatesEveryParam).toBe(false);
+    expect(ids).toHaveBeenCalledTimes(1);
+
+    // Without the option, a match runs only the request's generators.
+    ids.mockClear();
+    const unconfirmed = await check(
+      { id: "1", slug: "acme" },
+      [{ slug: "acme" }, { slug: "beta" }],
+      false,
+    );
+    expect(unconfirmed).toEqual({ response: null, generatesEveryParam: false });
+    expect(ids).toHaveBeenCalledTimes(1);
+
+    // Another parent's generator failing leaves the match to render uncached.
+    ids.mockClear();
+    ids.mockImplementation(async ({ params }) => {
+      if (params.slug === "beta") throw new Error("beta failed");
+      return [{ id: "1" }];
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failed = await check({ id: "1", slug: "acme" }, [{ slug: "acme" }, { slug: "beta" }]);
+      expect(failed).toEqual({ response: null, generatesEveryParam: false });
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  // Next.js runs every slot's generators in one chain, where a later slot's
+  // generator can leave a row without a param that vinext's separate chains
+  // never see, so vinext doesn't store such a route.
+  it("never confirms a route whose parallel route slots export generators", async () => {
+    const check = (params: { a: string; b: string }) =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          checkAppPageRouteDynamicParams({
+            confirmEveryParamGenerated: true,
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                generateStaticParams: async () => [{ a: "x" }, { a: "y" }],
+                independentChain: 0,
+                parentParamNames: [],
+              },
+              {
+                generateStaticParams: async ({ params: parent }) =>
+                  parent.a === "x" ? [{ b: "1" }] : [],
+                independentChain: 1,
+                parentParamNames: ["a"],
+              },
+            ],
+            hasGenerateStaticParams: false,
+            isStaticParamsOnlyAtLastDynamicSegment: true,
+            isDynamicRoute: true,
+            isProduction: true,
+            params,
+            pathname: `/${params.a}/${params.b}`,
+            routePattern: "/:a/:b",
+            routeSegments: ["[a]", "[b]"],
+          }),
+        ),
+      );
+
+    expect(await check({ a: "x", b: "1" })).toEqual({
+      response: null,
+      generatesEveryParam: false,
+    });
+    expect((await check({ a: "x", b: "2" })).response?.status).toBe(404);
   });
 
   it("decides a miss under a parent no generator gives from every parent's rows", async () => {

@@ -514,6 +514,7 @@ For on-demand revalidation, call `await res.revalidate("/")` in a Pages Router A
 vinext stores a rendered App Router page (ISR) when Next.js would treat its route as static or SSG:
 
 - a route without dynamic segments, or a dynamic route whose `generateStaticParams` covers its last dynamic segment, is static unless its render uses a dynamic API. Returning `[]` from `generateStaticParams` opts every path into on-demand ISR, unless `dynamicParams = false`;
+- a dynamic route whose last dynamic segment has no `generateStaticParams` is SSG when its layouts' generators give every row every param. vinext caches such a route only when `dynamicParams = false` is set at or below that segment, once a request shows every row has every param;
 - `dynamic = "force-dynamic"`, `revalidate = 0` or an edge `runtime` makes a route dynamic. Otherwise, `dynamic = "force-static"` or `dynamic = "error"` makes it static.
 
 Other routes render on every request. Their `"use cache"` functions and cached `fetch` calls are still reused. Routes built with `cacheComponents` follow their own rules, and [Differences from Next.js](/docs/reference/differences#caching) lists the cases where vinext classifies a route differently.

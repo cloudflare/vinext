@@ -4025,7 +4025,7 @@ describe("app page dispatch", () => {
       }
     });
 
-    // vinext can't cache such a route, so learning whether its generators
+    // vinext never stores such a route, so learning whether its generators
     // give every param would run them on each request.
     it("runs no generator when dynamicParams = false is set only above the last dynamic segment", async () => {
       const generateStaticParams = vi.fn(async () => [{ id: "1", slug: "acme" }]);
@@ -4051,6 +4051,193 @@ describe("app page dispatch", () => {
         generators,
       );
       expect(forceStatic.status).toBe(404);
+    });
+
+    // Next.js prerenders such a route, so vinext stores a production miss
+    // once its check shows every parent's rows have every param, and serves
+    // the entry without running a generator.
+    it("stores a route whose generators give every param and serves it without running them", async () => {
+      const cache = new Map<string, ISRCacheEntry>();
+      const isrGet = vi.fn<DispatchOptions["isrGet"]>(async (key) => cache.get(key) ?? null);
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
+        cache.set(key, { isStale: false, value: { lastModified: Date.now(), value: data } });
+      });
+      const generateStaticParams = vi.fn(async () => [
+        { id: "1", slug: "acme" },
+        { id: "3", slug: "beta" },
+      ]);
+      const generators = [{ chained: true as const, generateStaticParams, parentParamNames: [] }];
+      const dispatch = async (overrides: CreateDispatchOptionsOverrides = {}) => {
+        const waitUntilPromises: Promise<unknown>[] = [];
+        const context: ExecutionContextLike = {
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        };
+        const response = await runWithExecutionContext(context, () =>
+          dispatchClub(
+            "1",
+            { hasAnyGenerateStaticParams: true, isProduction: true, isrGet, isrSet, ...overrides },
+            generators,
+          ),
+        );
+        await response.text();
+        await Promise.all(waitUntilPromises);
+        return response;
+      };
+
+      const miss = await dispatch();
+      expect(miss.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(isrSet).toHaveBeenCalledWith(
+        "html:/club/acme/pics/1",
+        expect.objectContaining({ kind: "APP_PAGE" }),
+        expect.anything(),
+      );
+      expect(generateStaticParams).toHaveBeenCalledTimes(1);
+
+      const hit = await dispatch();
+      expect(hit.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(generateStaticParams).toHaveBeenCalledTimes(1);
+
+      // A POST renders without the cache, as Next.js renders it.
+      isrGet.mockClear();
+      isrSet.mockClear();
+      const post = await dispatch({
+        request: new Request("https://example.test/club/acme/pics/1", { method: "POST" }),
+      });
+      expect(post.status).toBe(200);
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    it("never stores a route whose generators give a row without a param", async () => {
+      const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const context: ExecutionContextLike = {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      };
+      const response = await runWithExecutionContext(context, () =>
+        dispatchClub(
+          "1",
+          { hasAnyGenerateStaticParams: true, isProduction: true, isrGet, isrSet },
+          [ownerGenerator([{ id: "1", slug: "acme" }, { slug: "other" }])],
+        ),
+      );
+      await response.text();
+      await Promise.all(waitUntilPromises);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    it("never stores a route where another parent's rows lack a param", async () => {
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const ids = vi.fn(async ({ params }: { params: Record<string, unknown> }) =>
+        params.slug === "acme" ? [{ id: "1" }] : [],
+      );
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const context: ExecutionContextLike = {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      };
+      const response = await runWithExecutionContext(context, () =>
+        dispatchClub(
+          "1",
+          {
+            hasAnyGenerateStaticParams: true,
+            isProduction: true,
+            isrGet: async () => null,
+            isrSet,
+          },
+          [
+            ownerGenerator([{ slug: "acme" }, { slug: "other" }]),
+            { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
+          ],
+        ),
+      );
+      await response.text();
+      await Promise.all(waitUntilPromises);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(ids.mock.calls.map(([{ params }]) => params.slug)).toEqual(["acme", "other"]);
+      expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    // A stored payload stays whole for every client that reads it.
+    it("renders every layout for a navigation it stores", async () => {
+      const mountedLayoutsFor = async (rows: Record<string, string>[]) => {
+        const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+          React.createElement("main", null, "page"),
+        );
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const waitUntilPromises: Promise<unknown>[] = [];
+        const context: ExecutionContextLike = {
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        };
+        const response = await runWithExecutionContext(context, () =>
+          dispatchClub(
+            "1",
+            {
+              buildPageElement,
+              hasAnyGenerateStaticParams: true,
+              isProduction: true,
+              isRscRequest: true,
+              isrGet: async () => null,
+              isrSet,
+              request: new Request("https://example.test/club/acme/pics/1", {
+                headers: { [VINEXT_MOUNTED_LAYOUTS_HEADER]: "0123456789abcdef" },
+              }),
+            },
+            [ownerGenerator(rows)],
+          ),
+        );
+        await response.text();
+        await Promise.all(waitUntilPromises);
+        const mountedLayouts = buildPageElement.mock.calls[0]?.[4]?.mountedLayouts;
+        return { mountedLayouts: mountedLayouts ? [...mountedLayouts] : null, isrSet };
+      };
+
+      const stored = await mountedLayoutsFor([{ id: "1", slug: "acme" }]);
+      expect(stored.mountedLayouts).toBeNull();
+      expect(stored.isrSet).toHaveBeenCalledWith(
+        "rsc:/club/acme/pics/1",
+        expect.anything(),
+        expect.anything(),
+      );
+      const mixed = await mountedLayoutsFor([{ id: "1", slug: "acme" }, { slug: "other" }]);
+      expect(mixed.mountedLayouts).toEqual(["0123456789abcdef"]);
+      expect(mixed.isrSet).not.toHaveBeenCalled();
+    });
+
+    it("reports the route's generators to the deploy probe", async () => {
+      for (const [rows, expected] of [
+        [[{ id: "1", slug: "acme" }], undefined],
+        [[{ id: "1", slug: "acme" }, { slug: "other" }], "route is not statically generated"],
+      ] as const) {
+        const context: ExecutionContextLike = { waitUntil() {} };
+        const state: RouteCacheabilityState = {
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "probe",
+        };
+        Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+        const response = await runWithExecutionContext(context, () =>
+          dispatchClub("1", { hasAnyGenerateStaticParams: true, isProduction: true }, [
+            ownerGenerator([...rows]),
+          ]),
+        );
+        await response.text();
+        expect(state.patternDynamicReason).toBe(expected);
+      }
     });
 
     it("renders any params when one generated row lacks a param", async () => {

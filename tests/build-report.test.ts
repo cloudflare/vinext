@@ -13,6 +13,7 @@ import {
   hasExportedName,
   hasNamedExport,
   extractExportConstString,
+  extractExportConstBoolean,
   extractExportConstNumber,
   extractGetStaticPropsRevalidate,
   classifyPagesRoute,
@@ -148,6 +149,26 @@ export const dynamic = "force-dynamic";
 
   it("returns null for non-string value", () => {
     expect(extractExportConstString("export const revalidate = 60;", "revalidate")).toBeNull();
+  });
+});
+
+// ─── extractExportConstBoolean ────────────────────────────────────────────────
+
+describe("extractExportConstBoolean", () => {
+  it("extracts true and false, through a TypeScript annotation", () => {
+    expect(extractExportConstBoolean("export const dynamicParams = false;", "dynamicParams")).toBe(
+      false,
+    );
+    expect(
+      extractExportConstBoolean("export const dynamicParams: boolean = true;", "dynamicParams"),
+    ).toBe(true);
+  });
+
+  it("returns null for a missing or non-boolean export", () => {
+    expect(extractExportConstBoolean("export const revalidate = 60;", "dynamicParams")).toBeNull();
+    expect(
+      extractExportConstBoolean('export const dynamicParams = "false";', "dynamicParams"),
+    ).toBeNull();
   });
 });
 

@@ -640,6 +640,59 @@ describe("prerender path manifest", () => {
     },
   );
 
+  it("lists the paths of a route whose layout generator gives every param under dynamicParams = false", async () => {
+    // app/[lang]/[slug]/page.tsx has no generator, so Next.js prerenders the
+    // route only because its rows have every param. dynamicParams = false at
+    // the page lets vinext's request check store it; set only on the [lang]
+    // layout, vinext never checks the route, so it stays unlisted.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    for (const [folder, page, layout] of [
+      ["page-false", "export const dynamicParams = false;\n", ""],
+      ["layout-false", "", "export const dynamicParams = false;\n"],
+    ]) {
+      writeFile(
+        `app/${folder}/[lang]/layout.tsx`,
+        [
+          layout,
+          "export function generateStaticParams() { return [{ lang: 'en', slug: 'a' }]; }",
+          "export default function Layout({ children }) { return children; }",
+        ].join("\n"),
+      );
+      writeFile(
+        `app/${folder}/[lang]/[slug]/page.tsx`,
+        `${page}export default function Page() { return null; }\n`,
+      );
+    }
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pattern = new URL(
+        input instanceof Request ? input.url : String(input),
+      ).searchParams.get("pattern");
+      if (pattern?.startsWith("layouts:") && pattern.endsWith("[lang]")) {
+        return Response.json([{ lang: "en", slug: "a" }]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(
+      expect.arrayContaining(["/page-false/en/a", "/layout-false/en/a"]),
+    );
+    const unlisted = (pathname: string) =>
+      manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.unlisted;
+    expect(unlisted("/page-false/en/a")).toBeUndefined();
+    expect(unlisted("/layout-false/en/a")).toBe(true);
+  });
+
   it("passes a nested dynamic route only its layouts' params as parent params", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
