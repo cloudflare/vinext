@@ -46,9 +46,37 @@ function canonical(file: string): string {
 
 type DevStackMiddleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
 
+// The config fields that Vite's isFileLoadingAllowed() reads.
+type FileAccessConfig = {
+  server: { fs: { strict: boolean; allow?: string[] } };
+  fsDenyGlob?: (file: string) => boolean;
+  safeModulePaths?: Set<string>;
+};
+
+// Strict fs access that allows only the given safe module paths.
+function strictFileAccess(safeModulePaths: string[] = []): FileAccessConfig {
+  return {
+    server: { fs: { strict: true, allow: [] } },
+    fsDenyGlob: () => false,
+    safeModulePaths: new Set(safeModulePaths),
+  };
+}
+
+// Non-strict fs lets every in-root path through isFileLoadingAllowed.
+// The fs.allow/deny gate is covered against a real Vite dev server in
+// tests/e2e/app-with-src/original-stack-trace-fs-access.spec.ts.
+const NON_STRICT_FILE_ACCESS: FileAccessConfig = { server: { fs: { strict: false } } };
+
 function createServer(
   sourceMap: SourceMapPayload | null = SOURCE_MAP,
-  options: { root?: string; resolveId?: (id: string) => string } = {},
+  options: {
+    root?: string;
+    resolveId?: (id: string) => string;
+    // Vite 8.4 resolves file access per environment, so the client environment
+    // and the top-level config can disagree.
+    clientFileAccess?: FileAccessConfig;
+    topLevelFileAccess?: FileAccessConfig;
+  } = {},
 ): {
   server: ViteDevServer;
   transformRequests: string[];
@@ -59,7 +87,7 @@ function createServer(
   const server = {
     environments: {
       client: {
-        config: { server: { fs: { strict: false } } },
+        config: options.clientFileAccess ?? NON_STRICT_FILE_ACCESS,
         async transformRequest(viteUrl: string) {
           transformRequests.push(`client:${viteUrl}`);
           return { map: sourceMap };
@@ -79,10 +107,7 @@ function createServer(
     },
     config: {
       root: options.root ?? "/repo/app",
-      // Non-strict fs lets every in-root path through isFileLoadingAllowed.
-      // The fs.allow/deny gate is covered against a real Vite dev server in
-      // tests/e2e/app-with-src/original-stack-trace-fs-access.spec.ts.
-      server: { fs: { strict: false } },
+      ...(options.topLevelFileAccess ?? NON_STRICT_FILE_ACCESS),
     },
     middlewares: {
       use(handler: DevStackMiddleware) {
@@ -613,6 +638,41 @@ describe("mapStackLine", () => {
       new Map<string, Promise<SourceMapPayload | null>>(),
     );
     expect(transformRequests).toEqual([`rsc:${canonical("/repo/app/a.js")}`]);
+  });
+
+  it("server-transforms a local filesystem frame that the client environment allows", async () => {
+    // Vite 8.4 keeps safe module paths per environment. The mapped frame goes
+    // to the browser, so the client environment's file access decides, even
+    // when the top-level config would refuse the file.
+    const file = canonical("/repo/app/app/_components/site-footer.tsx");
+    const { server, transformRequests } = createServer(SOURCE_MAP, {
+      clientFileAccess: strictFileAccess([file]),
+      topLevelFileAccess: strictFileAccess(),
+    });
+
+    await mapStackLineForTest(
+      server,
+      "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)",
+      undefined,
+      new Map<string, Promise<SourceMapPayload | null>>(),
+    );
+    expect(transformRequests).toEqual([`rsc:${file}`]);
+  });
+
+  it("does not server-transform a local filesystem frame that only the top-level config allows", async () => {
+    const file = canonical("/repo/app/app/_components/site-footer.tsx");
+    const { server, transformRequests } = createServer(SOURCE_MAP, {
+      clientFileAccess: strictFileAccess(),
+      topLevelFileAccess: strictFileAccess([file]),
+    });
+
+    await mapStackLineForTest(
+      server,
+      "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)",
+      undefined,
+      new Map<string, Promise<SourceMapPayload | null>>(),
+    );
+    expect(transformRequests).toEqual([]);
   });
 
   it("does not server-transform local filesystem frames that resolve to virtual modules", async () => {
