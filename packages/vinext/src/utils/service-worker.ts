@@ -15,11 +15,24 @@ export const SERVICE_WORKER_URL_DIR = `${ASSET_PREFIX_URL_DIR}/service-worker`;
 export const SERVICE_WORKER_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 /**
+ * `value` without trailing slashes, and without leading ones too when
+ * `leading` is set. A loop rather than a regex, which would be polynomial on
+ * long runs of `/`.
+ */
+export function trimSlashes(value: string, leading = false): string {
+  let start = 0;
+  let end = value.length;
+  if (leading) while (start < end && value[start] === "/") start++;
+  while (end > start && value[end - 1] === "/") end--;
+  return value.slice(start, end);
+}
+
+/**
  * The directory, relative to the client build directory and with a trailing
  * slash, that holds the service workers of an app with this `basePath`.
  */
 export function serviceWorkerOutputDir(basePath: string): string {
-  const baseDir = basePath.replace(/^\/+|\/+$/g, "");
+  const baseDir = trimSlashes(basePath, true);
   return `${baseDir ? `${baseDir}/` : ""}${SERVICE_WORKER_URL_DIR}/`;
 }
 

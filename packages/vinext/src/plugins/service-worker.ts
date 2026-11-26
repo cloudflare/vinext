@@ -35,6 +35,7 @@ import {
   SERVICE_WORKER_URL_DIR,
   serviceWorkerAllowedHeader,
   serviceWorkerOutputDir,
+  trimSlashes,
 } from "../utils/service-worker.js";
 import {
   isIdentifierNamed,
@@ -57,7 +58,7 @@ const URL_SCHEME_RE = /^[a-z][a-z\d+.-]*:/i;
  * stable and distinct, so a truncated SHA-256 is used here.)
  */
 export function serviceWorkerFileName(scope: string): string {
-  const trimmed = scope.replace(/^\/+|\/+$/g, "");
+  const trimmed = trimSlashes(scope, true);
   if (!trimmed) return "sw.js";
   const slug = trimmed.replace(/[^a-zA-Z0-9_-]/g, "-");
   const hash = createHash("sha256").update(trimmed).digest("hex").slice(0, 16);
@@ -66,14 +67,14 @@ export function serviceWorkerFileName(scope: string): string {
 
 /** The scope a worker registered at `scope` gets once `basePath` is applied. */
 function serviceWorkerScopeWithBasePath(scope: string, basePath: string): string {
-  const base = basePath.replace(/\/+$/, "");
+  const base = trimSlashes(basePath);
   if (scope === DEFAULT_SCOPE) return base || DEFAULT_SCOPE;
   return `${base}${scope}`;
 }
 
 /** The URL pathname a worker registered at `scope` is served at. */
 function serviceWorkerUrl(scope: string, basePath: string): string {
-  return `${basePath.replace(/\/+$/, "")}/${SERVICE_WORKER_URL_DIR}/${serviceWorkerFileName(scope)}`;
+  return `${trimSlashes(basePath)}/${SERVICE_WORKER_URL_DIR}/${serviceWorkerFileName(scope)}`;
 }
 
 export type ServiceWorkerRegistrationCall = {
