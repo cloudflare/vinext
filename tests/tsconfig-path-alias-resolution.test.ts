@@ -25,7 +25,7 @@ import path from "node:path";
 import { createBuilder, createServer, type AliasOptions } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { startFixtureServer, fetchHtml } from "./helpers.js";
+import { buildPagesFixture, startFixtureServer, fetchHtml } from "./helpers.js";
 
 const tmpDirs: string[] = [];
 
@@ -402,4 +402,44 @@ export default function Layout({ children }) { return <html><body>{children}</bo
     },
     120_000,
   );
+});
+
+// Ported from Next.js: test/e2e/typescript-paths/test/index.test.ts
+// https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/typescript-paths/test/index.test.ts
+// Next.js tries every `paths` target in order and never resolves to a `.d.ts`
+// target (webpack: build/webpack/plugins/jsconfig-paths-plugin.ts; Turbopack:
+// turbopack/crates/turbopack-resolve/src/typescript.rs).
+describe("tsconfig path targets (fallbacks and .d.ts)", () => {
+  const fixtureDir = path.resolve(import.meta.dirname, "fixtures/tsconfig-paths-fallbacks");
+  const pages = [
+    ["/resolve-order", "Hello from a"],
+    ["/resolve-fallback", "Hello from only b"],
+    ["/alias-to-d-ts", "Not aliased to d.ts file"],
+  ] as const;
+
+  it("resolves the first matching target and skips .d.ts targets in dev", async () => {
+    const { server, baseUrl } = await startFixtureServer(fixtureDir);
+    try {
+      const results = [];
+      for (const [pathname, text] of pages) {
+        const { res, html } = await fetchHtml(baseUrl, pathname);
+        results.push([pathname, res.status, html.includes(text)]);
+      }
+      expect(results).toEqual(pages.map(([pathname]) => [pathname, 200, true]));
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
+
+  it("resolves the first matching target and skips .d.ts targets in a production build", async () => {
+    const entryPath = await buildPagesFixture(fixtureDir);
+    try {
+      const entry = fs.readFileSync(entryPath, "utf-8");
+      for (const [, text] of pages) {
+        expect(entry).toContain(text);
+      }
+    } finally {
+      fs.rmSync(path.dirname(path.dirname(entryPath)), { recursive: true, force: true });
+    }
+  }, 120_000);
 });

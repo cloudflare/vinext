@@ -1112,8 +1112,16 @@ type MaterializedTsconfigPathAliases = {
   vite: Record<string, string>;
   // Keys without `*`: TypeScript matches them only against the exact specifier.
   viteExact: Record<string, string>;
+  // Later targets of a `vite` / `viteExact` key, tried in order when its
+  // replacement doesn't resolve.
+  viteFallbacks: Record<string, string[]>;
+  viteExactFallbacks: Record<string, string[]>;
   sass: SassTsconfigPathAlias[];
 };
+
+function emptyTsconfigPathAliases(): MaterializedTsconfigPathAliases {
+  return { vite: {}, viteExact: {}, viteFallbacks: {}, viteExactFallbacks: {}, sass: [] };
+}
 
 function mergeSassTsconfigPathAliases(
   ...groups: readonly (readonly SassTsconfigPathAlias[])[]
@@ -1139,14 +1147,21 @@ function materializeTsconfigPathAliases(
 ): MaterializedTsconfigPathAliases {
   const vite: Record<string, string> = {};
   const viteExact: Record<string, string> = {};
+  const viteFallbacks: Record<string, string[]> = {};
+  const viteExactFallbacks: Record<string, string[]> = {};
   const sass: SassTsconfigPathAlias[] = [];
 
   for (const [find, rawTargets] of Object.entries(pathsConfig)) {
-    const targets = Array.isArray(rawTargets)
-      ? rawTargets.filter((value): value is string => typeof value === "string")
-      : typeof rawTargets === "string"
-        ? [rawTargets]
-        : [];
+    // Next.js never resolves a `paths` target to a declaration file
+    // (Turbopack's turbopack-resolve/src/typescript.rs drops them; webpack's
+    // jsconfig-paths-plugin.ts skips them).
+    const targets = (
+      Array.isArray(rawTargets)
+        ? rawTargets.filter((value): value is string => typeof value === "string")
+        : typeof rawTargets === "string"
+          ? [rawTargets]
+          : []
+    ).filter((target) => !target.endsWith(".d.ts"));
     if (targets.length === 0) continue;
 
     // Sass can preserve the full TypeScript path-mapping contract: exact keys,
@@ -1165,30 +1180,36 @@ function materializeTsconfigPathAliases(
     }
 
     // Vite aliases can only represent exact mappings and the common trailing
-    // `/*` prefix form. Keep the existing first-target materialization for JS
-    // transforms; Sass uses the richer representation above.
+    // `/*` prefix form. The first target becomes the alias replacement, and
+    // later targets of the same form become ordered fallbacks: Next.js tries
+    // each target in order and uses the first that resolves. Sass uses the
+    // richer representation above.
     const target = targets[0]!;
 
     if (find.includes("*") || target.includes("*")) {
-      if (!find.endsWith("/*") || !target.endsWith("/*")) continue;
-      if (find.indexOf("*") !== find.length - 1 || target.indexOf("*") !== target.length - 1) {
-        continue;
-      }
+      const isTrailingWildcard = (value: string) =>
+        value.endsWith("/*") && value.indexOf("*") === value.length - 1 && value.length > 2;
+      if (!isTrailingWildcard(find) || !isTrailingWildcard(target)) continue;
 
       const aliasKey = find.slice(0, -2);
-      const targetDir = target.slice(0, -2);
-      if (!aliasKey || !targetDir) continue;
-
-      const replacement = path.resolve(baseUrl, targetDir);
-      vite[aliasKey] = toViteAliasReplacement(replacement, projectRoot);
+      const [replacement, ...fallbacks] = targets
+        .filter(isTrailingWildcard)
+        .map((value) =>
+          toViteAliasReplacement(path.resolve(baseUrl, value.slice(0, -2)), projectRoot),
+        );
+      vite[aliasKey] = replacement!;
+      if (fallbacks.length > 0) viteFallbacks[aliasKey] = fallbacks;
       continue;
     }
 
-    const replacement = path.resolve(baseUrl, target);
-    viteExact[find] = toViteAliasReplacement(replacement, projectRoot);
+    const [replacement, ...fallbacks] = targets
+      .filter((value) => !value.includes("*"))
+      .map((value) => toViteAliasReplacement(path.resolve(baseUrl, value), projectRoot));
+    viteExact[find] = replacement!;
+    if (fallbacks.length > 0) viteExactFallbacks[find] = fallbacks;
   }
 
-  return { vite, viteExact, sass };
+  return { vite, viteExact, viteFallbacks, viteExactFallbacks, sass };
 }
 
 function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
@@ -1246,29 +1267,25 @@ function loadTsconfigPathAliases(
   seen = new Set<string>(),
 ): MaterializedTsconfigPathAliases {
   const normalizedPath = tryRealpathSync(configPath) ?? configPath;
-  if (seen.has(normalizedPath)) return { vite: {}, viteExact: {}, sass: [] };
+  if (seen.has(normalizedPath)) return emptyTsconfigPathAliases();
   seen.add(normalizedPath);
 
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = parseStaticObjectLiteral(fs.readFileSync(normalizedPath, "utf-8"));
   } catch {
-    return { vite: {}, viteExact: {}, sass: [] };
+    return emptyTsconfigPathAliases();
   }
-  if (!parsed) return { vite: {}, viteExact: {}, sass: [] };
+  if (!parsed) return emptyTsconfigPathAliases();
 
-  let aliases: MaterializedTsconfigPathAliases = { vite: {}, viteExact: {}, sass: [] };
+  let aliases = emptyTsconfigPathAliases();
   // `extends` may be a string or (TypeScript 5.0+) an array; iterate parents in
   // order so later entries override earlier ones (matching Next.js).
   for (const extendsSpecifier of normalizeTsconfigExtends(parsed.extends)) {
     const extendedPath = resolveTsconfigExtends(normalizedPath, extendsSpecifier);
     if (extendedPath) {
       const parent = loadTsconfigPathAliases(extendedPath, projectRoot, seen);
-      aliases = {
-        vite: { ...aliases.vite, ...parent.vite },
-        viteExact: { ...aliases.viteExact, ...parent.viteExact },
-        sass: mergeSassTsconfigPathAliases(aliases.sass, parent.sass),
-      };
+      aliases = mergeTsconfigPathAliases(aliases, parent);
     }
   }
 
@@ -1282,10 +1299,33 @@ function loadTsconfigPathAliases(
   const resolvedBaseUrl = path.resolve(path.dirname(normalizedPath), baseUrl);
 
   const own = materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot);
+  return mergeTsconfigPathAliases(aliases, own);
+}
+
+function mergeTsconfigPathAliases(
+  base: MaterializedTsconfigPathAliases,
+  override: MaterializedTsconfigPathAliases,
+): MaterializedTsconfigPathAliases {
+  // A key redefined by `override` replaces the base key's fallbacks too.
+  const keepFallbacks = (
+    fallbacks: Record<string, string[]>,
+    overridden: Record<string, string>,
+  ): Record<string, string[]> =>
+    Object.fromEntries(
+      Object.entries(fallbacks).filter(([find]) => !Object.hasOwn(overridden, find)),
+    );
   return {
-    vite: { ...aliases.vite, ...own.vite },
-    viteExact: { ...aliases.viteExact, ...own.viteExact },
-    sass: mergeSassTsconfigPathAliases(aliases.sass, own.sass),
+    vite: { ...base.vite, ...override.vite },
+    viteExact: { ...base.viteExact, ...override.viteExact },
+    viteFallbacks: {
+      ...keepFallbacks(base.viteFallbacks, override.vite),
+      ...override.viteFallbacks,
+    },
+    viteExactFallbacks: {
+      ...keepFallbacks(base.viteExactFallbacks, override.viteExact),
+      ...override.viteExactFallbacks,
+    },
+    sass: mergeSassTsconfigPathAliases(base.sass, override.sass),
   };
 }
 
@@ -1378,7 +1418,7 @@ function resolveTsconfigAliases(
     return _tsconfigAliasCache.get(cacheKey)!;
   }
 
-  let aliases: ResolvedTsconfigPathAliases = { vite: {}, viteExact: {}, sass: [] };
+  let aliases: ResolvedTsconfigPathAliases = emptyTsconfigPathAliases();
   for (const candidate of configPath
     ? [configPath]
     : TSCONFIG_FILES.map((name) => path.join(projectRoot, name))) {
@@ -1438,21 +1478,41 @@ function isStylesheetImporter(importer: string | undefined): boolean {
  * including for `import "@/styles/globals.css"` from a layout), and Vite's
  * glob/dynamic-import transforms — which require blind prefix replacement
  * because their patterns never exist on disk — keep working.
+ *
+ * `fallbacks` are the key's later `paths` targets. Like Next.js, when the
+ * alias replacement doesn't resolve, each fallback replaces it in order and
+ * the first that resolves wins.
  */
-// `ResolverFunction` is typed with rolldown's synchronous resolveId signature,
-// but the alias plugin awaits resolver results, so an async resolver is fine —
-// hence the cast.
-const tsconfigAliasCustomResolver = async function (
-  this: { resolve: ResolveFromImporter },
-  updatedId: string,
-  importer: string | undefined,
-  options?: { skipSelf?: boolean },
-) {
-  if (isStylesheetImporter(importer)) return null;
-  // Mirror the alias plugin's default resolution for every other importer.
-  const resolved = await this.resolve(updatedId, importer, { ...options, skipSelf: true });
-  return resolved ?? { id: updatedId };
-} as unknown as ResolverFunction;
+function createTsconfigAliasCustomResolver(
+  replacement: string,
+  fallbacks: readonly string[] = [],
+): ResolverFunction {
+  // `ResolverFunction` is typed with rolldown's synchronous resolveId signature,
+  // but the alias plugin awaits resolver results, so an async resolver is fine —
+  // hence the cast.
+  return async function (
+    this: { resolve: ResolveFromImporter },
+    updatedId: string,
+    importer: string | undefined,
+    options?: { skipSelf?: boolean },
+  ) {
+    if (isStylesheetImporter(importer)) return null;
+    // Mirror the alias plugin's default resolution for every other importer.
+    const resolveOptions = { ...options, skipSelf: true };
+    const resolved = await this.resolve(updatedId, importer, resolveOptions);
+    if (resolved) return resolved;
+    // The alias plugin replaced the matched key with `replacement`, so the
+    // rest of the id is the part the `*` matched.
+    if (updatedId.startsWith(replacement)) {
+      const rest = updatedId.slice(replacement.length);
+      for (const fallback of fallbacks) {
+        const fallbackResolved = await this.resolve(fallback + rest, importer, resolveOptions);
+        if (fallbackResolved) return fallbackResolved;
+      }
+    }
+    return { id: updatedId };
+  } as unknown as ResolverFunction;
+}
 
 // Vite's alias plugin matching: a RegExp is tested, a string matches the id
 // itself or a path below it.
@@ -1483,19 +1543,31 @@ function buildResolveAliasEntries(
   tsconfigPathAliases: Record<string, string>,
   tsconfigExactPathAliases: Record<string, string>,
   explicitAliases: Record<string, string>,
+  tsconfigPathFallbacks: Record<string, string[]> = {},
+  tsconfigExactPathFallbacks: Record<string, string[]> = {},
 ): Alias[] {
   const exactEntries: Alias[] = Object.entries(tsconfigExactPathAliases)
     .filter(([find]) => !Object.hasOwn(explicitAliases, find))
     .map(([find, replacement]) => ({
       find: new RegExp(`^${escapeRegExp(find)}$`),
       replacement,
-      customResolver: tsconfigAliasCustomResolver,
+      customResolver: createTsconfigAliasCustomResolver(
+        replacement,
+        tsconfigExactPathFallbacks[find],
+      ),
     }));
   return [
     ...exactEntries,
     ...Object.entries(aliasMap).map(([find, replacement]) =>
       Object.hasOwn(tsconfigPathAliases, find) && !Object.hasOwn(explicitAliases, find)
-        ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
+        ? {
+            find,
+            replacement,
+            customResolver: createTsconfigAliasCustomResolver(
+              replacement,
+              tsconfigPathFallbacks[find],
+            ),
+          }
         : { find, replacement },
     ),
   ];
@@ -1503,7 +1575,7 @@ function buildResolveAliasEntries(
 
 // Vite 8 logs a deprecation warning when `resolve.alias` contains a
 // `customResolver`. vinext uses one deliberately (see
-// `tsconfigAliasCustomResolver`): the aliases must stay in `resolve.alias`
+// `createTsconfigAliasCustomResolver`): the aliases must stay in `resolve.alias`
 // for Vite's glob/dynamic-import transforms and internal resolvers, but must
 // not apply inside stylesheet resolution — and only a `customResolver` can
 // observe the importer there. Filter the warning so every project with
@@ -3124,6 +3196,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
         let tsconfigExactPathAliases: Record<string, string> = {};
+        let tsconfigPathFallbacks: Record<string, string[]> = {};
+        let tsconfigExactPathFallbacks: Record<string, string[]> = {};
         let sassTsconfigPathAliases: SassTsconfigPathAlias[] = [];
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
 
@@ -3299,6 +3373,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
         tsconfigPathAliases = resolvedTsconfigAliases.vite;
         tsconfigExactPathAliases = resolvedTsconfigAliases.viteExact;
+        tsconfigPathFallbacks = resolvedTsconfigAliases.viteFallbacks;
+        tsconfigExactPathFallbacks = resolvedTsconfigAliases.viteExactFallbacks;
         pagesTsconfigAliases = tsconfigPathAliases;
         pagesTsconfigExactAliases = tsconfigExactPathAliases;
         sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
@@ -4180,7 +4256,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // Materialize simple tsconfig/jsconfig path aliases into resolve.alias
             // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
             // tsconfig-derived entries carry a customResolver that keeps them out
-            // of stylesheet resolution (see tsconfigAliasCustomResolver).
+            // of stylesheet resolution (see createTsconfigAliasCustomResolver).
             alias: [
               ...userAliasEntries,
               ...buildResolveAliasEntries(
@@ -4192,6 +4268,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 tsconfigPathAliases,
                 tsconfigExactPathAliases,
                 tsconfigOverridingAliases,
+                tsconfigPathFallbacks,
+                tsconfigExactPathFallbacks,
               ),
             ],
             // Dedupe React packages to prevent dual-instance errors.

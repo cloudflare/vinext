@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@lib/*": ["lib/a/*", "lib/b/*"],
+      "d-ts-alias": ["components/alias-to-d-ts.d.ts", "components/alias-to-d-ts.tsx"]
+    },
+    "jsx": "react-jsx",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["pages", "lib", "components"]
+}
