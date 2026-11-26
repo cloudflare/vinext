@@ -1219,7 +1219,7 @@ function discoverSlotSubRoutes(
   const applySlotSubPages = (
     route: AppRoute,
     slotPages: Map<string, string>,
-    rawSegments: string[],
+    slotSegments: Map<string, string[]>,
   ): void => {
     route.parallelSlots = route.parallelSlots.map((slot) => {
       const subPage = slotPages.get(slot.key);
@@ -1234,7 +1234,7 @@ function discoverSlotSubRoutes(
               slot.ownerDir,
               configLayoutPaths,
             ),
-            routeSegments: toSlotRouteSegments(rawSegments),
+            routeSegments: slotSegments.get(slot.key) ?? null,
           },
           subPage,
           matcher,
@@ -1275,6 +1275,9 @@ function discoverSlotSubRoutes(
         // Pre-computed URL parts, params, isDynamic from convertSegmentsToRouteParts.
         converted: { urlSegments: string[]; params: string[]; isDynamic: boolean };
         slotPages: Map<string, string>;
+        // Each slot's routeSegments from its own page, since slots at one URL
+        // can reach it through different folders (route groups, @children).
+        slotSegments: Map<string, string[]>;
       }
     >();
 
@@ -1302,6 +1305,7 @@ function discoverSlotSubRoutes(
             rawSegments: subSegments,
             converted: convertedSubRoute,
             slotPages: new Map(),
+            slotSegments: new Map(),
           };
           subPathMap.set(normalizedSubPath, subPathEntry);
         }
@@ -1317,6 +1321,7 @@ function discoverSlotSubRoutes(
         if (subPathEntry.slotPages.has(slot.key)) continue;
 
         subPathEntry.slotPages.set(slot.key, pagePath);
+        subPathEntry.slotSegments.set(slot.key, toSlotRouteSegments(subSegments));
       }
     }
 
@@ -1389,7 +1394,12 @@ function discoverSlotSubRoutes(
     const childrenCatchAll = childrenDefault ? null : findCatchAllPage(parentPageDir, matcher);
     const childrenFallback = childrenDefault ?? childrenCatchAll;
 
-    for (const { rawSegments, converted: convertedSubRoute, slotPages } of subPathMap.values()) {
+    for (const {
+      rawSegments,
+      converted: convertedSubRoute,
+      slotPages,
+      slotSegments,
+    } of subPathMap.values()) {
       const {
         urlSegments: urlParts,
         params: subParams,
@@ -1414,7 +1424,7 @@ function discoverSlotSubRoutes(
         // ["(group)"]), making useSelectedLayoutSegment return the route-group
         // name rather than null.
         if (urlParts.length > 0) {
-          applySlotSubPages(existingRoute, slotPages, rawSegments);
+          applySlotSubPages(existingRoute, slotPages, slotSegments);
         }
         continue;
       }
@@ -1429,6 +1439,10 @@ function discoverSlotSubRoutes(
         patternsStructurallyEquivalent(r.patternParts, syntheticParts),
       );
       if (hasStructuralConflict) continue;
+
+      // `@children` is a slot-only marker, never a segment of the route's own
+      // children branch (route discovery drops it the same way).
+      const routeSubSegments = rawSegments.filter((segment) => segment !== "@children");
 
       // Build parallel slots for this sub-route: matching slots get the sub-page,
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
@@ -1448,7 +1462,7 @@ function discoverSlotSubRoutes(
               slot.ownerDir,
               configLayoutPaths,
             ),
-            routeSegments: subPage ? toSlotRouteSegments(rawSegments) : null,
+            routeSegments: subPage ? (slotSegments.get(slot.key) ?? null) : null,
           },
           subPage ?? null,
           matcher,
@@ -1460,7 +1474,7 @@ function discoverSlotSubRoutes(
           pattern,
           pagePath: childrenFallback,
           routePath: null,
-          routeSegments: [...parentRoute.routeSegments, ...rawSegments],
+          routeSegments: [...parentRoute.routeSegments, ...routeSubSegments],
           layoutTreePositions: parentRoute.layoutTreePositions,
           templateTreePositions: parentRoute.templateTreePositions,
           slots: subSlots,
@@ -1501,7 +1515,7 @@ function discoverSlotSubRoutes(
         segmentForbiddenTreePositions: parentRoute.segmentForbiddenTreePositions,
         segmentUnauthorizedPaths: parentRoute.segmentUnauthorizedPaths,
         segmentUnauthorizedTreePositions: parentRoute.segmentUnauthorizedTreePositions,
-        routeSegments: [...parentRoute.routeSegments, ...rawSegments],
+        routeSegments: [...parentRoute.routeSegments, ...routeSubSegments],
         childrenRouteSegments: childrenDefault ? parentRoute.routeSegments : undefined,
         templateTreePositions: parentRoute.templateTreePositions,
         layoutTreePositions: parentRoute.layoutTreePositions,

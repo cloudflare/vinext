@@ -631,6 +631,8 @@ describe("App Router route graph builder", () => {
       expect(members.parallelSlots.find((slot) => slot.name === "team")?.pagePath).toBe(
         canonical(appDir, "children-slot-override/@team/members/@children/page.tsx"),
       );
+      // @children is a slot-only marker, not a segment of the route's children branch.
+      expect(members.routeSegments).toEqual(["children-slot-override", "members"]);
 
       // Same when /members is a real page (and the owner has no default.tsx).
       const realMembers = findRoute(graph.routes, "/children-slot-override-page/members");
@@ -644,6 +646,18 @@ describe("App Router route graph builder", () => {
       // useSelectedLayoutSegments("team") in Next.js 16.4.6 Turbopack shows the
       // @children directory as its virtual (__SLOT__) segment, never as @children.
       expect(realMembersTeam?.routeSegments).toEqual(["members", "(__SLOT__)"]);
+    });
+
+    it("gives each slot at one URL the segments of its own page", async () => {
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const members = findRoute(graph.routes, "/children-slot-siblings/members");
+      const slot = (name: string) => members.parallelSlots.find((entry) => entry.name === name);
+      expect(slot("alpha")?.routeSegments).toEqual(["members"]);
+      expect(slot("beta")?.pagePath).toBe(
+        canonical(appDir, "children-slot-siblings/@beta/members/@children/page.tsx"),
+      );
+      expect(slot("beta")?.routeSegments).toEqual(["members", "(__SLOT__)"]);
     });
 
     it("keeps a slot's direct page over an @children page inside a route group", async () => {
