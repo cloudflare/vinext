@@ -1308,11 +1308,12 @@ function discoverSlotSubRoutes(
 
         // Several pages of one slot can resolve to the same URL, e.g.
         // @foo/nested/page.tsx and @foo/nested/@a/page.tsx, which fills the
-        // nested @a slot of @foo/nested/layout.tsx. Next.js only rejects
-        // duplicate children pages, never duplicate slot pages (webpack's
-        // next-app-loader resolveParallelSegments, Turbopack's
-        // page_path_except_parallel). findSlotSubPages lists the slot's own
-        // pages first, so they win over pages that fill a nested slot.
+        // nested @a slot of @foo/nested/layout.tsx, or @team/(a)/members and
+        // @team/(b)/members. Next.js only rejects duplicate children pages,
+        // never duplicate slot pages (webpack's next-app-loader
+        // resolveParallelSegments, Turbopack's page_path_except_parallel).
+        // findSlotSubPages lists the slot's own pages first, so they win over
+        // pages that fill a nested slot, then route groups by name.
         if (subPathEntry.slotPages.has(slot.key)) continue;
 
         subPathEntry.slotPages.set(slot.key, pagePath);
@@ -1585,7 +1586,12 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
 
   function scan(dir: string): void {
     if (!fs.existsSync(dir)) return;
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    // Sorted so the first page found for a URL doesn't depend on the
+    // filesystem's listing order. Turbopack also takes the first route group
+    // by name: @team/(a)/members wins over @team/(b)/members.
+    const entries = fs
+      .readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       // Skip intercepting route directories

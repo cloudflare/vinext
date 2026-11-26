@@ -477,7 +477,10 @@ describe("App Router route sorting (additional)", () => {
     }
   });
 
-  it("rejects grouped slot sub-pages that resolve to the same URL path within one slot", async () => {
+  // Next.js 16.4.6 builds this tree with both bundlers. Turbopack, the
+  // default, renders the first route group by name ((a)); webpack builds it
+  // but fails the request with a client reference manifest invariant.
+  it("uses the first route group by name for grouped slot sub-pages at one URL within one slot", async () => {
     const tmpRoot = await makeTempDir("vinext-app-slot-route-group-conflict-");
     const appDir = path.join(tmpRoot, "app");
 
@@ -514,7 +517,13 @@ describe("App Router route sorting (additional)", () => {
       );
 
       invalidateAppRouteCache();
-      await expect(appRouter(appDir)).rejects.toThrow(/same path.*\/dashboard\/members/);
+      const routes = await appRouter(appDir);
+      const membersRoute = routes.find((route) => route.pattern === "/dashboard/members");
+
+      expect(membersRoute).toBeDefined();
+      expect(membersRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
+        canonical(path.join("@team", "(a)", "members")),
+      );
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();
