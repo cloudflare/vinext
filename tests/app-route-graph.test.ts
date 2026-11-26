@@ -734,6 +734,23 @@ describe("App Router route graph builder", () => {
         canonical(appDir, "nested-only-catchall/@slot/[...slot]/page.tsx"),
       );
     });
+
+    it("treats a literal folder ending in + as one static segment when mirroring", async () => {
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const literal = findRoute(graph.routes, "/nested-only-literal/specific+");
+      expect(literal.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "nested-only-literal/@slot/[id]/page.tsx"),
+      );
+    });
+
+    it("doesn't mirror an ancestor slot with a page that fills its nested slot", async () => {
+      // @outer/@inner/specific/page.tsx fills @inner, not @outer, and @outer
+      // has no page of its own for /nested-only-inner/specific.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      expect(findRoute(graph.routes, "/nested-only-inner/specific").parallelSlots).toEqual([]);
+    });
   });
 
   // Regression for https://github.com/cloudflare/vinext/issues/1535

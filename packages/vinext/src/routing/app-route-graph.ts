@@ -1630,6 +1630,7 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   return ordered;
 }
 
+/** Whether a slot sub-page lives inside one of the slot's own nested slots (`@children` is transparent). */
 function isNestedSlotSubPage({ relativePath }: SlotSubPageEntry): boolean {
   return relativePath
     .split(path.sep)
@@ -2468,7 +2469,11 @@ function findMirroredSlotPage(
     score: number;
   };
   let best: Candidate | null = null;
-  for (const { relativePath, pagePath } of findSlotSubPages(slotDir, matcher)) {
+  for (const entry of findSlotSubPages(slotDir, matcher)) {
+    // A page inside one of the slot's own nested slots fills that nested
+    // slot (e.g. @outer/@inner/specific), never the slot itself.
+    if (isNestedSlotSubPage(entry)) continue;
+    const { relativePath, pagePath } = entry;
     const slotSegments = relativePath.split(path.sep);
     const slotUrl = convertSegmentsToRouteParts(slotSegments);
     if (!slotUrl) continue;
@@ -2512,12 +2517,14 @@ function patternsCompatible(slotParts: readonly string[], routeParts: readonly s
   let j = 0;
   while (i < slotParts.length) {
     const sp = slotParts[i];
-    if (sp.endsWith("+")) return j < routeParts.length && !routeParts[j].endsWith("*");
-    if (sp.endsWith("*")) return true;
+    if (isCatchAllPart(sp, "+")) {
+      return j < routeParts.length && !isCatchAllPart(routeParts[j], "*");
+    }
+    if (isCatchAllPart(sp, "*")) return true;
     if (j >= routeParts.length) return false;
     const rp = routeParts[j];
     if (sp.startsWith(":")) {
-      if (rp.endsWith("+") || rp.endsWith("*")) return false;
+      if (isCatchAllPart(rp, "+") || isCatchAllPart(rp, "*")) return false;
       i++;
       j++;
       continue;
@@ -2528,6 +2535,11 @@ function patternsCompatible(slotParts: readonly string[], routeParts: readonly s
     j++;
   }
   return j === routeParts.length;
+}
+
+/** Whether a pattern part is a catch-all (`+`) or optional catch-all (`*`) param, not a literal like `specific+`. */
+function isCatchAllPart(part: string, modifier: "+" | "*"): boolean {
+  return part.startsWith(":") && part.endsWith(modifier);
 }
 
 /**
