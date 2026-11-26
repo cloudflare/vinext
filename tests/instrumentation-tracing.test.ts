@@ -29,6 +29,7 @@ vi.mock("../packages/vinext/src/server/otel-tracer-extension.js", () => ({
 
 const context = new AsyncLocalStorage<{ detached: boolean }>();
 const spans: RecordedSpan[] = [];
+let failSpans = false;
 let onSpanEnd: ((descriptor: ResolvedFrameworkSpanDescriptor) => void) | undefined;
 
 registerFrameworkTracingIntegration({
@@ -44,6 +45,7 @@ registerFrameworkTracingIntegration({
       errors: [],
     };
     spans.push(recorded);
+    if (failSpans) throw new Error("exporter failed");
     try {
       return callback({
         recordException: (error) => recorded.errors.push(error),
@@ -62,6 +64,7 @@ registerFrameworkTracingIntegration({
 afterEach(() => {
   spans.length = 0;
   onSpanEnd = undefined;
+  failSpans = false;
   vi.restoreAllMocks();
   vi.mocked(extendTracerProviderForCacheComponents).mockReset();
 });
@@ -197,5 +200,24 @@ describe("instrumentation lifecycle spans", () => {
       ({ descriptor }) => descriptor.type === "Instrumentation.register",
     )?.descriptor;
     expect((register?.endTime ?? 0) - (register?.startTime ?? 0)).toBe(10);
+  });
+
+  it("keeps a throwing tracing integration from changing how registration ends", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    failSpans = true;
+    const failure = new Error("register failed");
+    await expect(
+      ensureInstrumentationRegistered({
+        register() {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+
+    // Without register(), registration still completes.
+    const onRequestError = vi.fn();
+    await expect(ensureInstrumentationRegistered({ onRequestError })).resolves.toBeUndefined();
+    expect(globalThis.__VINEXT_onRequestErrorHandler__).toBe(onRequestError);
+    expect(consoleError).toHaveBeenCalled();
   });
 });

@@ -54,14 +54,21 @@ function traceInstrumentationLifecycleSpan(
   timing: InstrumentationLoadTiming,
   error?: unknown,
 ): void {
-  frameworkTracer.runWithDetachedContext(() =>
-    frameworkTracer.trace(
-      { endTime: timing.endTime, name, recordErrors: false, startTime: timing.startTime, type },
-      (span) => {
-        if (error !== undefined) recordFrameworkSpanError(span, error);
-      },
-    ),
-  );
+  // Telemetry must not change how registration ends: a throwing tracing
+  // integration would otherwise replace register()'s own error, or reject the
+  // one-shot registration for every later request.
+  try {
+    frameworkTracer.runWithDetachedContext(() =>
+      frameworkTracer.trace(
+        { endTime: timing.endTime, name, recordErrors: false, startTime: timing.startTime, type },
+        (span) => {
+          if (error !== undefined) recordFrameworkSpanError(span, error);
+        },
+      ),
+    );
+  } catch (traceError) {
+    console.error(`[vinext] Failed to emit the ${type} span:`, traceError);
+  }
 }
 
 /**
