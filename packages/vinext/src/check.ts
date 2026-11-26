@@ -53,21 +53,32 @@ function compareByStatus(a: { status: Status }, b: { status: Status }): number {
 
 type AppRouterFileType = "page" | "layout" | "route" | "loading" | "error" | "not-found";
 
-/**
- * True if `relFile` (relative to the app directory) is an App Router file of
- * the given convention. Files inside private `_folder` segments are not routes.
- * `exts` are the dotted `pageExtensions` that vinext resolves conventions with.
- */
 /** `skipsDeclarationFiles` for check's dotted extension list. */
 function isSkippedDeclarationFile(file: string, dottedExts: string[]): boolean {
   return file.endsWith(".d.ts") && dottedExts.includes(".ts");
 }
 
+// The conventions the route scanners discover (`scanWithExtensions`), which
+// skip declaration files. Boundary files (loading, error, not-found) resolve
+// through `findFileWithExts`, which doesn't.
+const SCANNED_APP_ROUTER_FILE_TYPES: ReadonlySet<AppRouterFileType> = new Set([
+  "page",
+  "layout",
+  "route",
+]);
+
+/**
+ * True if `relFile` (relative to the app directory) is an App Router file of
+ * the given convention. Files inside private `_folder` segments are not routes.
+ * `exts` are the dotted `pageExtensions` that vinext resolves conventions with.
+ */
 function isAppRouterFile(relFile: string, type: AppRouterFileType, exts: string[]): boolean {
   const segments = relFile.split("/");
   const basename = segments.pop() ?? "";
   if (segments.some((segment) => segment.startsWith("_"))) return false;
-  if (isSkippedDeclarationFile(basename, exts)) return false;
+  if (SCANNED_APP_ROUTER_FILE_TYPES.has(type) && isSkippedDeclarationFile(basename, exts)) {
+    return false;
+  }
   return exts.some((ext) => basename === `${type}${ext}`);
 }
 
