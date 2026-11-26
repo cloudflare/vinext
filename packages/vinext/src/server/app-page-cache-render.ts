@@ -139,6 +139,8 @@ async function renderAppPageCacheArtifactsImpl(
   const ssrHandler = await options.loadSsrHandler();
   let htmlResult: Awaited<ReturnType<AppPageSsrHandler["handleSsr"]>> | null = null;
   let specialErrorDocument: AppPageCacheSpecialErrorDocument | null = null;
+  // The special error whose document rejected the shell, if one did.
+  let renderedShellError: unknown;
   // A regeneration that stays static sets its status from the HTTP errors its
   // document's Suspense boundaries catch, as Next.js's static generation does.
   const staticGenerationStatus = createAppPageStaticGenerationStatusCapture(options.basePath);
@@ -148,8 +150,8 @@ async function renderAppPageCacheArtifactsImpl(
     recordAppPageRenderError(renderSpan, error);
     return options.onSsrError(error);
   };
-  // The shell error's own document takes the status and `location` of the
-  // HTTP error that wins, which an earlier one can be.
+  // A static regeneration sends the shell error's own document with the status
+  // and `location` of the HTTP error that wins, which an earlier one can be.
   const withShellStatus = (
     error: unknown,
     document: AppPageCacheSpecialErrorDocument,
@@ -209,7 +211,7 @@ async function renderAppPageCacheArtifactsImpl(
     // outcome, stored with its status beside the page's RSC payload.
     specialErrorDocument = await options.renderShellSpecialError(error);
     if (!specialErrorDocument) throw error;
-    specialErrorDocument = withShellStatus(error, specialErrorDocument);
+    renderedShellError = error;
   }
   let html = specialErrorDocument?.html ?? "";
   let linkHeader = specialErrorDocument?.linkHeader;
@@ -230,7 +232,7 @@ async function renderAppPageCacheArtifactsImpl(
       specialErrorDocument =
         (await options.renderShellSpecialError?.(caughtShellError, { html, linkHeader })) ?? null;
       if (!specialErrorDocument) throw caughtShellError;
-      specialErrorDocument = withShellStatus(caughtShellError, specialErrorDocument);
+      renderedShellError = caughtShellError;
       html = specialErrorDocument.html;
       linkHeader = specialErrorDocument.linkHeader;
     }
@@ -258,6 +260,9 @@ async function renderAppPageCacheArtifactsImpl(
   // SSR runs in a child scope, so a client page's searchParams read there
   // reaches only the render's dynamic latch.
   const usedDynamicApi = consumeDynamicUsage() || isRenderDynamicLatched();
+  if (specialErrorDocument && renderedShellError !== undefined && !usedDynamicApi) {
+    specialErrorDocument = withShellStatus(renderedShellError, specialErrorDocument);
+  }
   // A render that turned dynamic isn't a static one, so it keeps its 200.
   const caughtStatus =
     htmlResult && !specialErrorDocument && !usedDynamicApi ? staticGenerationStatus.get() : null;

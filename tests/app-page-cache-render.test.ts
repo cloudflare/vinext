@@ -327,6 +327,42 @@ describe("renderAppPageCacheArtifacts", () => {
     expect(new TextDecoder().decode(result.rscData)).toBe("page-flight-with-digest");
   });
 
+  it("keeps the shell's notFound() status of a regeneration that turned dynamic", async () => {
+    const redirectError = { digest: "NEXT_REDIRECT;replace;/target;307;" };
+    const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: true,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.sideStream && options.capturedRscDataRef) {
+            options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+          }
+          markDynamicUsage();
+          options?.onSsrError?.(redirectError);
+          options?.onSsrError?.(notFoundError);
+          throw notFoundError;
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      async renderShellSpecialError(error) {
+        return error === notFoundError ? { html: "<html>not found</html>", status: 404 } : null;
+      },
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result.usedDynamicApi).toBe(true);
+    expect(result.status).toBe(404);
+    expect(result.headers).toBeUndefined();
+  });
+
   it("stores a special error's document that slot boundaries caught it in", async () => {
     const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
     const renderShellSpecialError = vi.fn(
