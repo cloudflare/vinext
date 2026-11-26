@@ -2503,17 +2503,21 @@ function findMirroredSlotPage(
  *   This also means a literal slot sub-page never matches a catch-all route
  *   (e.g. slot `about/page.tsx` is not bound to a route `[...slug]`) — the
  *   catch-all might or might not resolve to "about" at request time.
+ * - Likewise, a route catch-all needs a slot catch-all that covers every URL
+ *   it matches: `:name` covers one segment, not `[...slug]`'s `/a/b`, and
+ *   `:name+` doesn't cover the empty match of `[[...slug]]`.
  */
 function patternsCompatible(slotParts: readonly string[], routeParts: readonly string[]): boolean {
   let i = 0;
   let j = 0;
   while (i < slotParts.length) {
     const sp = slotParts[i];
-    if (sp.endsWith("+")) return j < routeParts.length;
+    if (sp.endsWith("+")) return j < routeParts.length && !routeParts[j].endsWith("*");
     if (sp.endsWith("*")) return true;
     if (j >= routeParts.length) return false;
     const rp = routeParts[j];
     if (sp.startsWith(":")) {
+      if (rp.endsWith("+") || rp.endsWith("*")) return false;
       i++;
       j++;
       continue;

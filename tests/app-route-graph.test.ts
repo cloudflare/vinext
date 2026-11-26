@@ -723,6 +723,17 @@ describe("App Router route graph builder", () => {
       // Nothing in @slot mirrors /nested-only-slot/other.
       expect(findRoute(graph.routes, "/nested-only-slot/other").parallelSlots).toEqual([]);
     });
+
+    it("mirrors a route catch-all only with a slot page that covers every URL it matches", async () => {
+      // @slot/[id] matches one segment, so it can't fill the slot for
+      // [...children], which also matches /a/b; @slot/[...slot] can.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const catchAll = findRoute(graph.routes, "/nested-only-catchall/:children+");
+      expect(catchAll.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "nested-only-catchall/@slot/[...slot]/page.tsx"),
+      );
+    });
   });
 
   // Regression for https://github.com/cloudflare/vinext/issues/1535
