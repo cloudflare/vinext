@@ -1201,11 +1201,14 @@ function materializeTsconfigPathAliases(
     // Next.js never resolves a `paths` target to a declaration file
     // (Turbopack's turbopack-resolve/src/typescript.rs drops them; webpack's
     // jsconfig-paths-plugin.ts skips them).
-    const declaredTargets = Array.isArray(rawTargets)
-      ? rawTargets.filter((value): value is string => typeof value === "string")
-      : typeof rawTargets === "string"
-        ? [rawTargets]
-        : [];
+    // Targets are user paths, which may use native separators on Windows.
+    const declaredTargets = (
+      Array.isArray(rawTargets)
+        ? rawTargets.filter((value): value is string => typeof value === "string")
+        : typeof rawTargets === "string"
+          ? [rawTargets]
+          : []
+    ).map((target) => toSlash(target));
     const targets = declaredTargets.filter((target) => !target.endsWith(".d.ts"));
     if (targets.length === 0) {
       // Next.js selects the key before dropping its declaration targets, so a
@@ -3521,7 +3524,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // from deep-cloning the logger and flattening its hasWarned getter.
         if (
           Object.keys(tsconfigPathAliases).length > 0 ||
-          Object.keys(tsconfigExactPathAliases).length > 0
+          Object.keys(tsconfigExactPathAliases).length > 0 ||
+          tsconfigPassThrough.length > 0 ||
+          tsconfigExactPassThrough.length > 0
         ) {
           config.customLogger = suppressAliasCustomResolverDeprecationWarning(
             config.customLogger ??

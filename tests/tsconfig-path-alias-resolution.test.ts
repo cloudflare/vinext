@@ -22,7 +22,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createBuilder, createServer, type AliasOptions } from "vite";
+import { createBuilder, createLogger, createServer, type AliasOptions } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
@@ -475,6 +475,46 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
       await server.close();
     }
   }, 60_000);
+
+  // A config whose only keys have declaration targets still adds alias entries
+  // with a customResolver, so Vite's deprecation warning stays filtered.
+  it("filters the customResolver deprecation warning for declaration-only keys", async () => {
+    const warnings: string[] = [];
+    const customLogger = createLogger("warn");
+    customLogger.warn = (msg) => {
+      warnings.push(msg);
+    };
+    const server = await createServer({
+      root: path.resolve(import.meta.dirname, "fixtures/tsconfig-paths-declaration-only"),
+      configFile: false,
+      customLogger,
+      plugins: [vinext({ disableAppRouter: true })],
+      server: { port: 0 },
+    });
+    try {
+      expect(warnings.filter((msg) => msg.includes("customResolver"))).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
+
+  // TypeScript accepts native separators in `paths` targets on Windows.
+  it.runIf(process.platform === "win32")(
+    "resolves fallback targets written with Windows separators",
+    async () => {
+      const { server, baseUrl } = await startFixtureServer(
+        path.resolve(import.meta.dirname, "fixtures/tsconfig-paths-windows-separators"),
+      );
+      try {
+        const { res, html } = await fetchHtml(baseUrl, "/");
+        expect(res.status).toBe(200);
+        expect(html).toContain("Hello from a Windows-separated fallback");
+      } finally {
+        await server.close();
+      }
+    },
+    60_000,
+  );
 
   it("resolves the first matching target and skips .d.ts targets in a production build", async () => {
     const entryPath = await buildPagesFixture(fixtureDir);
