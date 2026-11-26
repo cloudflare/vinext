@@ -15,6 +15,11 @@ import fsp from "node:fs/promises";
 import path, { toSlash } from "pathslash";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 import { isPrecompressedVariantBeneficial } from "../utils/precompressed-variant.js";
+import {
+  SERVICE_WORKER_CACHE_CONTROL,
+  serviceWorkerAllowedHeader,
+  serviceWorkerOutputDir,
+} from "../utils/service-worker.js";
 
 /** Content-type lookup for static assets. Shared with prod-server.ts. */
 export const CONTENT_TYPES: Record<string, string> = {
@@ -133,8 +138,13 @@ export class StaticFileCache {
    *
    * Gracefully handles non-existent directories (returns an empty cache).
    */
-  static async create(clientDir: string): Promise<StaticFileCache> {
+  static async create(
+    clientDir: string,
+    options: { basePath?: string } = {},
+  ): Promise<StaticFileCache> {
     const entries = new Map<string, StaticFileEntry>();
+    const basePath = options.basePath ?? "";
+    const serviceWorkerDir = serviceWorkerOutputDir(basePath);
 
     // First pass: collect all regular files with their metadata
     const allFiles = new Map<string, { fullPath: string; size: number; mtimeMs: number }>();
@@ -169,9 +179,13 @@ export class StaticFileCache {
       // default and absolute-URL prefix layouts (no parent directory),
       // the latter covers the path-prefix layout (under an arbitrary
       // parent like `cdn/`).
+      // Compiled service workers keep a stable URL across builds, so they
+      // are revalidated on every use instead (see utils/service-worker.ts).
+      const isServiceWorker = relativePath.startsWith(serviceWorkerDir);
       const isHashed =
-        relativePath.startsWith(`${ASSET_PREFIX_URL_DIR}/`) ||
-        relativePath.includes(`/${ASSET_PREFIX_URL_DIR}/`);
+        !isServiceWorker &&
+        (relativePath.startsWith(`${ASSET_PREFIX_URL_DIR}/`) ||
+          relativePath.includes(`/${ASSET_PREFIX_URL_DIR}/`));
 
       // A hard process exit can strand the temporary side of an atomic
       // precompression write. Never register that internal artifact as a URL,
@@ -180,19 +194,24 @@ export class StaticFileCache {
 
       const ext = path.extname(relativePath);
       const contentType = contentTypeForPath(relativePath);
-      const cacheControl = staticFileCacheControl(isHashed);
+      const cacheControl = isServiceWorker
+        ? SERVICE_WORKER_CACHE_CONTROL
+        : staticFileCacheControl(isHashed);
       const etag =
         (isHashed && etagFromFilenameHash(relativePath, ext)) ||
         `W/"${fileInfo.size}-${Math.floor(fileInfo.mtimeMs / 1000)}"`;
 
       // Base headers shared by all variants (Content-Type, Cache-Control, ETag)
       const lastModified = new Date(fileInfo.mtimeMs).toUTCString();
-      const baseHeaders = {
+      const baseHeaders: Record<string, string> = {
         "Content-Type": contentType,
         "Cache-Control": cacheControl,
         ETag: etag,
         "Last-Modified": lastModified,
       };
+      if (isServiceWorker) {
+        baseHeaders["Service-Worker-Allowed"] = serviceWorkerAllowedHeader(basePath);
+      }
 
       // Pre-compute original variant headers
       const original: FileVariant = {

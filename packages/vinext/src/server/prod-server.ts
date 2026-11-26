@@ -84,6 +84,7 @@ import {
   assetPrefixPathname,
   isAbsoluteAssetPrefix,
 } from "../utils/asset-prefix.js";
+import { SERVICE_WORKER_URL_DIR } from "../utils/service-worker.js";
 import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
 import { setPagesClientAssets, type AssetCrossOrigin } from "./pages-client-assets.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
@@ -1799,6 +1800,15 @@ export function resolveAppRouterAssetPath(
   return null;
 }
 
+/**
+ * Service workers are served below `basePath` whatever the `assetPrefix`, as a
+ * worker must be same-origin. The client build writes them to the matching
+ * path, so the request pathname is the lookup path.
+ */
+export function resolveServiceWorkerAssetPath(pathname: string, basePath: string): string | null {
+  return pathname.startsWith(`${basePath}/${SERVICE_WORKER_URL_DIR}/`) ? pathname : null;
+}
+
 type PagesClientEntryLookup = "any-client-entry" | "pages-client-entry";
 
 function isSsrManifest(value: unknown): value is Record<string, string[]> {
@@ -1995,7 +2005,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // Build the static file metadata cache at startup. Eliminates per-request
   // stat() calls — all lookups are pure in-memory Map.get(). Precompressed
   // .br/.gz/.zst variants (generated at build time) are detected automatically.
-  const staticCache = await StaticFileCache.create(clientDir);
+  const staticCache = await StaticFileCache.create(clientDir, { basePath: appRouterBasePath });
 
   // Image optimization passthrough (Node.js prod server has no Images binding;
   // serves the original file with cache headers and security headers). Runs
@@ -2194,11 +2204,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // must still reach middleware so it can rewrite or respond. The shared
     // router classifies unmatched static paths after resolving rewrites.
     {
-      const assetLookupPath = resolveAppRouterAssetPath(
-        pathname,
-        appAssetPathPrefix,
-        appRouterAssetPrefix,
-      );
+      const assetLookupPath =
+        resolveAppRouterAssetPath(pathname, appAssetPathPrefix, appRouterAssetPrefix) ??
+        resolveServiceWorkerAssetPath(pathname, appRouterBasePath);
       if (assetLookupPath) {
         if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
           return;
@@ -2540,7 +2548,7 @@ async function createPagesRouterRequestHandler(
   });
 
   // Build the static file metadata cache at startup (same as App Router).
-  const staticCache = await StaticFileCache.create(clientDir);
+  const staticCache = await StaticFileCache.create(clientDir, { basePath });
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     stripNodeRequestUrlFragment(req);
@@ -2658,7 +2666,9 @@ async function createPagesRouterRequestHandler(
     // Existing build assets bypass middleware. Missing asset-shaped requests
     // must still reach middleware so it can rewrite or respond. The shared
     // router classifies unmatched static paths after resolving rewrites.
-    const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
+    const pagesAssetLookup =
+      resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix) ??
+      resolveServiceWorkerAssetPath(pathname, basePath);
     if (pagesAssetLookup) {
       if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
         return;

@@ -146,6 +146,33 @@ describe("StaticFileCache", () => {
     expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=0");
   });
 
+  // Next.js serves `/_next/static/service-worker/*` as mutable, revalidated
+  // assets that may register at `basePath` (router-server.ts).
+  it("serves compiled service workers below basePath as revalidated assets", async () => {
+    await writeFile(clientDir, "base/_next/static/service-worker/sw.js", "self;");
+    await writeFile(
+      clientDir,
+      "base/_next/static/service-worker/sw-offline-0d471df27b40e831.js",
+      "self;",
+    );
+    await writeFile(clientDir, "base/_next/static/app-abc123.js", "const x = 1;");
+
+    const cache = await StaticFileCache.create(clientDir, { basePath: "/base" });
+    for (const pathname of [
+      "/base/_next/static/service-worker/sw.js",
+      "/base/_next/static/service-worker/sw-offline-0d471df27b40e831.js",
+    ]) {
+      const entry = cache.lookup(pathname);
+      expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
+      expect(entry!.original.headers["Service-Worker-Allowed"]).toBe("/base");
+      // A scope hash in the file name is not a content hash.
+      expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
+    }
+    expect(cache.lookup("/base/_next/static/app-abc123.js")!.original.headers).not.toHaveProperty(
+      "Service-Worker-Allowed",
+    );
+  });
+
   it("generates weak etag from filename hash for hashed assets", async () => {
     await writeFile(clientDir, "_next/static/app-abc123.css", ".body { margin: 0; }");
 
