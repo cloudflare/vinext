@@ -59,9 +59,10 @@ async function waitFor<T>(read: () => T | undefined, timeoutMs = 20_000): Promis
   throw new Error("Timed out waiting for Vite dev state");
 }
 
-function startViteDev(root: string, args: string[] = []) {
+function startViteDev(root: string, args: string[] = [], env?: NodeJS.ProcessEnv) {
   const proc = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0", ...args], {
     cwd: root,
+    env,
     stdio: "pipe",
   });
   let output = "";
@@ -72,7 +73,7 @@ function startViteDev(root: string, args: string[] = []) {
     // CI enables colors, which would split the "Local:" line.
     return /Local:\s+http:/.test(stripVTControlCharacters(output)) || undefined;
   });
-  return { proc, listening };
+  return { proc, listening, output: () => output };
 }
 
 afterEach(async () => {
@@ -471,8 +472,7 @@ export default { plugins: [
     expect(lock.port).toBeGreaterThan(0);
   }, 30_000);
 
-  it("retains the CLI claim until closeServer hooks finish", async ({ skip }) => {
-    skip(HAS_NATIVE_COMMAND_LOCK);
+  it("retains the CLI claim until closeServer hooks finish", async () => {
     const root = createProject();
     fs.writeFileSync(
       path.join(root, "vite.config.ts"),
@@ -495,27 +495,17 @@ export default { plugins: [vinext(), {
 }] };
 `,
     );
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-
-    await waitFor(() => {
-      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-      return readLockfile(getLockfilePath(root));
-    });
+    const dev = startViteDev(root);
+    child = dev.proc;
+    await dev.listening;
     const exited = new Promise<void>((resolve) => child!.once("exit", () => resolve()));
     child.kill("SIGTERM");
     await exited;
     expect(fs.readFileSync(path.join(root, "close-hook-ok"), "utf-8")).toBe("ok");
-    expect(output).not.toContain("Close hook lost CLI ownership");
+    expect(dev.output()).not.toContain("Close hook lost CLI ownership");
   }, 30_000);
 
-  it("loads dotenv before evaluating Vite config", async ({ skip }) => {
-    skip(HAS_NATIVE_COMMAND_LOCK);
+  it("loads dotenv before evaluating Vite config", async () => {
     const root = createProject();
     fs.writeFileSync(path.join(root, ".env.staging"), "FROM_DOTENV=config-time-dotenv\n");
     fs.writeFileSync(
@@ -527,24 +517,13 @@ if (process.env.FROM_DOTENV !== "config-time-dotenv") {
 export default { plugins: [vinext()] };
 `,
     );
-    child = spawn(
-      process.execPath,
-      [VITE_CLI_PATH, "dev", root, "--mode", "staging", "--port", "0"],
-      {
-        cwd: root,
-        stdio: "pipe",
-      },
-    );
-
-    const lock = await waitFor(() => {
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
-    expect(lock.port).toBeGreaterThan(0);
+    const dev = startViteDev(root, [root, "--mode", "staging"]);
+    child = dev.proc;
+    // Rejects if the config throws and Vite exits.
+    await dev.listening;
   }, 30_000);
 
-  it("preserves an explicit NODE_ENV while evaluating Vite config", async ({ skip }) => {
-    skip(HAS_NATIVE_COMMAND_LOCK);
+  it("preserves an explicit NODE_ENV while evaluating Vite config", async () => {
     const root = createProject();
     fs.writeFileSync(
       path.join(root, "vite.config.ts"),
@@ -557,17 +536,10 @@ export default { plugins: [vinext()] };
     );
     const env = { ...process.env };
     Reflect.set(env, "NODE_ENV", "staging");
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      env,
-      stdio: "pipe",
-    });
-
-    const lock = await waitFor(() => {
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
-    expect(lock.port).toBeGreaterThan(0);
+    const dev = startViteDev(root, [], env);
+    child = dev.proc;
+    // Rejects if the config throws and Vite exits.
+    await dev.listening;
   }, 30_000);
 
   it("reports duplicate dev servers through Vite's normal error path", async () => {
