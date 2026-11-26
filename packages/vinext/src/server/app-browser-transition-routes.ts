@@ -26,8 +26,19 @@ function isRouteGroupSegment(segment: string): boolean {
   return segment.startsWith("(") && segment.endsWith(")");
 }
 
+// Next.js normalizes an `@children` directory to the children parallel key,
+// so, like a route group, it adds no segment to a source path.
+function isSourcePathSegment(segment: string): boolean {
+  return segment.length > 0 && segment !== "@children" && !isRouteGroupSegment(segment);
+}
+
 function joinSourcePath(segments: readonly string[]): string {
-  return `/${segments.filter((segment) => segment.length > 0 && !isRouteGroupSegment(segment)).join("/")}`;
+  return `/${segments.filter(isSourcePathSegment).join("/")}`;
+}
+
+/** A manifest interception's source page path, in the same source form. */
+function normalizeSourcePagePath(sourcePagePath: string): string {
+  return joinSourcePath(sourcePagePath.split("/"));
 }
 
 function routePathFromId(routeId: string): string | null {
@@ -67,13 +78,13 @@ function resolveInterceptionSourcePagePath(
   // A merge can keep an intercepted slot from an earlier payload, so the
   // binding's own interception id decides, not only the latest interception.
   const byId = binding.interceptionId ? graph.interceptions.get(binding.interceptionId) : undefined;
-  if (byId?.sourcePagePath) return byId.sourcePagePath;
+  if (byId?.sourcePagePath) return normalizeSourcePagePath(byId.sourcePagePath);
   if (interception === null || interception.slotId !== binding.slotId) return null;
   const targetParts = splitPathnameForRouteMatch(interception.targetMatchedUrl);
   const match = graph.interceptionsBySlotId
     .get(interception.slotId)
     ?.find((candidate) => matchRoutePattern(targetParts, candidate.targetPatternParts) !== null);
-  return match?.sourcePagePath ?? null;
+  return match?.sourcePagePath === undefined ? null : normalizeSourcePagePath(match.sourcePagePath);
 }
 
 function treePathSegments(treePath: string): string[] {
@@ -144,7 +155,9 @@ function resolveWholeInterceptedSlot(
           interception.sourcePagePath !== undefined &&
           withoutSlotSegments(interception.sourcePagePath) === sourcePath,
       )?.sourcePagePath;
-    if (sourcePagePath !== undefined) return { binding, ownerSegments, path: sourcePagePath };
+    if (sourcePagePath !== undefined) {
+      return { binding, ownerSegments, path: normalizeSourcePagePath(sourcePagePath) };
+    }
     fallback ??= {
       binding,
       ownerSegments,

@@ -83,6 +83,10 @@ describe("resolveRouterTransitionFromRoutes", () => {
     expect(resolveRouterTransitionFromRoutes(page("/shop/[[...slug]]/page"), manifest)).toEqual([
       "/shop/[[...slug]]",
     ]);
+    // Next.js normalizes an @children directory to the children key.
+    expect(resolveRouterTransitionFromRoutes(page("/@children/foo/page"), manifest)).toEqual([
+      "/foo",
+    ]);
   });
 
   it("reports /_not-found for a URL that matched no route", () => {
@@ -390,6 +394,32 @@ describe("resolveRouterTransitionFromRoutes", () => {
           sourcePage: "/gallery/page",
         }),
         manifest,
+      ),
+    ).toEqual(expected);
+    // A manifest source page path through @children reports it the same way.
+    const interceptionWithChildrenDir = {
+      ...manifest,
+      segmentGraph: {
+        ...manifest.segmentGraph,
+        interceptions: new Map([
+          [
+            interceptionId,
+            {
+              ...manifest.segmentGraph.interceptions.get(interceptionId)!,
+              sourcePagePath: "/@children/gallery/@modal/(.)photos/[id]",
+            },
+          ],
+        ]),
+      },
+    } as BrowserRouteManifest;
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          interception,
+          slotBindings: [{ ...binding, interceptionId }],
+          sourcePage: "/gallery/page",
+        }),
+        interceptionWithChildrenDir,
       ),
     ).toEqual(expected);
     // Without the binding's interception id, the target URL selects it.
