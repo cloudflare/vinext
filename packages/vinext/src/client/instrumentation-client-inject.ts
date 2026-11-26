@@ -1,8 +1,5 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { parseSync } from "vite";
-import { mayAssignCommonJsExports } from "../plugins/commonjs-syntax.js";
-import { stripViteModuleQuery } from "../utils/path.js";
 import { INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE } from "./instrumentation-client-state.js";
 
 /** Resolve empty-module next to this file (.js in dist, .ts in source). */
@@ -16,30 +13,6 @@ function resolveInstrumentationClientEmptyModule(dir: string): string {
 export const INSTRUMENTATION_CLIENT_EMPTY_MODULE = resolveInstrumentationClientEmptyModule(
   import.meta.dirname,
 );
-
-export type InstrumentationClientInject = {
-  specifier: string;
-  /**
-   * The module is CommonJS, so its hooks live on `module.exports` (the default
-   * import) instead of the ESM namespace.
-   */
-  commonjs: boolean;
-};
-
-/**
- * Whether an inject module is CommonJS. Next.js loads each inject with
- * `require()`, and webpack's `javascript/auto` treats a module without
- * `import`/`export` syntax as CommonJS, so `require()` returns its live
- * `module.exports`. A module with neither ESM syntax nor CommonJS exports is a
- * plain script, which the namespace import also covers.
- */
-export function isCommonJsInstrumentationClientInject(code: string, id: string): boolean {
-  if (!mayAssignCommonJsExports(code)) return false;
-  const extension = path.extname(stripViteModuleQuery(id));
-  const lang = /^\.[cm]?ts$/.test(extension) ? "ts" : extension === ".tsx" ? "tsx" : "jsx";
-  const parsed = parseSync(id, code, { lang });
-  return parsed.errors.length === 0 && !parsed.module.hasModuleSyntax;
-}
 
 /**
  * Generate a virtual ESM module that implements the Next.js
@@ -60,6 +33,12 @@ export function isCommonJsInstrumentationClientInject(code: string, id: string):
  * it reads each module's hook when a transition starts, so a CommonJS module
  * can install it after load, and it isolates each hook's errors.
  *
+ * Next.js `require()`s each inject, so a CommonJS inject's hooks live on its
+ * live `module.exports`. A namespace import of CommonJS (Rolldown's interop in
+ * builds, Vite's optimized-dep interop in dev) copies `module.exports` when it
+ * loads and exposes the live object as `default`. So a hook the inject's
+ * namespace lacks is read from `default`.
+ *
  * **Specifier resolution:** Next.js webpack loader resolves every inject against
  * the project root at build time (`this.resolve(rootContext, spec)`) and emits
  * `require(resolvedPath)`. Vinext pre-resolves `./` and `../` in the plugin
@@ -71,7 +50,7 @@ export function isCommonJsInstrumentationClientInject(code: string, id: string):
  * @param emptyModulePath - Absolute path to the empty-module fallback
  */
 export function generateInstrumentationClientInjectModule(
-  injects: readonly InstrumentationClientInject[],
+  injects: readonly string[],
   userPath: string | null,
   emptyModulePath: string = INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 ): string {
@@ -83,26 +62,32 @@ export function generateInstrumentationClientInjectModule(
   const modules: string[] = [];
 
   for (let i = 0; i < injects.length; i++) {
-    const { specifier, commonjs } = injects[i];
-    lines.push(
-      commonjs
-        ? `import __vinj_${i} from ${JSON.stringify(specifier)};`
-        : `import * as __vinj_${i} from ${JSON.stringify(specifier)};`,
-    );
+    lines.push(`import * as __vinj_${i} from ${JSON.stringify(injects[i])};`);
     modules.push(`__vinj_${i}`);
   }
 
+  // The user's instrumentation-client is ESM: its namespace holds its hooks.
   const userSlot = injects.length;
   lines.push(`import * as __vinj_${userSlot} from ${JSON.stringify(userPath ?? emptyModulePath)};`);
-  modules.push(`__vinj_${userSlot}`);
 
   lines.push(
     "",
-    `const __vinext_instrumentation_modules = [${modules.join(", ")}];`,
+    `const __vinext_inject_modules = [${modules.join(", ")}];`,
+    "",
+    "function __vinext_inject_hooks(namespace) {",
+    "  if (namespace.onRouterTransitionStart !== undefined) return namespace;",
+    "  const exports = namespace.default;",
+    '  return exports !== null && (typeof exports === "object" || typeof exports === "function")',
+    "    ? exports",
+    "    : namespace;",
+    "}",
     "",
     "export function onRouterTransitionStart(url, type, event) {",
-    "  for (const hooks of __vinext_instrumentation_modules) {",
-    "    if (hooks == null) continue;",
+    "  const modules = [",
+    "    ...__vinext_inject_modules.map(__vinext_inject_hooks),",
+    `    __vinj_${userSlot},`,
+    "  ];",
+    "  for (const hooks of modules) {",
     "    try {",
     "      hooks.onRouterTransitionStart?.(url, type, event);",
     "    } catch (error) {",

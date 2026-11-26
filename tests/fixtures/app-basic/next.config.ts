@@ -51,6 +51,9 @@ const nextConfig: NextConfig = {
   // test/e2e/instrumentation-client-hook/inject fixture.
   instrumentationClientInject: [
     "./instrumentation-client-inject-late-hook.cjs",
+    // The same late hook from a CommonJS package, which dev serves through
+    // the deps optimizer.
+    "fake-instrumentation-inject",
     "./instrumentation-client-inject-throws.js",
   ],
 

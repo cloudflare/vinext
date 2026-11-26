@@ -18,9 +18,11 @@ test("instrumentationClientInject hooks are read at transition time and isolated
   await page.evaluate(() => {
     const win = window as Window & {
       __VINEXT_INSTALL_LATE_INSTRUMENTATION_HOOK?: () => void;
+      __VINEXT_INSTALL_LATE_PACKAGE_INSTRUMENTATION_HOOK?: () => void;
       __VINEXT_THROW_INJECTED_HOOK?: boolean;
     };
     win.__VINEXT_INSTALL_LATE_INSTRUMENTATION_HOOK?.();
+    win.__VINEXT_INSTALL_LATE_PACKAGE_INSTRUMENTATION_HOOK?.();
     win.__VINEXT_THROW_INJECTED_HOOK = true;
   });
 
@@ -35,6 +37,7 @@ test("instrumentationClientInject hooks are read at transition time and isolated
     ),
   ).toEqual([
     "[Injected Transition Start] [push] /instrumentation-client/some-page late-hook null",
+    "[Injected Transition Start] [push] /instrumentation-client/some-page package-late-hook",
     "[Injected Transition Start] [push] /instrumentation-client/some-page throws",
     "[Router Transition Start] [push] /instrumentation-client/some-page",
   ]);
