@@ -1139,6 +1139,10 @@ export function resolveOrderedAppPageMetadata<TModule extends AppPageHeadModule>
       const parentPromise = accumulatedEntriesPromise.then((entries) =>
         entries.length > 0 ? mergeParentMetadataEntries(entries) : {},
       );
+      // A source without generateMetadata() never reads its parent, so a
+      // failure before it would otherwise reject this promise unhandled. The
+      // failure is still reported through `accumulatedEntriesPromise`.
+      void parentPromise.catch(() => null);
       const metadataPromise = resolveModuleMetadata(
         source.moduleRoute,
         source.module,
