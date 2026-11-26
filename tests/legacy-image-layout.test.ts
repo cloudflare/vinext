@@ -37,9 +37,9 @@ function imgs(html: string): Record<string, string>[] {
       Array.from(attrs.matchAll(/([\w-]+)="([^"]*)"/g), ([, name, value]) => [
         name,
         value
-          .replace(/&amp;/g, "&")
           .replace(/&quot;/g, '"')
-          .replace(/&#x27;/g, "'"),
+          .replace(/&#x27;/g, "'")
+          .replace(/&amp;/g, "&"),
       ]),
     ),
   );
