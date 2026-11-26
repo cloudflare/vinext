@@ -255,27 +255,59 @@ describe("installSocketErrorBackstop listeners", () => {
     expect(result.stdout).not.toContain("still running");
   });
 
-  // Next.js's static export worker logs unhandled rejections and uncaught
-  // exceptions and keeps rendering (packages/next/src/export/worker.ts).
-  // test/e2e/react-version leaves a rejected import() floating at module scope
-  // and expects the build to succeed.
-  it("logs and keeps rendering during prerender", () => {
-    const result = runWithBackstop("installSocketErrorBackstop();", {
-      VINEXT_PRERENDER: "1",
-    });
+  const RENDER_WORKER_INSTALL = "installSocketErrorBackstop({ prerenderWorker: true });";
+
+  // Next.js's static export worker logs unhandled rejections and keeps
+  // rendering (packages/next/src/export/worker.ts). test/e2e/react-version
+  // leaves a rejected import() floating at module scope and expects the build
+  // to succeed.
+  it("logs an unhandled rejection and keeps rendering in a prerender worker", () => {
+    const result = spawnWithBackstop(
+      `
+      ${RENDER_WORKER_INSTALL}
+      process.on("unhandledRejection", () => console.log("app handler saw rejection"));
+      void Promise.reject(new Error("floating rejection"));
+      setTimeout(() => console.log("still running"), 50);
+    `,
+      { VINEXT_PRERENDER: "1" },
+    );
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("app handler saw rejection");
     expect(result.stdout).toContain("still running");
     expect(result.stderr).toContain("[vinext] unhandledRejection: Error: floating rejection");
-    expect(result.stderr).toContain("[vinext] uncaughtException: Error: uncaught throw");
+  });
+
+  // Without a per-page generation timeout, a request the throw left waiting
+  // would hang the build, so the worker ends with the reported error.
+  it("reports an uncaught exception and exits in a prerender worker", () => {
+    const result = runWithBackstop(RENDER_WORKER_INSTALL, { VINEXT_PRERENDER: "1" });
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain("still running");
+    expect(result.stderr).toContain(
+      "[vinext] uncaughtException during prerender: Error: uncaught throw",
+    );
+  });
+
+  // The build process sets VINEXT_PRERENDER too while it drives the workers;
+  // like Next.js's build process it fails on these errors.
+  it("re-throws during prerender outside a render worker", () => {
+    const result = runWithBackstop("installSocketErrorBackstop();", { VINEXT_PRERENDER: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Error: floating rejection");
+    expect(result.stdout).not.toContain("app handler saw rejection");
+    expect(result.stdout).not.toContain("still running");
   });
 
   // A build keeps NODE_ENV=test for its prerender workers.
-  it("logs and keeps rendering during prerender with NODE_ENV=test", () => {
-    const result = runWithBackstop("installSocketErrorBackstop();", {
-      NODE_ENV: "test",
-      VINEXT_PRERENDER: "1",
-    });
+  it("logs an unhandled rejection in a prerender worker with NODE_ENV=test", () => {
+    const result = spawnWithBackstop(
+      `
+      ${RENDER_WORKER_INSTALL}
+      void Promise.reject(new Error("floating rejection"));
+      setTimeout(() => console.log("still running"), 50);
+    `,
+      { NODE_ENV: "test", VINEXT_PRERENDER: "1" },
+    );
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("still running");
     expect(result.stderr).toContain("[vinext] unhandledRejection: Error: floating rejection");
@@ -287,7 +319,7 @@ describe("installSocketErrorBackstop listeners", () => {
   it("doesn't warn when a rejection is handled late", () => {
     const result = spawnWithBackstop(
       `
-      installSocketErrorBackstop();
+      ${RENDER_WORKER_INSTALL}
       const preloaded = Promise.reject(new Error("preloaded rejection"));
       setTimeout(() => preloaded.catch(() => console.log("handled late")), 10);
       setTimeout(() => console.log("still running"), 50);
@@ -307,7 +339,7 @@ describe("installSocketErrorBackstop listeners", () => {
       const unauthorized = () => {
         throw Object.assign(new Error("NEXT_UNAUTHORIZED"), { digest: ${JSON.stringify(digest)} });
       };
-      installSocketErrorBackstop();
+      ${RENDER_WORKER_INSTALL}
       ${trigger}
       setTimeout(() => console.log("still running"), 50);
     `,
