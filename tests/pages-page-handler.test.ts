@@ -179,6 +179,7 @@ describe("shouldEmitPagesClientTraceMetadata", () => {
 
 let captureRouteModuleSpans = false;
 const capturedRouteModuleSpans: Array<[string, string | undefined]> = [];
+const capturedRouteModuleSpanErrors: Array<[string, string | undefined]> = [];
 let activeRouteModuleSpanType: string | undefined;
 registerFrameworkTracingIntegration({
   id: "pages-page-handler-route-module-test",
@@ -188,7 +189,13 @@ registerFrameworkTracingIntegration({
     capturedRouteModuleSpans.push([descriptor.type, parentType]);
     activeRouteModuleSpanType = descriptor.type;
     try {
-      return callback({ setAttribute() {} });
+      return callback({
+        setAttribute() {},
+        recordException() {},
+        setErrorStatus(message) {
+          capturedRouteModuleSpanErrors.push([descriptor.type, message]);
+        },
+      });
     } finally {
       activeRouteModuleSpanType = parentType;
     }
@@ -294,6 +301,7 @@ describe("createPagesPageHandler — missing /500 lookup span", () => {
     );
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     capturedRouteModuleSpans.length = 0;
+    capturedRouteModuleSpanErrors.length = 0;
     captureRouteModuleSpans = true;
     try {
       const response = await handler(makeRequest("/boom"), "/boom", null, null, null);
@@ -317,6 +325,12 @@ describe("createPagesPageHandler — missing /500 lookup span", () => {
       ["NextNodeServer.findPageComponents", undefined],
       ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
     ]);
+    // Only the missing /500 page's load fails; its lookup falls through.
+    expect(
+      capturedRouteModuleSpanErrors.filter(([type]) =>
+        ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"].includes(type),
+      ),
+    ).toEqual([["LoadComponents.loadRouteModule", "Cannot find module for page: /500"]]);
   });
 });
 

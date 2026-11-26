@@ -138,6 +138,31 @@ export function traceRouteModuleLoad<T>(routePattern: string, load: () => T): T 
   return traceFindPageComponents(routePattern, () => traceLoadRouteModule(load));
 }
 
+class PageNotFoundError extends Error {
+  code = "ENOENT";
+  name = "PageNotFoundError";
+  constructor(page: string) {
+    super(`Cannot find module for page: ${page}`);
+  }
+}
+
+/**
+ * Trace looking up a page the app doesn't define. Next.js's `requirePage`
+ * throws `PageNotFoundError` inside the load span, which `findPageComponents`
+ * catches, so the load span fails while the lookup span does not.
+ */
+export function traceMissingRouteModuleLoad(routePattern: string): void {
+  traceFindPageComponents(routePattern, () => {
+    try {
+      traceLoadRouteModule(() => {
+        throw new PageNotFoundError(routePattern);
+      });
+    } catch (error) {
+      if (!(error instanceof PageNotFoundError)) throw error;
+    }
+  });
+}
+
 /** Set up the matched route's request context (pathname, query, params). */
 export function tracePrepareRouteModule<T>(callback: () => T): T {
   return frameworkTracer.trace(PREPARE_ROUTE_MODULE_SPAN, callback);

@@ -40,6 +40,7 @@ import {
 } from "./pages-page-response.js";
 import {
   tracePagesDocumentStream,
+  traceMissingRouteModuleLoad,
   tracePrepareRouteModule,
   traceRouteModuleLoad,
 } from "./pages-execution-tracing.js";
@@ -1518,8 +1519,7 @@ export function createPagesPageHandler(
             }
           }
           if (!errorRoute && errorPageRoute) {
-            // Next.js's failed `/500` lookup still runs its route module load.
-            traceRouteModuleLoad("/500", () => undefined);
+            traceMissingRouteModuleLoad("/500");
             errorRoute = errorPageRoute;
           }
           if (errorRoute) {
