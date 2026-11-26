@@ -80,6 +80,8 @@ import {
 } from "../client/navigation-runtime.js";
 import { retryScrollTo, scrollToHashTargetOnNextFrame } from "vinext/shims/hash-scroll";
 import { AppRouterScrollCommitProvider } from "vinext/shims/app-router-scroll";
+import { OfflineProvider } from "vinext/shims/internal/offline-provider";
+import { fetchRetryingWhenOffline, installOfflineListeners } from "vinext/shims/internal/offline";
 import {
   beginAppRouterScrollIntent,
   consumeAppRouterScrollIntent,
@@ -1721,10 +1723,14 @@ function BrowserRoot({
       )
     : innerTree;
 
+  // Next.js's AppRouter wraps its content in OfflineProvider under the flag.
+  const offlineAwareTree = process.env.__NEXT_USE_OFFLINE
+    ? createElement(OfflineProvider, null, committedTree)
+    : committedTree;
   const scrollScopedTree = createElement(
     AppRouterScrollCommitProvider,
     { commitId: treeState.renderId },
-    committedTree,
+    offlineAwareTree,
   );
   const rootErrorTree = createElement(GlobalErrorBoundary, {
     fallback: DEFAULT_GLOBAL_ERROR_COMPONENT,
@@ -2114,7 +2120,16 @@ async function main(): Promise<void> {
   // in the entry chunk. Navigations and prefetches wait for it before reading it.
   void loadNavigationRuntimeRouteManifest();
 
-  if (hasServerActions) registerServerActionCallback();
+  if (hasServerActions) {
+    registerServerActionCallback();
+    // The action client is its own chunk, loaded on the first action. An
+    // action started offline could not load it, so it would fail instead of
+    // waiting to be replayed; Next.js's action reducer ships with the router.
+    // With experimental.useOffline, load it now while the page is online.
+    if (process.env.__NEXT_USE_OFFLINE) {
+      void loadServerActionClient!().catch(() => {});
+    }
+  }
   installAppNavigationFailureListeners();
   if (HAS_CLIENT_REWRITES) await preloadHybridClientRouteOwner();
 
@@ -2885,12 +2900,23 @@ function bootstrapHydration(
             liveRequestHeaders.set(VINEXT_MOUNTED_LAYOUTS_HEADER, mountedLayoutsHeader);
             sentMountedLayouts = true;
           }
-          navResponse = await fetch(rscUrl, {
-            headers: liveRequestHeaders,
-            credentials: "include",
-            priority: "auto",
-            signal: navigationAbortHandle.signal,
-          });
+          const fetchNavigation = () =>
+            fetch(rscUrl, {
+              headers: liveRequestHeaders,
+              credentials: "include",
+              priority: "auto",
+              signal: navigationAbortHandle.signal,
+            });
+          // With experimental.useOffline, a fetch that loses the network waits
+          // for it to return and is sent again (Next.js fetchServerResponse),
+          // instead of falling back to a document navigation. The navigation
+          // stays pending meanwhile; a newer one aborts it.
+          navResponse = process.env.__NEXT_USE_OFFLINE
+            ? await fetchRetryingWhenOffline(
+                fetchNavigation,
+                () => !isPageUnloading && browserNavigationController.isCurrentNavigation(navId),
+              )
+            : await fetchNavigation();
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -3594,6 +3620,12 @@ if (typeof document !== "undefined") {
   // initializes, and `app-router-instance.ts` (line 510) which assigns
   // `router: publicAppRouterInstance` at module load.
   installWindowNext({ appDir: true, router: appRouterInstance });
+
+  // Next.js's app-index loads its offline module before hydration so the
+  // browser's offline/online events are heard from the start.
+  if (process.env.__NEXT_USE_OFFLINE) {
+    installOfflineListeners();
+  }
 
   window.addEventListener("pagehide", () => {
     isPageUnloading = true;

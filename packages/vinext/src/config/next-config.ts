@@ -487,6 +487,12 @@ export type NextConfig = {
      */
     gestureTransition?: boolean;
     /**
+     * Enables `useOffline()` from `next/offline` and the App Router's offline
+     * retry: a navigation, Server Action or prefetch that loses the network
+     * waits for it to return and runs again.
+     */
+    useOffline?: boolean;
+    /**
      * Enables App Router Segment Cache prefetch inlining. When provided as an
      * object, thresholds are resolved with Next.js defaults and non-finite
      * values are clamped to Number.MAX_SAFE_INTEGER.
@@ -591,6 +597,8 @@ export type ResolvedNextConfig = {
    * `useRouter().experimental_gesturePush()`.
    */
   gestureTransition: boolean;
+  /** `experimental.useOffline`: `next/offline` and the App Router's offline retry. */
+  useOffline: boolean;
   /**
    * Resolved `experimental.prefetchInlining` config. Next.js normalizes `true`
    * and partial object config into concrete thresholds.
@@ -2026,6 +2034,7 @@ export async function resolveNextConfig(
       cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
+      useOffline: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -2471,6 +2480,7 @@ export async function resolveNextConfig(
     cachedNavigations: cacheComponents && experimental?.cachedNavigations === true,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
+    useOffline: experimental?.useOffline === true,
     prefetchInlining,
     redirects,
     rewrites,

@@ -50,11 +50,11 @@ describe("scanImports", () => {
   });
 
   it("detects partial imports", () => {
-    writeFile("app/page.tsx", `import { useOffline } from "next/offline";`);
+    writeFile("app/page.tsx", `import getConfig from "next/config";`);
 
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
-    expect(items[0].name).toBe("next/offline");
+    expect(items[0].name).toBe("next/config");
     expect(items[0].status).toBe("partial");
   });
 
@@ -226,7 +226,7 @@ describe("scanImports", () => {
       "app/page.tsx",
       `
       import Link from "next/link";
-      import { useOffline } from "next/offline";
+      import getConfig from "next/config";
       import { useAmp } from "next/amp";
     `,
     );
@@ -2137,12 +2137,12 @@ describe("runCheck", () => {
   });
 
   it("calculates score correctly — partial items count 50%", () => {
-    // 1 supported import (next/link) + 1 partial import (next/offline) + no-config (supported) + 2 conventions (App Router + 1 page)
+    // 1 supported import (next/link) + 1 partial import (next/config) + no-config (supported) + 2 conventions (App Router + 1 page)
     writeFile(
       "app/page.tsx",
       `
       import Link from "next/link";
-      import { useOffline } from "next/offline";
+      import getConfig from "next/config";
     `,
     );
 
@@ -2217,7 +2217,7 @@ describe("formatReport", () => {
       "app/page.tsx",
       `
       import Link from "next/link";
-      import { useOffline } from "next/offline";
+      import getConfig from "next/config";
     `,
     );
     writeFile(
@@ -2272,14 +2272,14 @@ describe("formatReport", () => {
   });
 
   it("shows partial support section when there are partial items", () => {
-    writeFile("app/page.tsx", `import { useOffline } from "next/offline";`);
+    writeFile("app/page.tsx", `import getConfig from "next/config";`);
     writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
 
     expect(report).toContain("Partial support");
-    expect(report).toContain("next/offline");
+    expect(report).toContain("next/config");
   });
 
   it("does not show issues section when everything is supported", () => {

@@ -190,6 +190,21 @@ const projectServers = {
       timeout: 120_000,
     },
   },
+  // experimental.useOffline against a production build, where Links prefetch.
+  // Its own fixture: with the flag on, a failed RSC fetch waits for the network
+  // instead of falling back to a document load, which other specs rely on.
+  "app-router-use-offline": {
+    testDir: "./tests/e2e/app-router-use-offline",
+    use: { baseURL: "http://localhost:4319" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4319",
+      cwd: "./tests/fixtures/app-use-offline",
+      port: 4319,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
   "catch-error": {
     testDir: "./tests/e2e/catch-error",
     use: { baseURL: "http://localhost:4185" },

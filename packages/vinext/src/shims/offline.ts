@@ -1,13 +1,11 @@
 /**
  * next/offline shim
  *
- * Stub for the experimental `useOffline()` hook added in Next.js
- * (vercel/next.js#92012). Returns `false` (online) unconditionally.
- * Full offline retry behavior (navigation retry, prefetch pause/resume,
- * OfflineProvider) will be implemented once the feature stabilizes upstream.
+ * `useOffline()` from Next.js's `experimental.useOffline`. It reports `true`
+ * while a navigation, Server Action or prefetch is held by a lost connection
+ * (see shims/internal/offline.ts), and `false` otherwise. Without the flag no
+ * OfflineProvider is mounted and it always reports `false`, as in Next.js.
  */
 "use client";
 
-export function useOffline(): boolean {
-  return false;
-}
+export { useOffline } from "./internal/offline-provider.js";

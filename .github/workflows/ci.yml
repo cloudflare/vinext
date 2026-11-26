@@ -505,6 +505,10 @@ jobs:
             label: app-router-bfcache-prod
             shardIndex: 1
             shardTotal: 1
+          - project: app-router-use-offline
+            label: app-router-use-offline
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router-prefetch-searchparams
             label: app-router-prefetch-searchparams
             shardIndex: 1
