@@ -57,14 +57,14 @@ export function serviceWorkerFileName(scope: string): string {
 }
 
 /** The scope a worker registered at `scope` gets once `basePath` is applied. */
-export function serviceWorkerScopeWithBasePath(scope: string, basePath: string): string {
+function serviceWorkerScopeWithBasePath(scope: string, basePath: string): string {
   const base = basePath.replace(/\/+$/, "");
   if (scope === DEFAULT_SCOPE) return base || DEFAULT_SCOPE;
   return `${base}${scope}`;
 }
 
 /** The URL pathname a worker registered at `scope` is served at. */
-export function serviceWorkerUrl(scope: string, basePath: string): string {
+function serviceWorkerUrl(scope: string, basePath: string): string {
   return `${basePath.replace(/\/+$/, "")}/${SERVICE_WORKER_URL_DIR}/${serviceWorkerFileName(scope)}`;
 }
 
