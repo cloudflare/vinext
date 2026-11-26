@@ -9080,20 +9080,23 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
-          // Nitro's static handler serves compiled service workers. Give them
-          // Next.js's headers through a route rule (as Nitro does for its own
-          // public asset cache headers): revalidated on every use, and allowed
-          // to register at `basePath`, above their own directory.
-          const serviceWorkerRoute = `/${serviceWorkerOutputDir(nextConfig.basePath)}**`;
-          const routeRules = (nitro.options.routeRules ??= {});
-          routeRules[serviceWorkerRoute] = {
-            ...routeRules[serviceWorkerRoute],
-            headers: {
-              ...routeRules[serviceWorkerRoute]?.headers,
-              "cache-control": SERVICE_WORKER_CACHE_CONTROL,
-              "service-worker-allowed": serviceWorkerAllowedHeader(nextConfig.basePath),
-            },
-          };
+          // Nitro's static handler serves compiled service workers in a build.
+          // Give them Next.js's headers through a route rule (as Nitro does for
+          // its own public asset cache headers): revalidated on every use, and
+          // allowed to register at `basePath`, above their own directory. In
+          // dev, vinext's middleware serves them with these headers itself.
+          if (!nitro.options.dev) {
+            const serviceWorkerRoute = `/${serviceWorkerOutputDir(nextConfig.basePath)}**`;
+            const routeRules = (nitro.options.routeRules ??= {});
+            routeRules[serviceWorkerRoute] = {
+              ...routeRules[serviceWorkerRoute],
+              headers: {
+                ...routeRules[serviceWorkerRoute]?.headers,
+                "cache-control": SERVICE_WORKER_CACHE_CONTROL,
+                "service-worker-allowed": serviceWorkerAllowedHeader(nextConfig.basePath),
+              },
+            };
+          }
 
           // Saves each request's raw target before h3 can rewrite req.url. The
           // dev server checks the raw target itself.

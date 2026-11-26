@@ -153,6 +153,12 @@ async function initializeNitroSetupPlugin(root: string): Promise<NitroSetupPlugi
   return { ...nitroPlugin, nitro: { ...nitroPlugin.nitro, setup: setupWithHooks } };
 }
 
+// Only a header rule: compiled service workers are revalidated on every use.
+const SERVICE_WORKER_HEADERS = {
+  "cache-control": "public, max-age=0, must-revalidate",
+  "service-worker-allowed": "/",
+};
+
 describe("vinext Nitro setup integration", () => {
   it("propagates server externals to Nitro traceDeps", async () => {
     const root = createAppProject();
@@ -200,6 +206,7 @@ describe("vinext Nitro setup integration", () => {
 
     expect(nitro.options.routeRules).toEqual({
       "/blog/*": { headers: { "x-test": "1" } },
+      "/_next/static/service-worker/**": { headers: SERVICE_WORKER_HEADERS },
     });
   });
 
@@ -210,7 +217,9 @@ describe("vinext Nitro setup integration", () => {
 
     await nitroPlugin.nitro!.setup!(nitro);
 
-    expect(nitro.options.routeRules).toEqual({});
+    expect(nitro.options.routeRules).toEqual({
+      "/_next/static/service-worker/**": { headers: SERVICE_WORKER_HEADERS },
+    });
   });
 
   // vinext serves the public files its router resolves, such as a rewrite

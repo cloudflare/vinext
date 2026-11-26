@@ -29,8 +29,8 @@ const CONFLICT_FIXTURE_DIR = path.resolve(
   "./fixtures/app-service-worker-conflict",
 );
 
-function rewrite(code: string, basePath = ""): string {
-  const { calls } = analyzeServiceWorkerCalls(code, "/app/page.js");
+function rewrite(code: string, basePath = "", id = "/app/page.js"): string {
+  const { calls } = analyzeServiceWorkerCalls(code, id);
   let output = code;
   for (const call of [...calls].reverse()) {
     output =
@@ -99,12 +99,29 @@ describe("service worker register() analysis", () => {
     for (const declarations of [
       `let options = { scope: "/offline" };`,
       `const options = { scope: "/offline" }; function f() { const options = {}; }`,
+      `const options = { scope: "/offline" }; function f(options) {}`,
+      `const options = { scope: "/offline" }; try {} catch (options) {}`,
     ]) {
       expect(
         rewrite(
           `${declarations}\nnavigator.serviceWorker.register(new URL("./sw", import.meta.url), options)`,
         ),
       ).toContain(`"/_next/static/service-worker/sw.js", ({ ...options, scope: "/" })`);
+    }
+  });
+
+  it("reads a const options object through TypeScript wrappers", () => {
+    for (const wrapped of [
+      `const options = { scope: "/offline" } as const;`,
+      `const options = { scope: "/offline" } satisfies RegistrationOptions;`,
+    ]) {
+      expect(
+        rewrite(
+          `${wrapped}\nnavigator.serviceWorker.register(new URL("./sw", import.meta.url), options as RegistrationOptions)`,
+          "",
+          "/app/page.ts",
+        ),
+      ).toContain(`scope: "/offline" })`);
     }
   });
 
@@ -286,6 +303,9 @@ describe("service worker dev server", () => {
       plugins: [vinext({ appDir: fixtureDir })],
       logLevel: "silent",
       server: { port: 0 },
+      // No dep discovery: a run it starts can still be writing to the deps
+      // directory when the server closes, which rejects unhandled.
+      optimizeDeps: { noDiscovery: true },
     });
     await server.listen();
     baseUrl = server.resolvedUrls!.local[0]!.replace(/\/$/, "");
@@ -309,7 +329,7 @@ describe("service worker dev server", () => {
     expect(body).not.toMatch(/^\s*(?:import|export)\b/m);
 
     const conditional = await fetch(`${baseUrl}/_next/static/service-worker/sw.js`, {
-      headers: { "If-None-Match": response.headers.get("etag")! },
+      headers: { "If-None-Match": `"other", W/${response.headers.get("etag")}` },
       cache: "force-cache",
     });
     expect(conditional.status).toBe(304);

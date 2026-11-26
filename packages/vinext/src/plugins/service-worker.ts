@@ -38,13 +38,16 @@ import {
   trimPathSlashes,
 } from "../utils/service-worker.js";
 import {
+  collectBindingNames,
   isIdentifierNamed,
   parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   staticStringValue,
+  unwrapExpression,
   walkAst,
 } from "./ast-utils.js";
+import { matchesIfNoneMatch } from "../server/http-conditional.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 const DEFAULT_SCOPE = "/";
@@ -148,13 +151,12 @@ function propertyKeyName(property: ESTree.ObjectProperty): string | null {
  */
 function analyzeScope(
   argument: ESTree.Node | undefined,
-  constObjects: ReadonlyMap<string, ESTree.ObjectExpression | null>,
+  constObjects: ReadonlyMap<string, ESTree.ObjectExpression>,
 ): { scope: string } | { error: string } {
   // Like Turbopack's value linking, an options object held in a `const` is
-  // read through its binding. Only a name declared once in the module is
-  // followed, so a shadowed binding can't pick up the wrong object.
-  const options =
-    argument?.type === "Identifier" ? (constObjects.get(argument.name) ?? undefined) : argument;
+  // read through its binding.
+  const value = unwrapExpression(argument);
+  const options = value?.type === "Identifier" ? constObjects.get(value.name) : value;
   if (options?.type !== "ObjectExpression") return { scope: DEFAULT_SCOPE };
   let scopeValue: ESTree.Node | undefined;
   for (const property of options.properties) {
@@ -173,6 +175,63 @@ function analyzeScope(
 }
 
 /**
+ * The object literals held in `const` bindings, by name. Only a name bound
+ * once in the module (by any declaration, parameter, catch clause, import, or
+ * function or class name) is included, so a shadowing binding can't pick up
+ * the wrong object.
+ */
+function collectConstObjects(program: ESTree.Program): Map<string, ESTree.ObjectExpression> {
+  const bindingCounts = new Map<string, number>();
+  const constObjects = new Map<string, ESTree.ObjectExpression>();
+  const countBindings = (node: ESTree.Node | null | undefined) => {
+    const names = new Set<string>();
+    collectBindingNames(node, names);
+    for (const name of names) bindingCounts.set(name, (bindingCounts.get(name) ?? 0) + 1);
+  };
+  walkAst(program, (node) => {
+    // oxlint-disable-next-line typescript/switch-exhaustiveness-check
+    switch (node.type) {
+      case "VariableDeclaration":
+        if (node.kind !== "const") return;
+        for (const declarator of node.declarations) {
+          const init = unwrapExpression(declarator.init);
+          if (declarator.id.type === "Identifier" && init?.type === "ObjectExpression") {
+            constObjects.set(declarator.id.name, init);
+          }
+        }
+        return;
+      case "VariableDeclarator":
+        countBindings(node.id);
+        return;
+      case "FunctionDeclaration":
+      case "FunctionExpression":
+      case "ArrowFunctionExpression":
+        if (node.type !== "ArrowFunctionExpression") countBindings(node.id);
+        for (const param of node.params) countBindings(param);
+        return;
+      case "ClassDeclaration":
+      case "ClassExpression":
+        countBindings(node.id);
+        return;
+      case "CatchClause":
+        countBindings(node.param);
+        return;
+      case "ImportSpecifier":
+      case "ImportDefaultSpecifier":
+      case "ImportNamespaceSpecifier":
+        countBindings(node.local);
+        return;
+      default:
+        return;
+    }
+  });
+  for (const name of constObjects.keys()) {
+    if (bindingCounts.get(name) !== 1) constObjects.delete(name);
+  }
+  return constObjects;
+}
+
+/**
  * Find every `navigator.serviceWorker.register(new URL(...), options?)` call
  * whose worker and scope are statically known. Calls with an unanalyzable
  * scope are left untouched and reported as warnings, matching Turbopack.
@@ -181,21 +240,7 @@ export function analyzeServiceWorkerCalls(code: string, id: string): ServiceWork
   const result: ServiceWorkerCallAnalysis = { calls: [], warnings: [] };
   const lang = scriptParserLanguage(id) ?? "js";
   const program = parseProgram(code, { lang });
-  const constObjects = new Map<string, ESTree.ObjectExpression | null>();
-  walkAst(program, (node) => {
-    if (node.type !== "VariableDeclaration") return;
-    for (const declarator of node.declarations) {
-      if (declarator.id.type !== "Identifier") continue;
-      const name = declarator.id.name;
-      const init = declarator.init;
-      constObjects.set(
-        name,
-        node.kind === "const" && !constObjects.has(name) && init?.type === "ObjectExpression"
-          ? init
-          : null,
-      );
-    }
-  });
+  const constObjects = collectConstObjects(program);
   walkAst(program, (node) => {
     if (node.type !== "CallExpression" || !isServiceWorkerRegister(node.callee)) return;
     const [scriptArg, optionsArg] = node.arguments;
@@ -293,6 +338,17 @@ async function bundleServiceWorker(
     },
   });
   const outputs = (Array.isArray(output) ? output : [output]) as Rolldown.RolldownOutput[];
+  // Only the worker script is served, so a file the build emits beside it
+  // (an asset imported with `?no-inline`, which overrides the inline limit)
+  // would be a broken URL in the worker.
+  const emitted = outputs.flatMap(({ output: files }) =>
+    files.filter((file) => file.type === "asset").map((file) => file.fileName),
+  );
+  if (emitted.length > 0) {
+    throw new Error(
+      `[vinext] The service worker ${source} references files that must be inlined into it, but these were emitted separately: ${emitted.join(", ")}. Remove \`?no-inline\` from their imports.`,
+    );
+  }
   for (const { output: files } of outputs) {
     for (const file of files) {
       if (file.type === "chunk" && file.isEntry) {
@@ -333,7 +389,7 @@ function sendServiceWorker(
   res.setHeader("Cache-Control", SERVICE_WORKER_CACHE_CONTROL);
   res.setHeader("Service-Worker-Allowed", serviceWorkerAllowedHeader(basePath));
   res.setHeader("ETag", etag);
-  if (req.headers["if-none-match"] === etag) {
+  if (matchesIfNoneMatch(req.headers["if-none-match"], etag)) {
     res.statusCode = 304;
     res.end();
     return;
