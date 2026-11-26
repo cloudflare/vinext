@@ -842,3 +842,19 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
 
   return cachedFn as T;
 }
+
+// `next/cache` is CommonJS in Next.js, so a default import receives its
+// `module.exports`: the entry's public API (packages/next/cache.js).
+export default {
+  unstable_cache,
+  updateTag,
+  revalidateTag,
+  revalidatePath,
+  refresh,
+  unstable_noStore,
+  io,
+  cacheLife,
+  cacheTag,
+  unstable_cacheLife,
+  unstable_cacheTag,
+};

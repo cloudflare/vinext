@@ -11,3 +11,9 @@
 export function useOffline(): boolean {
   return false;
 }
+
+// `next/offline` is CommonJS in Next.js, so a default import receives its
+// `module.exports`: the entry's public API (packages/next/src/client/components/use-offline.tsx).
+export default {
+  useOffline,
+};
