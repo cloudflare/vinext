@@ -113,7 +113,11 @@ describe("instrumentation lifecycle spans", () => {
       lifecycleSpans().map(({ descriptor, errors, status }) => [descriptor.type, errors, status]),
     ).toEqual([
       ["Instrumentation.loadModule", [], undefined],
-      ["Instrumentation.register", [failure], "register failed"],
+      [
+        "Instrumentation.register",
+        [failure],
+        "An error occurred while loading instrumentation hook: register failed",
+      ],
     ]);
   });
 
@@ -146,7 +150,11 @@ describe("instrumentation lifecycle spans", () => {
       lifecycleSpans().map(({ descriptor, errors, status }) => [descriptor.type, errors, status]),
     ).toEqual([
       ["Instrumentation.loadModule", [], undefined],
-      ["Instrumentation.register", [failure], "extension failed"],
+      [
+        "Instrumentation.register",
+        [failure],
+        "An error occurred while loading instrumentation hook: extension failed",
+      ],
     ]);
   });
 

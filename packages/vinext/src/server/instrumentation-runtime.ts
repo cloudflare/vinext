@@ -167,6 +167,10 @@ export async function ensureInstrumentationRegistered(
         // of the timed registration.
         extendTracerProviderForCacheComponents();
       } catch (err) {
+        // Like Next.js, name the failing hook on the error it records and throws.
+        if (err instanceof Error) {
+          err.message = `An error occurred while loading instrumentation hook: ${err.message}`;
+        }
         error = err;
         throw err;
       } finally {
