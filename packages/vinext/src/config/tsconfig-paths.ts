@@ -125,14 +125,17 @@ function emptyResolution(): TsconfigPathResolution {
 function loadResolutionFromTsconfigFile(
   configPath: string,
   activeConfigs: Set<string>,
+  // Collects every config file read, for watching.
+  readConfigs?: Set<string>,
 ): TsconfigPathResolution {
   // `activeConfigs` holds only the configs on the current `extends` chain, so
   // it breaks cycles while a config shared by several parents (`[B, C]` both
   // extending `D`) is still read through each of them.
   if (activeConfigs.has(configPath)) return emptyResolution();
   activeConfigs.add(configPath);
+  readConfigs?.add(configPath);
   try {
-    return readResolutionFromTsconfigFile(configPath, activeConfigs);
+    return readResolutionFromTsconfigFile(configPath, activeConfigs, readConfigs);
   } finally {
     activeConfigs.delete(configPath);
   }
@@ -141,6 +144,7 @@ function loadResolutionFromTsconfigFile(
 function readResolutionFromTsconfigFile(
   configPath: string,
   activeConfigs: Set<string>,
+  readConfigs?: Set<string>,
 ): TsconfigPathResolution {
   let parsed: Record<string, unknown> | null = null;
   try {
@@ -158,7 +162,7 @@ function readResolutionFromTsconfigFile(
   for (const extendsSpecifier of extendsList) {
     const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
     if (extendedPath) {
-      const parent = loadResolutionFromTsconfigFile(extendedPath, activeConfigs);
+      const parent = loadResolutionFromTsconfigFile(extendedPath, activeConfigs, readConfigs);
       resolution = {
         aliases: { ...resolution.aliases, ...parent.aliases },
         baseUrl: parent.baseUrl ?? resolution.baseUrl,
@@ -221,28 +225,42 @@ export function loadTsconfigResolutionForRoot(projectRoot: string): TsconfigPath
   return emptyResolution();
 }
 
+export type TsconfigBaseUrlConfig = { configPath: string; baseUrl: string };
+
+export type TsconfigBaseUrlLoad = {
+  config: TsconfigBaseUrlConfig | null;
+  // The candidate configs and every config the selected one extends.
+  watchFiles: string[];
+};
+
 /**
  * Return the explicit `compilerOptions.baseUrl` (own or inherited through
  * `extends`) of the config file vinext reads compiler options from:
  * `typescript.tsconfigPath` when set, else `tsconfig.json`, else
- * `jsconfig.json` (Next.js build/load-jsconfig.ts). Returns null when no config
- * file sets `baseUrl`.
+ * `jsconfig.json` (Next.js build/load-jsconfig.ts). `config` is null when no
+ * config file sets `baseUrl`.
  */
-export type TsconfigBaseUrlConfig = { configPath: string; baseUrl: string };
-
 export function loadTsconfigBaseUrl(
   projectRoot: string,
   configuredPath?: string,
-): TsconfigBaseUrlConfig | null {
-  const candidates = configuredPath
-    ? [path.resolve(projectRoot, configuredPath)]
-    : TSCONFIG_FILES.map((name) => path.join(projectRoot, name));
+): TsconfigBaseUrlLoad {
+  // Like Next.js build/load-jsconfig.ts: the configured tsconfigPath (else
+  // tsconfig.json) when it exists, else jsconfig.json.
+  const candidates = [
+    configuredPath
+      ? path.resolve(projectRoot, configuredPath)
+      : path.join(projectRoot, "tsconfig.json"),
+    path.join(projectRoot, "jsconfig.json"),
+  ];
+  const readConfigs = new Set<string>();
+  let config: TsconfigBaseUrlConfig | null = null;
   for (const configPath of candidates) {
     if (!fs.existsSync(configPath)) continue;
-    const { baseUrl } = loadResolutionFromTsconfigFile(configPath, new Set());
-    return baseUrl ? { configPath, baseUrl } : null;
+    const { baseUrl } = loadResolutionFromTsconfigFile(configPath, new Set(), readConfigs);
+    config = baseUrl ? { configPath, baseUrl } : null;
+    break;
   }
-  return null;
+  return { config, watchFiles: [...new Set([...candidates, ...readConfigs])] };
 }
 
 /**

@@ -1,10 +1,13 @@
 import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
-import type { TsconfigBaseUrlConfig } from "../config/tsconfig-paths.js";
+import type { TsconfigBaseUrlLoad } from "../config/tsconfig-paths.js";
 
 type TsconfigBaseUrlPluginOptions = {
-  /** The config whose explicit `compilerOptions.baseUrl` Next.js applies. */
-  getBaseUrlConfig: () => TsconfigBaseUrlConfig | null;
+  /**
+   * Read the config whose explicit `compilerOptions.baseUrl` Next.js applies,
+   * or null before vinext's config hook has run.
+   */
+  load: () => TsconfigBaseUrlLoad | null;
 };
 
 // Non-relative specifiers, as TypeScript resolves them through `baseUrl`:
@@ -34,6 +37,18 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
   // The baseUrl to apply, or null when Vite's native resolve.tsconfigPaths
   // already reads the config that sets it (or none does).
   let baseUrl: string | null = null;
+  let watchFiles = new Set<string>();
+  // The config Vite's native resolver reads, when it reads one.
+  let nativeConfigPath: string | null = null;
+
+  function load(): void {
+    const loaded = options.load();
+    const baseUrlConfig = loaded?.config ?? null;
+    watchFiles = new Set(loaded?.watchFiles);
+    baseUrl =
+      baseUrlConfig && baseUrlConfig.configPath !== nativeConfigPath ? baseUrlConfig.baseUrl : null;
+  }
+
   return {
     name: "vinext:tsconfig-base-url",
     enforce: "pre",
@@ -41,13 +56,41 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
     // top-level `tsconfig` (the file the native resolver reads, else it
     // discovers tsconfig.json) or `resolve.tsconfigPaths`.
     configResolved(config) {
-      const baseUrlConfig = options.getBaseUrlConfig();
-      const nativeConfigPath = config.tsconfig
-        ? toSlash(config.tsconfig)
-        : path.join(toSlash(config.root), "tsconfig.json");
-      const nativeReadsBaseUrlConfig =
-        config.resolve.tsconfigPaths === true && baseUrlConfig?.configPath === nativeConfigPath;
-      baseUrl = baseUrlConfig && !nativeReadsBaseUrlConfig ? baseUrlConfig.baseUrl : null;
+      nativeConfigPath =
+        config.resolve.tsconfigPaths !== true
+          ? null
+          : config.tsconfig
+            ? toSlash(config.tsconfig)
+            : path.join(toSlash(config.root), "tsconfig.json");
+      load();
+    },
+    // Like Vite's own tsconfig.json handling (reloadOnTsconfigChange), a change
+    // to a candidate config or one it extends re-reads baseUrl, then
+    // invalidates every module and reloads.
+    configureServer(server) {
+      server.watcher.add([...watchFiles]);
+      const onConfigFileEvent = (file: string) => {
+        if (!watchFiles.has(toSlash(file))) return;
+        const previousBaseUrl = baseUrl;
+        const previousWatchFiles = watchFiles;
+        load();
+        const added = [...watchFiles].filter((watched) => !previousWatchFiles.has(watched));
+        if (added.length > 0) server.watcher.add(added);
+        if (baseUrl === previousBaseUrl) return;
+        server.config.logger.info(
+          `changed baseUrl config detected: ${file} - invalidating modules and forcing full-reload.`,
+          { clear: server.config.clearScreen, timestamp: true },
+        );
+        for (const environment of Object.values(server.environments)) {
+          environment.moduleGraph.invalidateAll();
+        }
+        for (const environment of Object.values(server.environments)) {
+          environment.hot.send({ type: "full-reload", path: "*" });
+        }
+      };
+      server.watcher.on("add", onConfigFileEvent);
+      server.watcher.on("change", onConfigFileEvent);
+      server.watcher.on("unlink", onConfigFileEvent);
     },
     resolveId: {
       filter: { id: { include: NON_RELATIVE_SPECIFIER_RE, exclude: EXCLUDED_SPECIFIER_RES } },

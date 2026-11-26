@@ -23,7 +23,10 @@ const buildDirs: string[] = [];
 // (reading tsconfig.json) doesn't handle.
 function createResolvedBaseUrlPlugin() {
   const plugin = createTsconfigBaseUrlPlugin({
-    getBaseUrlConfig: () => ({ configPath: path.join(FIXTURE, "jsconfig.json"), baseUrl: FIXTURE }),
+    load: () => ({
+      config: { configPath: path.join(FIXTURE, "jsconfig.json"), baseUrl: FIXTURE },
+      watchFiles: [],
+    }),
   });
   (plugin.configResolved as (config: object) => void)({
     root: FIXTURE,
@@ -69,6 +72,39 @@ describe("jsconfig.json baseUrl", () => {
     buildDirs.push(path.dirname(path.dirname(entryPath)));
     expect(fs.readFileSync(entryPath, "utf-8")).toContain("Custom base world");
   }, 120_000);
+
+  // Next.js falls back to jsconfig.json when the configured tsconfigPath does
+  // not exist (build/load-jsconfig.ts).
+  it("falls back to jsconfig.json when typescript.tsconfigPath is missing", async () => {
+    const entryPath = await buildPagesFixture(FIXTURE, {
+      typescript: { tsconfigPath: "tsconfig.missing.json" },
+    });
+    buildDirs.push(path.dirname(path.dirname(entryPath)));
+    const entry = fs.readFileSync(entryPath, "utf-8");
+    expect(entry).toContain("World");
+    expect(entry).not.toContain("Custom base world");
+  }, 120_000);
+
+  // Like Vite's own tsconfig.json handling, a dev server picks up a baseUrl
+  // edit without a restart.
+  it("applies a jsconfig.json baseUrl edit in dev", async () => {
+    const jsconfigPath = path.join(FIXTURE, "jsconfig.json");
+    const original = fs.readFileSync(jsconfigPath, "utf-8");
+    const { server, baseUrl } = await startFixtureServer(FIXTURE);
+    try {
+      expect((await fetchHtml(baseUrl, "/hello")).html).toContain("Tilde import");
+      fs.writeFileSync(
+        jsconfigPath,
+        JSON.stringify({ compilerOptions: { baseUrl: "custom-base" } }, null, 2) + "\n",
+      );
+      await expect
+        .poll(async () => (await fetchHtml(baseUrl, "/hello")).html, { timeout: 15_000 })
+        .toContain("Custom base world");
+    } finally {
+      fs.writeFileSync(jsconfigPath, original);
+      await server.close();
+    }
+  }, 60_000);
 
   // TypeScript applies `extends` arrays in order, so the later parent's
   // inherited baseUrl wins even when an earlier parent shares its base config.
