@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
 import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
-import { compareStrings } from "../utils/compare.js";
+import { compareFolderNames, compareStrings } from "../utils/compare.js";
 import { createAppRouteGraphInterceptionId } from "./app-route-ids.js";
 
 type InterceptingRoute = {
@@ -1586,12 +1586,12 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
 
   function scan(dir: string): void {
     if (!fs.existsSync(dir)) return;
-    // Sorted so the first page found for a URL doesn't depend on the
-    // filesystem's listing order. Turbopack also takes the first route group
-    // by name: @team/(a)/members wins over @team/(b)/members.
+    // Sorted in Turbopack's folder order so the first page found for a URL
+    // doesn't depend on the filesystem's listing order. Turbopack also takes
+    // the first route group by name: @team/(a)/members over @team/(b)/members.
     const entries = fs
       .readdirSync(dir, { withFileTypes: true })
-      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      .sort((a, b) => compareFolderNames(a.name, b.name));
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       // Skip intercepting route directories
