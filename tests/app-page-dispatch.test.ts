@@ -1686,6 +1686,7 @@ describe("app page dispatch", () => {
       await runWithRequestContext(createRequestContext(), () =>
         validateAppPageRouteDynamicParams({
           dynamicParamsConfig: false,
+          hasGenerateStaticParams: true,
           generateStaticParams: [
             {
               chained: true,
@@ -1848,7 +1849,8 @@ describe("app page dispatch", () => {
       async generateStaticParams() {
         return [{ slug: "known" }];
       },
-      isProduction: true,
+      // A production `revalidate = 0` route admits every param.
+      isProduction: false,
       isRscRequest: true,
       revalidateSeconds: 0,
       route: createRoute({ isDynamic: true, params: ["slug"] }),
@@ -3965,6 +3967,115 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("This page could not be found");
   });
 
+  // Next.js enforces `dynamicParams = false` only where it prerenders the
+  // route's paths: where the last dynamic segment has a generator, or the
+  // generators give every param.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+  describe("dynamicParams = false where Next.js prerenders the route", () => {
+    // app/club/[slug]/pics/[id]/page.tsx
+    const clubRoute = () =>
+      createRoute({
+        isDynamic: true,
+        params: ["slug", "id"],
+        pattern: "/club/[slug]/pics/[id]",
+        routeSegments: ["club", "[slug]", "pics", "[id]"],
+      });
+    const dispatchClub = (
+      id: string,
+      overrides: CreateDispatchOptionsOverrides = {},
+      generateStaticParams: DispatchOptions["generateStaticParams"] = null,
+    ) => {
+      const { options } = createDispatchOptions({
+        cleanPathname: `/club/acme/pics/${id}`,
+        dynamicParamsConfig: false,
+        params: { id, slug: "acme" },
+        route: clubRoute(),
+        ...overrides,
+      });
+      // The route's own layouts' and page's generators, in order.
+      return dispatchAppPage({ ...options, generateStaticParams });
+    };
+    const ownerGenerator = (rows: Record<string, string>[]) => ({
+      chained: true as const,
+      generateStaticParams: async () => rows,
+      parentParamNames: [],
+    });
+
+    it("renders any params when the last dynamic segment has no generator", async () => {
+      for (const isProduction of [true, false]) {
+        expect((await dispatchClub("2", { isProduction })).status).toBe(200);
+        // The owner's generator gives only `slug`.
+        const response = await dispatchClub("2", { isProduction }, [
+          ownerGenerator([{ slug: "acme" }]),
+        ]);
+        expect(response.status).toBe(200);
+      }
+    });
+
+    it("rejects a miss when an ancestor's generator gives every param", async () => {
+      const generators = [ownerGenerator([{ id: "1", slug: "acme" }])];
+      for (const isProduction of [true, false]) {
+        expect((await dispatchClub("1", { isProduction }, generators)).status).toBe(200);
+        expect((await dispatchClub("2", { isProduction }, generators)).status).toBe(404);
+      }
+    });
+
+    it("renders any params when one generated row lacks a param", async () => {
+      const response = await dispatchClub("2", {}, [
+        ownerGenerator([{ id: "1", slug: "acme" }, { slug: "other" }]),
+      ]);
+      expect(response.status).toBe(200);
+    });
+
+    it("rejects a miss of an ungenerated last segment with cacheComponents", async () => {
+      const response = await dispatchClub("2", {
+        isProduction: false,
+        pprRuntime: appPagePprRuntime,
+      });
+      expect(response.status).toBe(404);
+    });
+
+    for (const dynamicConfig of ["force-static", "error"]) {
+      it(`rejects a miss of an ungenerated last segment with dynamic = "${dynamicConfig}" in production`, async () => {
+        const generators = [ownerGenerator([{ slug: "acme" }])];
+        expect(
+          (await dispatchClub("2", { dynamicConfig, isProduction: true }, generators)).status,
+        ).toBe(404);
+        // `next dev` builds no paths for it.
+        expect(
+          (await dispatchClub("2", { dynamicConfig, isProduction: false }, generators)).status,
+        ).toBe(200);
+      });
+    }
+
+    it("renders any params of a production revalidate = 0 route", async () => {
+      const generators = [ownerGenerator([{ id: "1", slug: "acme" }])];
+      for (const dynamicConfig of [undefined, "force-static"]) {
+        const dispatch = (isProduction: boolean) =>
+          dispatchClub(
+            "2",
+            { dynamicConfig, hasGenerateStaticParams: true, isProduction, revalidateSeconds: 0 },
+            generators,
+          );
+        expect((await dispatch(true)).status).toBe(200);
+        // `next dev` still checks the generated params.
+        expect((await dispatch(false)).status).toBe(404);
+      }
+    });
+
+    it("renders any params of an edge-runtime page", async () => {
+      const generators = [ownerGenerator([{ id: "1", slug: "acme" }])];
+      for (const isProduction of [true, false]) {
+        const response = await dispatchClub(
+          "2",
+          { hasGenerateStaticParams: true, isProduction, isStaticGenerationEdgeRuntime: true },
+          generators,
+        );
+        expect(response.status).toBe(200);
+      }
+    });
+  });
+
   it("serves intercepted RSC source-route payloads with middleware response state", async () => {
     const sourceRoute = createRoute({
       params: [],
@@ -5119,6 +5230,78 @@ describe("app page dispatch", () => {
         generateStaticParams: async () => [{ id: "2" }],
       });
       expect((await dispatchAppPage(rejected.options)).status).toBe(404);
+    });
+
+    it("intercepts when the intercepting page sets dynamicParams = false without a generator", async () => {
+      // Next.js builds no paths for that route, so it renders any params.
+      for (const ownerLayouts of [
+        [],
+        [{ default: () => null, generateStaticParams: async () => [{ slug: "acme" }] }],
+      ]) {
+        const { options, renderHttpAccessFallbackPage } = createClubOptions(
+          createClubSource({ layouts: ownerLayouts as TestRoute["layouts"] }),
+          { dynamicParams: false },
+        );
+        const response = await dispatchAppPage(options);
+
+        expect(response.status).toBe(200);
+        await expect(response.text()).resolves.toBe("/club/[slug]");
+        expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
+      }
+    });
+
+    it("rejects an interception miss when the owner's generator gives every param", async () => {
+      const sourceRoute = createClubSource({
+        layouts: [
+          {
+            default: () => null,
+            dynamicParams: false,
+            generateStaticParams: async () => [{ id: "1", slug: "acme" }],
+          } as Record<string, unknown>,
+        ],
+      });
+      const hit = createClubOptions(
+        sourceRoute,
+        {},
+        { cleanPathname: "/club/acme/pics/1" },
+        {
+          matchedParams: { id: "1", slug: "acme" },
+        },
+      );
+      expect((await dispatchAppPage(hit.options)).status).toBe(200);
+
+      const miss = createClubOptions(sourceRoute, {});
+      expect((await dispatchAppPage(miss.options)).status).toBe(404);
+    });
+
+    it("intercepts any params when the intercepting route sets revalidate = 0 in production", async () => {
+      const sourceRoute = createClubSource({
+        layouts: [{ default: () => null, dynamicParams: false } as Record<string, unknown>],
+      });
+      const page = { generateStaticParams: async () => [{ id: "1" }], revalidate: 0 };
+      const production = createClubOptions(sourceRoute, page, { isProduction: true });
+      expect((await dispatchAppPage(production.options)).status).toBe(200);
+      const dev = createClubOptions(sourceRoute, page, { isProduction: false });
+      expect((await dispatchAppPage(dev.options)).status).toBe(404);
+    });
+
+    it("intercepts any params on an edge-runtime intercepting page", async () => {
+      // A Node.js page would 404 `2`. (Next.js wants the generator in a layout
+      // of the intercepting route, beside an edge page.)
+      const sourceRoute = createClubSource({
+        layouts: [{ default: () => null, dynamicParams: false } as Record<string, unknown>],
+      });
+      for (const isProduction of [true, false]) {
+        const { options, renderHttpAccessFallbackPage } = createClubOptions(
+          sourceRoute,
+          { generateStaticParams: async () => [{ id: "1" }], runtime: "edge" },
+          { isProduction },
+        );
+        const response = await dispatchAppPage(options);
+
+        expect(response.status).toBe(200);
+        expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
+      }
     });
 
     it("ignores the generators of a page another slot shows", async () => {
@@ -8656,44 +8839,32 @@ describe("app page dispatch", () => {
       });
     }
 
-    for (const fallback of ["rendered", "plain"] as const) {
-      it(`never caches a ${fallback} generated-param miss of an edge-runtime page`, async () => {
-        const middlewareCacheControl = "public, max-age=5";
-        const dispatch = async (middlewareHeaders?: Headers) => {
-          const { options } = createDispatchOptions({
-            async generateStaticParams() {
-              return [{ slug: "known" }];
-            },
-            hasGenerateStaticParams: true,
-            isProduction: true,
-            isStaticGenerationEdgeRuntime: true,
-            route: createDynamicSegmentRoute(),
-          });
-          options.renderHttpAccessFallbackPage = async () =>
-            fallback === "rendered"
-              ? new Response("not found", {
-                  headers: middlewareHeaders ?? undefined,
-                  status: 404,
-                })
-              : null;
-          if (middlewareHeaders) options.middlewareContext.headers = middlewareHeaders;
-          return dispatchAppPage({ ...options, dynamicParamsConfig: false });
-        };
+    // Next.js builds no paths for an edge-runtime page, so its
+    // `dynamicParams = false` rejects nothing.
+    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/utils.ts
+    it("renders an ungenerated param of an edge-runtime page, uncached", async () => {
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      for (const isProduction of [true, false]) {
+        const { options } = createDispatchOptions({
+          async generateStaticParams() {
+            return [{ slug: "known" }];
+          },
+          hasGenerateStaticParams: true,
+          isProduction,
+          isStaticGenerationEdgeRuntime: true,
+          isrSet,
+          route: createDynamicSegmentRoute(),
+        });
 
-        const response = await dispatch();
-        expect(response.status).toBe(404);
-        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+        const { response } = await dispatchAndDrain({ ...options, dynamicParamsConfig: false });
 
-        // As for an unmatched route, Next.js' routing-level 404 replaces
-        // middleware's own cache policy.
-        if (fallback === "rendered") {
-          const withMiddlewarePolicy = await dispatch(
-            new Headers({ "cache-control": middlewareCacheControl }),
-          );
-          expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+        expect(response.status).toBe(200);
+        if (isProduction) {
+          expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
         }
-      });
-    }
+      }
+      expect(isrSet).not.toHaveBeenCalled();
+    });
 
     it("never caches a static generated-param miss", async () => {
       const dispatch = async (

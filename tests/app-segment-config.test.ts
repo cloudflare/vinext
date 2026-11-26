@@ -229,15 +229,17 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
-  it("allows an ungenerated dynamic child below an ancestor dynamicParams=false segment", () => {
-    expect(
-      resolveAppPageSegmentConfig({
-        layouts: [{ dynamicParams: false, generateStaticParams() {} }, {}],
-        layoutTreePositions: [1, 2],
-        page: {},
-        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
-      }).dynamicParamsConfig,
-    ).toBeUndefined();
+  it("reports an ancestor's dynamicParams=false above an ungenerated dynamic child", () => {
+    // Whether it enforces depends on the generators' rows, which
+    // validateAppPageRouteDynamicParams checks.
+    const tree = {
+      layouts: [{ dynamicParams: false, generateStaticParams() {} }, {}],
+      layoutTreePositions: [1, 2],
+      page: {},
+      routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+    };
+    expect(resolveAppPageSegmentConfig(tree).dynamicParamsConfig).toBe(false);
+    expect(hasAppPageGenerateStaticParamsAtLastDynamicSegment(tree)).toBe(false);
   });
 
   it("enforces ancestor dynamicParams=false when the dynamic child generates params", () => {
@@ -362,24 +364,24 @@ describe("resolveAppPageSegmentConfig", () => {
     ).toBe(false);
   });
 
-  it("ignores parallel generateStaticParams owned by a parent dynamic segment", () => {
-    expect(
-      resolveAppPageSegmentConfig({
-        layouts: [{ dynamicParams: false, generateStaticParams: () => [{ locale: "en" }] }],
-        layoutTreePositions: [1],
-        parallelBranches: [
-          {
-            configLayouts: [{ generateStaticParams: () => [{ locale: "en" }] }],
-            configLayoutTreePositions: [1],
-            routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
-          },
-        ],
-        routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
-      }).dynamicParamsConfig,
-    ).toBeUndefined();
+  it("does not count parallel generateStaticParams owned by a parent dynamic segment", () => {
+    const tree = {
+      layouts: [{ dynamicParams: false, generateStaticParams: () => [{ locale: "en" }] }],
+      layoutTreePositions: [1],
+      parallelBranches: [
+        {
+          configLayouts: [{ generateStaticParams: () => [{ locale: "en" }] }],
+          configLayoutTreePositions: [1],
+          routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+        },
+      ],
+      routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
+    };
+    expect(resolveAppPageSegmentConfig(tree).dynamicParamsConfig).toBe(false);
+    expect(hasAppPageGenerateStaticParamsAtLastDynamicSegment(tree)).toBe(false);
   });
 
-  it("ignores parallel dynamicParams=false owned by a parent dynamic segment", () => {
+  it("reports parallel dynamicParams=false owned by a parent dynamic segment", () => {
     expect(
       resolveAppPageSegmentConfig({
         parallelBranches: [
@@ -391,7 +393,7 @@ describe("resolveAppPageSegmentConfig", () => {
         ],
         routeSegments: ["[locale]", "no-gsp", "stories", "[slug]"],
       }).dynamicParamsConfig,
-    ).toBeUndefined();
+    ).toBe(false);
   });
 
   it("enforces parallel dynamicParams=false owned by the leaf dynamic segment", () => {
@@ -413,7 +415,7 @@ describe("resolveAppPageSegmentConfig", () => {
     // app/club/[slug]/@side/default.tsx beside app/club/[slug]/pics/[id]/page.tsx
     // and app/club/[slug]/page.tsx.
     const sideDefault = (ownerTreePosition: number, routeSegments: string[]) =>
-      resolveAppPageSegmentConfig({
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
         parallelBranches: [
           {
             isDefault: true,
@@ -424,13 +426,13 @@ describe("resolveAppPageSegmentConfig", () => {
           },
         ],
         routeSegments,
-      }).dynamicParamsConfig;
+      });
 
-    expect(sideDefault(2, ["club", "[slug]", "pics", "[id]"])).toBeUndefined();
-    expect(sideDefault(2, ["club", "[slug]"])).toBe(false);
+    expect(sideDefault(2, ["club", "[slug]", "pics", "[id]"])).toBe(false);
+    expect(sideDefault(2, ["club", "[slug]"])).toBe(true);
     // app/club/@side/default.tsx follows app/club/[slug], the owner's child.
-    expect(sideDefault(1, ["club", "[slug]"])).toBe(false);
-    expect(sideDefault(1, ["club", "[slug]", "[id]"])).toBeUndefined();
+    expect(sideDefault(1, ["club", "[slug]"])).toBe(true);
+    expect(sideDefault(1, ["club", "[slug]", "[id]"])).toBe(false);
   });
 
   it("uses slot-only route config values", () => {
