@@ -290,6 +290,8 @@ export type Metadata = {
     email?: boolean;
     address?: boolean;
     telephone?: boolean;
+    date?: boolean;
+    url?: boolean;
   };
   category?: string;
   itunes?: {
@@ -611,6 +613,8 @@ export function mergeParentMetadataEntries(entries: readonly MetadataMergeEntry[
 
 // The other keys whose `title` takes its own template, like `title`'s.
 const SOCIAL_TITLE_KEYS = ["openGraph", "twitter"] as const;
+
+const FORMAT_DETECTION_KEYS = ["telephone", "date", "address", "email", "url"] as const;
 type TitleTemplates = Record<"title" | (typeof SOCIAL_TITLE_KEYS)[number], string | null>;
 
 // Next.js's resolved title keeps an empty template as `""`; applying one is a no-op.
@@ -1114,10 +1118,11 @@ export function MetadataHead({
 
   // Format detection
   if (metadata.formatDetection) {
+    // Next.js's key order (lib/metadata/metadata-elements.tsx).
     const parts: string[] = [];
-    if (metadata.formatDetection.telephone === false) parts.push("telephone=no");
-    if (metadata.formatDetection.address === false) parts.push("address=no");
-    if (metadata.formatDetection.email === false) parts.push("email=no");
+    for (const key of FORMAT_DETECTION_KEYS) {
+      if (metadata.formatDetection[key] === false) parts.push(`${key}=no`);
+    }
     if (parts.length > 0) {
       elements.push(<meta key={key++} name="format-detection" content={parts.join(", ")} />);
     }
