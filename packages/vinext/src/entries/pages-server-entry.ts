@@ -15,6 +15,10 @@ import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { hasExportedName } from "../build/report.js";
+import {
+  DEV_PAGES_FONT_OWNERS_ID,
+  PAGES_FONT_OWNER_MANIFEST_ID,
+} from "../plugins/font-owner-manifest.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -81,6 +85,11 @@ async function getPagesRouteData(
 }
 
 type GeneratePagesServerEntryOptions = {
+  /**
+   * Read each page's font owners from the dev module graph rather than the
+   * build's Pages font manifest.
+   */
+  devFontOwners?: boolean;
   includeMiddlewareRuntime?: boolean;
   nodeOpenTelemetryLoader?: boolean;
   prerenderSecret?: string;
@@ -293,6 +302,7 @@ export function generatePagesResponseEntry(
   middlewarePath: string | null,
   instrumentationPath: string | null,
   prerenderSecret?: string,
+  devFontOwners = false,
 ): Promise<string> {
   return generateServerEntry(
     pagesDir,
@@ -302,6 +312,7 @@ export function generatePagesResponseEntry(
     instrumentationPath,
     [],
     {
+      devFontOwners,
       includeMiddlewareRuntime: false,
       prerenderSecret,
     },
@@ -318,6 +329,7 @@ export async function generateServerEntry(
   options: GeneratePagesServerEntryOptions = {},
 ): Promise<string> {
   const includeMiddlewareRuntime = options.includeMiddlewareRuntime !== false;
+  const devFontOwners = options.devFontOwners === true;
   const prerenderSecret = options.prerenderSecret;
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
@@ -566,6 +578,20 @@ import { safeJsonStringify } from "vinext/html";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from ${JSON.stringify(_queryUtilsPath)};
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
+${
+  devFontOwners
+    ? `// The modules whose fonts a page's document carries: its own and _app's.
+// The resolved virtual id's URL form: import analysis rewrites only literals.
+function _getFontOwners(routePattern) {
+  return import(/* @vite-ignore */ ${JSON.stringify(`/@id/__x00__${DEV_PAGES_FONT_OWNERS_ID}?page=`)} + encodeURIComponent(routePattern)).then((m) => m.default);
+}`
+    : `import __vinextPagesFontOwners from ${JSON.stringify(PAGES_FONT_OWNER_MANIFEST_ID)};
+// The modules whose fonts a page's document carries: its own and _app's.
+// null carries every font.
+function _getFontOwners(routePattern) {
+  return __vinextPagesFontOwners ? (__vinextPagesFontOwners.routes[routePattern] ?? []) : null;
+}`
+}
 import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};
 import { runWithExecutionContext as _runWithExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
 ${middlewareRuntimeImportCode}
@@ -745,22 +771,23 @@ function __createRenderPage() {
   getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
   setDocumentInitialHead: typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
   flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
-  getFontLinks() {
-    try { return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : []; } catch { return []; }
+  getFontOwners: _getFontOwners,
+  getFontLinks(owners) {
+    try { return typeof _getSSRFontLinks === "function" ? _getSSRFontLinks(owners) : []; } catch { return []; }
   },
-  getFontStyles() {
+  getFontStyles(owners) {
     try {
       const styles = [];
-      if (typeof _getSSRFontStylesGoogle === "function") styles.push(..._getSSRFontStylesGoogle());
-      if (typeof _getSSRFontStylesLocal === "function") styles.push(..._getSSRFontStylesLocal());
+      if (typeof _getSSRFontStylesGoogle === "function") styles.push(..._getSSRFontStylesGoogle(owners));
+      if (typeof _getSSRFontStylesLocal === "function") styles.push(..._getSSRFontStylesLocal(owners));
       return styles;
     } catch { return []; }
   },
-  getFontPreloads() {
+  getFontPreloads(owners) {
     try {
       const preloads = [];
-      if (typeof _getSSRFontPreloadsGoogle === "function") preloads.push(..._getSSRFontPreloadsGoogle());
-      if (typeof _getSSRFontPreloadsLocal === "function") preloads.push(..._getSSRFontPreloadsLocal());
+      if (typeof _getSSRFontPreloadsGoogle === "function") preloads.push(..._getSSRFontPreloadsGoogle(owners));
+      if (typeof _getSSRFontPreloadsLocal === "function") preloads.push(..._getSSRFontPreloadsLocal(owners));
       return preloads;
     } catch { return []; }
   },

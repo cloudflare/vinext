@@ -156,6 +156,13 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.rewrite(target);
   }
 
+  // No App route matches this href, so only the server can resolve it. A
+  // default <Link> to it must still be prefetched, as in Next.js.
+  // Coverage: tests/e2e/app-router-prod/middleware-rewrite-prefetch.spec.ts
+  if (pathname === "/middleware-rewrite-prefetch-target") {
+    return NextResponse.rewrite(new URL("/about", request.url));
+  }
+
   if (pathname.startsWith("/encoded-parity/middleware/")) {
     const target = request.nextUrl.clone();
     target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
@@ -597,6 +604,15 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     }
   }
 
+  // Hands the requested pathname to the owner layout of an intercepted slot,
+  // so a refresh shows which request rendered that layout.
+  // Coverage: tests/e2e/app-router/interception-refresh-middleware-headers.spec.ts
+  if (pathname.startsWith("/intercept-refresh-mw/")) {
+    const headers = new Headers(request.headers);
+    headers.set("x-intercept-refresh-mw", pathname);
+    return NextResponse.next({ request: { headers } });
+  }
+
   // An interception source whose public pathname names a page without the
   // intercepted slot, rewritten to a page that has it.
   if (pathname === "/nextjs-compat/intercept-source-group/club/moved") {
@@ -661,6 +677,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
     );
   }
+  if (pathname.startsWith("/font-navigation/") && request.nextUrl.searchParams.has("csp-nonce")) {
+    r.headers.set(
+      "content-security-policy",
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic'; style-src 'nonce-vinext-test-nonce';",
+    );
+  }
   if (pathname.startsWith("/metadata-icons-stream")) {
     r.headers.set(
       "content-security-policy",
@@ -706,6 +728,7 @@ export const config = {
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
     "/middleware-rewrite-unprefixed/:path*",
+    "/middleware-rewrite-prefetch-target",
     "/middleware-blocked",
     "/internal-header-secret.txt",
     "/static-file-header-collision.txt",
@@ -753,6 +776,7 @@ export const config = {
     "/nextjs-compat/action-node-mw",
     "/action-cache-control/:path*",
     "/metadata-icons-stream/:path*",
+    "/font-navigation/:path*",
     "/config-link-preload",
     "/use-client-page-pathname/:path*",
     "/rsc-fetch-redirect-src",
@@ -769,6 +793,7 @@ export const config = {
     "/mw-gated-fallback-pages",
     "/photos/:path*",
     "/interception-mw/:path*",
+    "/intercept-refresh-mw/:path*",
     "/nextjs-compat/intercept-source-group/club/moved",
     "/actions",
     "/beforeinteractive-head-ordering/:path*",

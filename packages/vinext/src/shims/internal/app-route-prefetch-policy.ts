@@ -77,13 +77,29 @@ function toSameOriginRouteHref(href: string): string | null {
   return `${stripBasePath(url.pathname, __basePath)}${url.search}`;
 }
 
-/** Href the manifest does not cover: no request, nothing reusable. */
+/** Href that cannot be prefetched: no request, nothing reusable. */
 const NO_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
   cacheForNavigation: false,
   dynamicStaleTime: "verbatim",
   fallbackTtl: "static",
   prefetchShellFirst: false,
   shouldPrefetch: false,
+};
+
+/**
+ * Same-origin href that no manifest route matches. A middleware or proxy
+ * rewrite can still map it onto a page at request time, which only the server
+ * knows. Next.js's Link has no route manifest and always asks the server,
+ * which applies the rewrite and names the rendered path in
+ * `x-nextjs-rewritten-path` (`getRenderedPathname` in `client/route-params`).
+ * The route is unknown here, so the prefetch is a learning-only loading shell.
+ */
+const UNMATCHED_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
+  cacheForNavigation: false,
+  dynamicStaleTime: "ignore",
+  fallbackTtl: "static",
+  prefetchShellFirst: false,
+  shouldPrefetch: true,
 };
 
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
@@ -143,12 +159,16 @@ export function resolveAutoAppRoutePrefetch(
   if (routeHref === null) return NO_APP_ROUTE_PREFETCH;
 
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
-  if (!match) return NO_APP_ROUTE_PREFETCH;
+  const isExport =
+    process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export";
+  // An export build has no server to run a rewrite, so an unmatched href
+  // has no artifact to fetch.
+  if (!match) return isExport ? NO_APP_ROUTE_PREFETCH : UNMATCHED_APP_ROUTE_PREFETCH;
 
   // Export builds only emit one full-route Flight artifact per pathname; they
   // have no server that can produce loading-shell, route-tree, or per-segment
   // variants. Reuse that full payload for every matched App route prefetch.
-  if (process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export") {
+  if (isExport) {
     return resolveFullAppRoutePrefetch();
   }
 

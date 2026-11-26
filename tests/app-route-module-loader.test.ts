@@ -218,6 +218,196 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.slots?.["@modal"].loadings).toEqual([nestedSlotLoading]);
     expect(route.slots?.["@modal"].notFounds).toEqual([nestedSlotNotFound]);
   });
+
+  // Like Next.js's intercepting route, whose tree holds neither the owner's
+  // page nor another slot's branch, a render of the whole intercepting route
+  // never imports those, so a module of theirs that throws can't fail it.
+  it("loads only what a render of the whole intercepting route shows", async () => {
+    const throwing = (name: string) =>
+      vi.fn(async () => {
+        throw new Error(`${name} module throws`);
+      });
+    const layout = { default: () => null };
+    const asideDefault = { default: () => null };
+    const modalLayout = { default: () => null };
+    const modalLoading = { default: () => null };
+    const __loadPage = throwing("owner page");
+    const __loadAsidePage = throwing("aside page");
+    const __loadAsideLayout = throwing("aside layout");
+    const __loadAsideConfigLayout = throwing("aside branch layout");
+    const __loadModalBranchLoading = throwing("modal branch loading");
+    const route: LazyLoadableRoute = {
+      page: null,
+      __loadPage,
+      layouts: [null],
+      __loadLayouts: [async () => layout],
+      slots: {
+        aside: {
+          page: null,
+          default: null,
+          layout: null,
+          configLayouts: [null],
+          __loadPage: __loadAsidePage,
+          __loadDefault: async () => asideDefault,
+          __loadLayout: __loadAsideLayout,
+          __loadConfigLayouts: [__loadAsideConfigLayout],
+        },
+        modal: {
+          page: null,
+          layout: null,
+          loadings: [null, null],
+          loadingTreePositions: [0, 2],
+          __loadPage: throwing("modal page"),
+          __loadLayout: async () => modalLayout,
+          __loadLoadings: [async () => modalLoading, __loadModalBranchLoading],
+        },
+      },
+    };
+
+    await ensureAppRouteModulesLoaded(route, {
+      interceptSlotKey: "modal",
+      rendersInterceptionSource: true,
+      rendersWholeInterceptingRoute: true,
+    });
+
+    expect(route.layouts).toEqual([layout]);
+    expect(route.slots?.aside.default).toBe(asideDefault);
+    expect(route.slots?.modal.layout).toBe(modalLayout);
+    expect(route.slots?.modal.loadings).toEqual([modalLoading, null]);
+    for (const loader of [
+      __loadPage,
+      __loadAsidePage,
+      __loadAsideLayout,
+      __loadAsideConfigLayout,
+      __loadModalBranchLoading,
+    ]) {
+      expect(loader).not.toHaveBeenCalled();
+    }
+    // The route's own render still loads everything.
+    expect(route.__loaded).toBeFalsy();
+    await expect(ensureAppRouteModulesLoaded(route)).rejects.toThrow("module throws");
+  });
+
+  // club/(children)/page.tsx beside club/@modal: the whole intercepting route
+  // stops at club, so a module of the route group, or of a slot it owns,
+  // can't fail it.
+  it("loads none of a route group's files below a whole intercepting route's owner", async () => {
+    const throwing = (name: string) =>
+      vi.fn(async () => {
+        throw new Error(`${name} module throws`);
+      });
+    const file = (name: string) => ({ default: () => name });
+    const [
+      rootLayout,
+      clubLayout,
+      clubTemplate,
+      clubLoading,
+      rootNotFound,
+      clubForbidden,
+      clubUnauthorized,
+      asideDefault,
+    ] = [
+      file("root layout"),
+      file("club layout"),
+      file("club template"),
+      file("club loading"),
+      file("root not found"),
+      file("club forbidden"),
+      file("club unauthorized"),
+      file("aside default"),
+    ];
+    const groupLoaders = {
+      default: throwing("group slot default"),
+      error: throwing("group error"),
+      forbidden: throwing("group forbidden"),
+      layout: throwing("group layout"),
+      leafError: throwing("group leaf error"),
+      leafLoading: throwing("group leaf loading"),
+      loading: throwing("group loading"),
+      notFound: throwing("group not found"),
+      template: throwing("group template"),
+      unauthorized: throwing("group unauthorized"),
+    };
+    const route: LazyLoadableRoute = {
+      routeSegments: ["club", "(children)"],
+      layouts: [null, null, null],
+      layoutTreePositions: [0, 1, 2],
+      __loadLayouts: [async () => rootLayout, async () => clubLayout, groupLoaders.layout],
+      templates: [null, null],
+      templateTreePositions: [1, 2],
+      __loadTemplates: [async () => clubTemplate, groupLoaders.template],
+      loadings: [null, null],
+      loadingTreePositions: [1, 2],
+      __loadLoadings: [async () => clubLoading, groupLoaders.loading],
+      errors: [null, null, null],
+      __loadErrors: [null, null, groupLoaders.error],
+      errorPaths: [null],
+      errorTreePositions: [2],
+      __loadErrorPaths: [groupLoaders.error],
+      notFound: null,
+      notFoundTreePosition: 2,
+      __loadNotFound: groupLoaders.notFound,
+      segmentNotFounds: [null, null],
+      segmentNotFoundTreePositions: [0, 2],
+      __loadSegmentNotFounds: [async () => rootNotFound, groupLoaders.notFound],
+      forbiddens: [null, null, null],
+      __loadForbiddens: [null, async () => clubForbidden, groupLoaders.forbidden],
+      unauthorizeds: [null, null, null],
+      __loadUnauthorizeds: [null, async () => clubUnauthorized, groupLoaders.unauthorized],
+      forbidden: null,
+      forbiddenTreePosition: 2,
+      __loadForbidden: groupLoaders.forbidden,
+      unauthorized: null,
+      unauthorizedTreePosition: 2,
+      __loadUnauthorized: groupLoaders.unauthorized,
+      segmentForbiddens: [null, null],
+      segmentForbiddenTreePositions: [1, 2],
+      __loadSegmentForbiddens: [async () => clubForbidden, groupLoaders.forbidden],
+      segmentUnauthorizeds: [null, null],
+      segmentUnauthorizedTreePositions: [1, 2],
+      __loadSegmentUnauthorizeds: [async () => clubUnauthorized, groupLoaders.unauthorized],
+      loading: null,
+      __loadLoading: groupLoaders.leafLoading,
+      error: null,
+      __loadError: groupLoaders.leafError,
+      slots: {
+        aside: {
+          default: null,
+          layoutIndex: 1,
+          ownerTreePosition: 1,
+          __loadDefault: async () => asideDefault,
+        },
+        modal: { layout: null, layoutIndex: 1, ownerTreePosition: 1 },
+        side: {
+          default: null,
+          layoutIndex: 2,
+          ownerTreePosition: 2,
+          __loadDefault: groupLoaders.default,
+        },
+      },
+    };
+
+    await ensureAppRouteModulesLoaded(route, {
+      interceptSlotKey: "modal",
+      rendersInterceptionSource: true,
+      rendersWholeInterceptingRoute: true,
+    });
+
+    expect(route.layouts).toEqual([rootLayout, clubLayout, null]);
+    expect(route.templates).toEqual([clubTemplate, null]);
+    expect(route.loadings).toEqual([clubLoading, null]);
+    expect(route.segmentNotFounds).toEqual([rootNotFound, null]);
+    expect(route.forbiddens).toEqual([null, clubForbidden, null]);
+    expect(route.unauthorizeds).toEqual([null, clubUnauthorized, null]);
+    expect(route.segmentForbiddens).toEqual([clubForbidden, null]);
+    expect(route.segmentUnauthorizeds).toEqual([clubUnauthorized, null]);
+    expect(route.forbidden).toBeNull();
+    expect(route.unauthorized).toBeNull();
+    expect(route.slots?.aside.default).toBe(asideDefault);
+    for (const loader of Object.values(groupLoaders)) {
+      expect(loader).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe("loadAppInterceptLayouts", () => {
@@ -391,6 +581,18 @@ describe("lazy hydration request lifetime", () => {
         ensureAppRouteModulesLoaded({ page: null, __loadPage: load } as LazyLoadableRoute),
     ],
     [
+      "a render of the whole intercepting route",
+      (load: () => Promise<unknown>) =>
+        ensureAppRouteModulesLoaded(
+          { layouts: [null], __loadLayouts: [load] } as LazyLoadableRoute,
+          {
+            interceptSlotKey: "modal",
+            rendersInterceptionSource: true,
+            rendersWholeInterceptingRoute: true,
+          },
+        ),
+    ],
+    [
       "intercept layouts",
       (load: () => Promise<unknown>) =>
         loadAppInterceptLayouts({
@@ -427,6 +629,40 @@ describe("lazy hydration request lifetime", () => {
     await creator.waitUntil.mock.calls[0][0];
     expect(kept).toBe(true);
   });
+
+  it.each([true, false])(
+    "fully loads a route whose own load overlaps a whole intercepting route's (own first: %s)",
+    async (ownFirst) => {
+      const layoutLoad = deferred<unknown>();
+      const pageLoad = deferred<unknown>();
+      const route: LazyLoadableRoute = {
+        page: null,
+        __loadPage: () => pageLoad.promise,
+        layouts: [null],
+        __loadLayouts: [() => layoutLoad.promise],
+      };
+      const loadWhole = () =>
+        ensureAppRouteModulesLoaded(route, {
+          interceptSlotKey: "modal",
+          rendersInterceptionSource: true,
+          rendersWholeInterceptingRoute: true,
+        });
+      const loads = (
+        ownFirst
+          ? [ensureAppRouteModulesLoaded(route), loadWhole()]
+          : [loadWhole(), ensureAppRouteModulesLoaded(route)]
+      ).map((loading) => Promise.resolve(loading));
+      const layout = { default: () => null };
+      const page = { default: () => null };
+      layoutLoad.resolve(layout);
+      pageLoad.resolve(page);
+      await Promise.all(loads);
+
+      expect(route.__loaded).toBe(true);
+      expect(route.layouts).toEqual([layout]);
+      expect(route.page).toBe(page);
+    },
+  );
 
   it("does not extend a request that joins a load already in flight", async () => {
     const load = deferred<unknown>();

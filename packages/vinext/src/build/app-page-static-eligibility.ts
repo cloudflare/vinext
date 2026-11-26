@@ -137,13 +137,16 @@ const INTERCEPTION_MARKER_RE = /^(?:\(\.\.\.\)|\(\.\.\)\(\.\.\)|\(\.\.\)|\(\.\))
  * Whether Next.js renders an intercepted page on every request. Next.js builds
  * the intercepting page as its own route (`/feed/(.)photos/[id]`): the
  * layouts of every folder from `app/` down to the intercepting page, then the
- * page. `layoutPaths` are the candidate layouts; those outside the page's
- * folder chain are ignored. An unreadable source counts as not dynamic.
+ * page, with a slot intercept's owner default in the owner's children and
+ * `slotDefaultPaths`, the other slots' defaults, beside it. `layoutPaths` are
+ * the candidate layouts; those outside the page's folder chain are ignored. An
+ * unreadable source counts as not dynamic.
  */
 export function isAppInterceptRenderedDynamically(
   intercept: AppRouteIntercept,
   layoutPaths: readonly string[],
   readMdxEsm: ((source: string) => string) | null,
+  slotDefaultPaths: readonly (string | null)[] = [],
 ): boolean {
   if (!intercept.sourcePageSegments) return false;
   // The marker isn't part of the segment: `(.)[slug]` is the dynamic `[slug]`.
@@ -152,19 +155,43 @@ export function isAppInterceptRenderedDynamically(
   );
   try {
     const pageDir = path.dirname(intercept.pagePath);
+    // The tree position of a folder on the page's folder chain, or null.
+    const treePositionOf = (dir: string) => {
+      const relative = path.relative(dir, pageDir);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+      return routeSegments.length - relative.split("/").filter(Boolean).length;
+    };
     const layoutsByPosition = new Map<number, string>();
     for (const layoutPath of layoutPaths) {
-      const relative = path.relative(path.dirname(layoutPath), pageDir);
-      if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
-      const depthBelowLayout = relative.split("/").filter(Boolean).length;
-      layoutsByPosition.set(routeSegments.length - depthBelowLayout, layoutPath);
+      const position = treePositionOf(path.dirname(layoutPath));
+      if (position !== null) layoutsByPosition.set(position, layoutPath);
     }
     const layoutTreePositions = [...layoutsByPosition.keys()].sort((a, b) => a - b);
     const { isUnreadable, read } = createSegmentConfigReader(readMdxEsm);
     const layouts = layoutTreePositions.map((position) => read(layoutsByPosition.get(position)));
     const page = read(intercept.pagePath);
+    // A slot intercept's route renders the owner's default in its children,
+    // and every other slot's default, each a `__DEFAULT__` segment beside the
+    // slot at its owner's position. Next.js visits children before the other
+    // slots, and the last segment's value wins, while the reducer keeps the
+    // first parallel value, so the owner's default goes last. The
+    // `generateStaticParams` walk orders the branches by name itself.
+    const defaults: [name: string, ownerDir: string, defaultPath: string][] = [];
+    for (const defaultPath of slotDefaultPaths) {
+      if (!defaultPath) continue;
+      const slotDir = path.dirname(defaultPath);
+      defaults.push([path.basename(slotDir).slice(1), path.dirname(slotDir), defaultPath]);
+    }
+    if (intercept.ownerDefaultPath) {
+      defaults.push(["", path.dirname(intercept.ownerDefaultPath), intercept.ownerDefaultPath]);
+    }
+    const parallelBranches = defaults.flatMap(([name, ownerDir, defaultPath]) => {
+      const ownerTreePosition = treePositionOf(ownerDir);
+      if (ownerTreePosition === null) return [];
+      return [{ isDefault: true, name, ownerTreePosition, page: read(defaultPath) }];
+    });
     if (isUnreadable()) return false;
-    const tree = { layouts, layoutTreePositions, page, routeSegments };
+    const tree = { layouts, layoutTreePositions, page, parallelBranches, routeSegments };
     const segmentConfig = resolveAppPageSegmentConfig(tree);
     return !isAppPageStaticEligible({
       dynamicConfig: segmentConfig.dynamicConfig,

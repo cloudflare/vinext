@@ -215,6 +215,12 @@ function getDynamicErrorBoundary() {
 // Detect server vs client
 const isServer = typeof window === "undefined";
 
+// useSyncExternalStore reads the server snapshot while hydrating and the client
+// snapshot otherwise, which tells a hydrating mount from a client-only one.
+const subscribeNoop = () => () => {};
+const getClientSnapshot = () => true;
+const getServerSnapshot = () => false;
+
 /**
  * The element tree around an SSR-enabled dynamic() component. The client
  * renders empty slots where the server renders the preload chunks, so both
@@ -324,14 +330,21 @@ function dynamic<P = {}>(
 
     const ClientSSRFalse = (props: P) => {
       const isAppRouterTree = useIsAppRouterTree();
-      const [mounted, setMounted] = React.useState(false);
+      // Keep the first hydration render equal to the server's loading fallback,
+      // then re-render on the client. A component mounted outside hydration (a
+      // client navigation) renders the lazy component in the same render, as
+      // Next.js does, so a module that is already loaded commits with the page
+      // inside the navigation's transition instead of after React's Suspense
+      // fallback throttle.
+      const mounted = React.useSyncExternalStore(
+        subscribeNoop,
+        getClientSnapshot,
+        getServerSnapshot,
+      );
       const { LazyComponent, retry, retryKey } = useRetryableLazyComponent(
         loader,
         InitialLazyComponent,
       );
-      // Keep the first hydration render equal to the server's loading fallback.
-      // oxlint-disable-next-line react/set-state-in-effect -- client-only loading starts after mount
-      React.useEffect(() => setMounted(true), []);
 
       if (!mounted) {
         return LoadingComponent

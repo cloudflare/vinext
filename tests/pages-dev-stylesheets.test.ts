@@ -144,7 +144,11 @@ describe("Pages dev stylesheet Vite ids", () => {
     expect([...rawFalseModule!.importedModules].map((moduleNode) => moduleNode.url)).toContain(
       "/raw-value-wrapper.css",
     );
-    expect([...rawModule!.importedModules]).toEqual([]);
+    // Vite 8.4.0-beta.2 keeps the raw loader's watch file as an import of the
+    // raw module. The raw module must still not import the wrapped CSS.
+    expect([...rawModule!.importedModules].map((moduleNode) => moduleNode.url)).not.toContain(
+      "/raw-value-wrapper.css",
+    );
 
     for (const file of ["inline-wrapper.css", "raw-value-wrapper.css"]) {
       expect(html).toContain(`href="/${file}"`);

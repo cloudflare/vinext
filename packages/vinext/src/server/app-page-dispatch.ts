@@ -54,7 +54,7 @@ import { isAppClientReference } from "./app-render-dependency.js";
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
-  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageCaughtAccessBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
@@ -75,6 +75,7 @@ import {
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptState,
+  resolveAppPageInterceptionSourceRootParams,
   validateAppPageRouteDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
@@ -132,6 +133,9 @@ import {
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
 import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
+import { isUnknownRecord } from "../utils/record.js";
+import { toWholeInterceptingRouteRender } from "./app-page-whole-intercepting-route.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -180,7 +184,9 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptErrorTreePositions?: readonly number[] | null;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
+  ownerDefault?: unknown;
   page: TPage;
+  rendersWholeInterceptingRoute?: boolean;
   slotId?: string | null;
   slotKey: string;
   sourceRouteIndex: number;
@@ -209,6 +215,7 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptErrorTreePositions?: readonly number[] | null;
   interceptNotFounds?: readonly unknown[] | null;
   interceptNotFoundTreePositions?: readonly number[] | null;
+  interceptOwnerDefault?: unknown;
   interceptPage: TPage;
   interceptParams: AppPageParams;
   interceptSlotId?: string | null;
@@ -217,6 +224,7 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptSourcePageSegments?: readonly string[] | null;
   interceptTargetPatternParts?: readonly string[] | null;
   interceptTargetRouteGraphId?: string | null;
+  rendersWholeInterceptingRoute?: boolean;
 };
 
 type AppPageModule = {
@@ -255,8 +263,10 @@ export type AppPageDispatchRoute = {
   loadingTreePositions?: readonly number[];
   notFound?: AppPageModule | null;
   notFounds?: readonly (AppPageModule | null | undefined)[];
+  page?: AppPageModule | null;
   params: readonly string[];
   pattern: string;
+  rootParamNames?: readonly string[];
   routeSegments: readonly string[];
   segmentForbiddens?: readonly (AppPageModule | null | undefined)[];
   segmentForbiddenTreePositions?: readonly number[];
@@ -269,6 +279,32 @@ export type AppPageDispatchRoute = {
   unauthorizedTreePosition?: number | null;
   unauthorizeds?: readonly (AppPageModule | null | undefined)[];
 };
+
+/**
+ * The route as a render shows it, which its fallbacks resolve their layouts,
+ * boundaries and head from. A whole intercepting route shows it as its own
+ * tree (see app-page-whole-intercepting-route.ts): down to the slot owner's
+ * folder, with the owner's `default` as its page and the other slots' defaults.
+ * So none of the files below that folder catches its errors or wraps its
+ * fallbacks, and no page it doesn't render heads them, whichever of them an
+ * earlier render loaded.
+ */
+function resolveRenderedRoute<TRoute extends AppPageDispatchRoute>(
+  route: TRoute,
+  interceptOpts: unknown,
+): TRoute {
+  if (
+    !isUnknownRecord(interceptOpts) ||
+    interceptOpts.rendersInterceptionSource !== true ||
+    interceptOpts.rendersWholeInterceptingRoute !== true
+  ) {
+    return route;
+  }
+  const ownerDefault = isUnknownRecord(interceptOpts.interceptOwnerDefault)
+    ? (interceptOpts.interceptOwnerDefault as TRoute["page"])
+    : null;
+  return toWholeInterceptingRouteRender(route, interceptOpts.interceptSlotKey, ownerDefault);
+}
 
 function getActiveLoadingTreePositions(route: AppPageDispatchRoute): number[] {
   const positions: number[] = [];
@@ -379,9 +415,10 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /**
    * Hydrate a source route's lazy page/route-handler modules before reading
    * `route.page` (e.g. for fetch-cache-mode resolution) on intercept and ISR
-   * revalidation targets obtained via `getSourceRoute`. Idempotent.
+   * revalidation targets obtained via `getSourceRoute`. Idempotent. With the
+   * opts of a render of the whole intercepting route, only what it shows.
    */
-  ensureRouteLoaded?: (route: TRoute) => unknown;
+  ensureRouteLoaded?: (route: TRoute, interceptOpts?: unknown) => unknown;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
   /** This request's intercept, which dispatch resolves once before rendering. */
@@ -461,6 +498,12 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   renderErrorBoundaryPage: (
     error: unknown,
     errorOrigin?: "rsc" | "ssr",
+    /** The params the route rendered under, when not the request's. */
+    params?: AppPageParams,
+    /** The route as the render showed it, which a whole intercepting route trims. */
+    route?: TRoute,
+    /** The runtime the render ran under: an interception's own, from its segment config. */
+    isEdgeRuntime?: boolean,
   ) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
@@ -474,10 +517,14 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       intercept?: AppPageDispatchInterceptOptions | null;
       /** The document may be stored, so it must not carry the request's query. */
       isCacheCandidate?: boolean;
+      /** The runtime the render ran under: an interception's own, from its segment config. */
+      isEdgeRuntime?: boolean;
       layouts?: readonly AppPageModule[];
       matchedParams: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
       routeHead?: AppPageFallbackRouteHead;
+      /** The route as the render showed it, which a whole intercepting route trims. */
+      route?: TRoute;
       /** Render the root not-found as if no route matched, as Next.js routing does. */
       routeMiss?: boolean;
     },
@@ -654,7 +701,33 @@ function toInterceptOptions(
     interceptSourcePageSegments: intercept.sourcePageSegments ?? null,
     interceptTargetPatternParts: intercept.targetPatternParts ?? null,
     interceptTargetRouteGraphId: intercept.targetRouteGraphId ?? null,
+    // The segment config of an interception of the matched route reads these
+    // before its render marks them, so it sees the tree that renders.
+    ...(intercept.rendersWholeInterceptingRoute === true && {
+      interceptOwnerDefault: intercept.ownerDefault ?? null,
+      rendersWholeInterceptingRoute: true,
+    }),
   };
+}
+
+/**
+ * Whether an interception renders, in the matched page's place, a module
+ * without a default export: a sibling interception's own page, or, for a
+ * whole intercepting route, the slot owner's `default` it renders as its
+ * children or its intercepting page (see app-page-element-builder.ts). It
+ * answers as a matched page without one.
+ */
+function rendersInterceptPageWithoutDefaultExport(interceptOpts: unknown): boolean {
+  if (!isUnknownRecord(interceptOpts)) return false;
+  const pages =
+    interceptOpts.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
+    interceptOpts.interceptPage
+      ? [interceptOpts.interceptPage]
+      : interceptOpts.rendersInterceptionSource === true &&
+          interceptOpts.rendersWholeInterceptingRoute === true
+        ? [interceptOpts.interceptOwnerDefault, interceptOpts.interceptPage]
+        : [];
+  return pages.some((page) => isUnknownRecord(page) && !page.default);
 }
 
 /**
@@ -822,7 +895,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   setCurrentFetchRevalidate(currentRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(isForceDynamic);
 
-  if (options.hasPageModule && !options.hasPageDefaultExport) {
+  const respondWithoutPageDefaultExport = () => {
     options.clearRequestContext();
     return applyIneligibleRouteCachePolicy(
       new Response("Page has no default export", { status: 500 }),
@@ -842,6 +915,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         scriptNonce: options.scriptNonce,
       },
     );
+  };
+  if (options.hasPageModule && !options.hasPageDefaultExport) {
+    return respondWithoutPageDefaultExport();
   }
 
   // The cacheComponents exemption only covers caching. Methods follow the
@@ -968,7 +1044,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // Hydrate the (possibly different) source route before reading its
       // slots for navigation params and its page module for fetch-cache-mode
       // resolution.
-      await options.ensureRouteLoaded?.(revalidationTarget.route);
+      await options.ensureRouteLoaded?.(revalidationTarget.route, revalidationTarget.interceptOpts);
       // Use the full navigationParams (not narrowed params) as the base so
       // interception-specific extras from a source-route intercept survive
       // the slot param merge.  resolveAppPageNavigationParams preserves all
@@ -1056,6 +1132,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   options.resolveRouteStaticEligible(revalidationTarget.route)))
                 ? Infinity
                 : null));
+        const revalidationRootParams =
+          resolveAppPageInterceptionSourceRootParams(
+            revalidationTarget.route,
+            revalidationTarget.params,
+            revalidationTarget.interceptOpts,
+          ) ?? options.rootParams;
         const revalidationRouteHead: RouteHeadRef = {
           observeSearchParams: revalidationDynamicConfig !== "force-static",
           searchParams: new URLSearchParams(),
@@ -1074,7 +1156,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
             params: revalidationTarget.navigationParams,
-            rootParams: options.rootParams,
+            rootParams: revalidationRootParams,
             routePattern: revalidationTarget.route.pattern,
             routeSegments: revalidationTarget.route.routeSegments,
             setNavigationContext: options.setNavigationContext,
@@ -1133,6 +1215,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
               navigationParams: revalidationTarget.navigationParams,
               isCapturedRscError: rscErrorTracker.isCapturedError,
+              isStaticGenerationRscError: rscErrorTracker.isStaticGenerationError,
               onError: rscErrorTracker.onRenderError,
               onSsrError(error) {
                 reportedSsrRevalidationErrors.add(error);
@@ -1142,10 +1225,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               // A regeneration of an RSC variant's entry alone needs no
               // document for its shell's special error.
               resolveCaughtNotFoundBoundaries: renderDocument
-                ? (error) =>
-                    resolveAppPageCaughtNotFoundBoundaries(
+                ? (error, countPageRejections) =>
+                    resolveAppPageCaughtAccessBoundaries(
                       error,
-                      rscErrorTracker.getCapturedSpecialErrors(error),
+                      rscErrorTracker.getCapturedAccessFallbackErrors(),
+                      {
+                        catchesRouteSignals: catchesAppPageRouteSignals(revalidationTarget.route),
+                        countPageRejections,
+                      },
                     )
                 : undefined,
               async renderShellSpecialError(error, caughtDocument) {
@@ -1189,7 +1276,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 // The fallback boundaries are resolved for the matched route.
                 if (revalidationTarget.route !== route) return null;
                 const document = await renderPageSpecialError(
-                  { ...options, params: revalidationTarget.params },
+                  {
+                    ...options,
+                    params: revalidationTarget.params,
+                    route: resolveRenderedRoute(route, revalidationTarget.interceptOpts),
+                  },
                   specialError,
                   false,
                   revalidationTarget.interceptOpts,
@@ -1209,7 +1300,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 };
               },
               renderToReadableStream: options.renderToReadableStream,
-              rootParams: options.rootParams,
+              rootParams: revalidationRootParams,
               route: revalidationTarget.route,
               waitForAllReady: true,
               isForceStatic: revalidationDynamicConfig === "force-static",
@@ -1351,6 +1442,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const onHeadPrepared = (head: AppPagePreparedRouteHead) => {
     renderedRouteHead.value = head;
   };
+  let interceptPageHasNoDefaultExport = false;
   const interceptResult = await resolveAppPageIntercept<
     TRoute,
     unknown,
@@ -1358,6 +1450,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     AppPageElement
   >({
     async buildPageElement(interceptRoute, interceptParams, interceptOpts, interceptSearchParams) {
+      if (rendersInterceptPageWithoutDefaultExport(interceptOpts)) {
+        interceptPageHasNoDefaultExport = true;
+        return null;
+      }
       // Deliberately no save/restore around buildPageElement: when this
       // callback runs, resolveAppPageIntercept returns the intercept response
       // directly and the dispatch never falls through to the original route.
@@ -1387,6 +1483,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       setCurrentFetchCacheMode(interceptConfig.fetchCacheMode);
       setCurrentFetchRevalidate(interceptConfig.revalidateSeconds);
       setCurrentForceDynamicFetchDefault(interceptDynamicConfig === "force-dynamic");
+      const interceptRootParams = resolveAppPageInterceptionSourceRootParams(
+        interceptRoute,
+        interceptParams,
+        interceptOpts,
+      );
+      if (interceptRootParams) setRootParams(interceptRootParams);
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
@@ -1421,6 +1523,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return resolveAppPageNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts);
     },
     renderInterceptResponse(sourceRoute, interceptElement, navigationParams) {
+      if (interceptPageHasNoDefaultExport) return respondWithoutPageDefaultExport();
       const interceptOnError = options.createRscOnErrorHandler(
         options.cleanPathname,
         sourceRoute.pattern,
@@ -1469,7 +1572,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       });
     },
     async resolveSearchParams(sourceRoute, searchParams, interceptOpts) {
-      await options.ensureRouteLoaded?.(sourceRoute);
+      await options.ensureRouteLoaded?.(sourceRoute, interceptOpts);
       interceptConfig = resolveAppPageInterceptSegmentConfig(sourceRoute, interceptOpts);
       return interceptConfig.dynamicConfig === "force-static"
         ? new URLSearchParams()
@@ -1484,12 +1587,26 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (interceptResult.response) {
     return interceptResult.response;
   }
+  if (rendersInterceptPageWithoutDefaultExport(interceptResult.interceptOpts)) {
+    return respondWithoutPageDefaultExport();
+  }
 
   // A route that renders as an interception's source renders under the
-  // source's params, and so do the fallbacks of its special errors.
+  // source's params and root params, and so do its error page and the
+  // fallbacks of its special errors.
   const renderParams = interceptResult.params ?? options.params;
+  const sourceRootParams = resolveAppPageInterceptionSourceRootParams(
+    route,
+    renderParams,
+    interceptResult.interceptOpts,
+  );
+  if (sourceRootParams) setRootParams(sourceRootParams);
+  const renderRootParams = sourceRootParams ?? options.rootParams;
+  const renderedRoute = resolveRenderedRoute(route, interceptResult.interceptOpts);
   const specialErrorOptions =
-    renderParams === options.params ? options : { ...options, params: renderParams };
+    renderParams === options.params && renderedRoute === route
+      ? options
+      : { ...options, params: renderParams, route: renderedRoute };
   const buildCurrentPageElement = () =>
     buildAppPageElement({
       buildPageElement() {
@@ -1520,7 +1637,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         );
       },
       renderErrorBoundaryPage(buildError) {
-        return options.renderErrorBoundaryPage(buildError);
+        return options.renderErrorBoundaryPage(
+          buildError,
+          undefined,
+          renderParams,
+          renderedRoute,
+          options.isEdgeRuntime,
+        );
       },
       renderSpecialError(specialError) {
         return renderPageSpecialError(
@@ -1570,6 +1693,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const lifecycleOptions: Parameters<typeof renderAppPageLifecycle>[0] = {
     basePath: options.basePath,
     bypassInterceptionContextCache: options.bypassInterceptionContextCache,
+    catchesRouteSignals: catchesAppPageRouteSignals(route),
     clientTraceMetadata: options.clientTraceMetadata,
     reactMaxHeadersLength: options.reactMaxHeadersLength,
     cleanPathname: options.cleanPathname,
@@ -1645,7 +1769,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           options.pprRuntime!.beginFinalRender(activeFallbackShellState);
         }
       : undefined,
-    rootParams: options.rootParams,
+    rootParams: renderRootParams,
     peekRenderObservationState() {
       return {
         dynamicFetches: peekDynamicFetchObservations(),
@@ -1657,7 +1781,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
     renderErrorBoundaryResponse(renderError, errorOrigin) {
-      return options.renderErrorBoundaryPage(renderError, errorOrigin);
+      return options.renderErrorBoundaryPage(
+        renderError,
+        errorOrigin,
+        renderParams,
+        renderedRoute,
+        options.isEdgeRuntime,
+      );
     },
     renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(
@@ -1711,6 +1841,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     );
   }
   return renderResponse();
+}
+
+/**
+ * Whether the route's own boundaries catch its page's HTTP access fallback in
+ * the document. Next.js wraps only each segment's `children` in them, so the
+ * route's named parallel slots keep rendering beside the boundary, which a
+ * fallback document shaped like the boundary leaves out. As Next.js stores
+ * one error shell whichever user agent renders it, the route alone decides.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+export function catchesAppPageRouteSignals(route: Pick<AppPageDispatchRoute, "slots">): boolean {
+  return Object.keys(route.slots ?? {}).length > 0;
 }
 
 /** One render's head, once it prepares one, and how that render resolves it. */
@@ -1854,11 +1996,13 @@ function renderLayoutBoundaryFallback<TRoute extends AppPageDispatchRoute>(
       headLayouts: fallbackOptions.headLayouts,
       ...(fallbackOptions.intercept ? { intercept: fallbackOptions.intercept } : {}),
       ...(fallbackOptions.isCacheCandidate ? { isCacheCandidate: true } : {}),
+      isEdgeRuntime: options.isEdgeRuntime,
       layouts: route.layouts.filter(
         (_, index) =>
           index < renderedLayoutCount && (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
       ),
       matchedParams: options.params,
+      route,
       ...(fallbackOptions.routeHead ? { routeHead: fallbackOptions.routeHead } : {}),
     },
     null,
@@ -1923,10 +2067,12 @@ function renderPageSegmentBoundaryFallback<TRoute extends AppPageDispatchRoute>(
       headLayouts: route.layouts,
       intercept,
       ...(isCacheCandidate ? { isCacheCandidate } : {}),
+      isEdgeRuntime: options.isEdgeRuntime,
       layouts: route.layouts.filter(
         (_, index) => (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
       ),
       matchedParams: options.params,
+      route,
       ...(routeHead ? { routeHead } : {}),
     },
     null,
@@ -1957,7 +2103,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     async renderFallbackPage(statusCode) {
-      // Parallel slot not-found boundaries caught it in the page's own document.
+      // Boundaries in the route's tree caught it in the page's own document.
       if (caughtDocument) return caughtDocument;
       if (specialError.kind === "http-access-fallback") {
         // A layout's signal is caught above that layout, so the layouts above
@@ -2051,7 +2197,9 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
         intercept,
         ...(isCacheCandidate ? { isCacheCandidate } : {}),
+        isEdgeRuntime: options.isEdgeRuntime,
         matchedParams: options.params,
+        route: options.route,
         ...(routeHead ? { routeHead } : {}),
       };
       if (useLayoutAlignedBoundary && boundaryLayoutIndex !== null) {

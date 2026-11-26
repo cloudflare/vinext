@@ -18,7 +18,11 @@ import {
 import type { ReactFormState } from "react-dom/client";
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
+import {
+  createRootParamsUsageController,
+  runWithRootParamsUsage,
+  setRootParams,
+} from "vinext/shims/root-params";
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -43,7 +47,10 @@ import {
   stripRscCacheBustingSearchParam,
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
-import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
+import {
+  resolveAppPageActionRerenderTarget,
+  resolveAppPageInterceptionSourceRootParams,
+} from "./app-page-request.js";
 import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import {
   resolveAppPageInterceptSegmentConfig,
@@ -393,8 +400,10 @@ export type HandleServerActionRscRequestOptions<
    * Hydrate a route's lazy page/route-handler modules before reading
    * `route.page` / `route.routeHandler` on action redirect targets and
    * re-render targets obtained via `matchRoute`/`getSourceRoute`. Idempotent.
+   * With the opts of a render of the whole intercepting route, only what it
+   * shows.
    */
-  ensureRouteLoaded?: (route: TRoute) => unknown;
+  ensureRouteLoaded?: (route: TRoute, interceptOpts?: unknown) => unknown;
   findIntercept: (pathname: string) => AppServerActionIntercept<TPage> | null;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
@@ -1969,7 +1978,10 @@ export async function handleServerActionRscRequest<
         actionRerenderTarget.interceptOpts as Parameters<typeof resolveAppPageNavigationParams>[3],
       );
       // Hydrate the re-render target before reading its page module.
-      await options.ensureRouteLoaded?.(actionRerenderTarget.route);
+      await options.ensureRouteLoaded?.(
+        actionRerenderTarget.route,
+        actionRerenderTarget.interceptOpts,
+      );
       // An intercepted re-render renders the interception, which takes its
       // config from its own loader tree, as on an intercepted navigation.
       const actionInterceptConfig = actionRerenderTarget.interceptOpts
@@ -1995,6 +2007,12 @@ export async function handleServerActionRscRequest<
         searchParams: actionRerenderSearchParams,
         params: resolvedActionNavigationParams,
       });
+      const sourceRootParams = resolveAppPageInterceptionSourceRootParams(
+        actionRerenderTarget.route,
+        actionRerenderTarget.params,
+        actionRerenderTarget.interceptOpts,
+      );
+      if (sourceRootParams) setRootParams(sourceRootParams);
       const renderedSearch = options.searchParams.toString();
       renderedPathAndSearch = renderedSearch
         ? `${options.cleanPathname}?${renderedSearch}`

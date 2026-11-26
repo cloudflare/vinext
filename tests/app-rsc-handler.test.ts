@@ -23,6 +23,7 @@ import {
 import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
 import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
 import type { PagesRouteDataKind } from "../packages/vinext/src/server/pages-route-data-kind.js";
+import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRscHandlerRoute } from "../packages/vinext/src/server/app-rsc-handler.js";
 import {
@@ -40,15 +41,18 @@ import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware
 import { markLocaleRedirect } from "../packages/vinext/src/server/pages-i18n.js";
 import { mergeMiddlewareResponseHeaders } from "../packages/vinext/src/server/middleware-response-headers.js";
 import { sealForwardedMiddlewareContext } from "../packages/vinext/src/server/forwarded-middleware-context.js";
-import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import { NextResponse, type NextRequest } from "../packages/vinext/src/shims/server.js";
+import { hashMountedLayoutIdentity } from "../packages/vinext/src/server/app-mounted-layouts.js";
 import {
   handleMetadataRouteRequest,
   isMetadataRouteRequestPath,
+  metadataRouteAnswersRewrittenPath,
   type MetadataRuntimeRoute,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import {
+  appIsrRscKey,
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
@@ -235,9 +239,15 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isMetadataRoute: overrides.isMetadataRoute,
+    metadataRouteAnswersPath:
+      overrides.metadataRouteAnswersPath ??
+      (overrides.metadataRoutes
+        ? (pathname) => metadataRouteAnswersRewrittenPath(overrides.metadataRoutes!, pathname)
+        : undefined),
     isDev: overrides.isDev ?? true,
     hasInterceptionId: overrides.hasInterceptionId ?? (() => false),
     matchInterceptRoute: overrides.matchInterceptRoute,
+    matchPagesRoute: overrides.matchPagesRoute,
     matchRoute:
       overrides.matchRoute ??
       ((pathname: string) =>
@@ -3970,6 +3980,54 @@ describe("createAppRscHandler", () => {
     await expect(response.json()).resolves.toEqual({ visitor: "visitor-a" });
   });
 
+  it("keeps the client's flight headers in a response stage after a middleware header override", async () => {
+    // Next.js applies flight headers after middleware, as they are not
+    // overridable (packages/next/src/server/web/adapter.ts: "Flight headers
+    // are not overridable / removable so they are applied at the end").
+    // Without them a sibling navigation renders its mounted layouts again.
+    const mountedLayoutsHeader = hashMountedLayoutIdentity("layout:/");
+    const dispatchMatchedPage = vi.fn(async (_options: { request: Request }) => {
+      // Userland still sees the override without the flight headers.
+      expect((await requestHeaders()).get("x-from-proxy")).toBe("1");
+      expect((await requestHeaders()).get("rsc")).toBeNull();
+      return new Response("page");
+    });
+    const responseHandler = createHandler({ dispatchMatchedPage });
+    let middlewareSawRsc: string | null = "unset";
+    const requestHandler = createHandler({
+      configHeaders: [],
+      middlewareModule: {
+        default(request: NextRequest) {
+          middlewareSawRsc = request.headers.get("rsc");
+          const headers = new Headers(request.headers);
+          headers.set("x-from-proxy", "1");
+          return NextResponse.next({ request: { headers } });
+        },
+      },
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>((stageRequest, props) =>
+      responseHandler.handleResponseStage(stageRequest, null, props),
+    );
+    const headers = createRscRequestHeaders({ mountedLayoutsHeader });
+    const url = await createRscRequestUrl("/docs/about", headers);
+
+    const response = await requestHandler(
+      new Request(new URL(url, "https://example.test"), { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(await response.text()).toBe("page");
+    expect(middlewareSawRsc).toBeNull();
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    const pageRequest = dispatchMatchedPage.mock.calls[0]![0].request;
+    expect(pageRequest.headers.get("x-from-proxy")).toBe("1");
+    expect(pageRequest.headers.get("x-vinext-mounted-layouts")).toBe(mountedLayoutsHeader);
+    expect(pageRequest.headers.get("rsc")).toBe("1");
+  });
+
   it("dispatches middleware cookie overlays with cache bypass and preserves raw headers", async () => {
     const dispatchMatchedPage = vi.fn(async () => {
       expect((await requestCookies()).get("session")?.value).toBe("middleware-value");
@@ -6955,12 +7013,14 @@ describe("createAppRscHandler", () => {
   );
 
   // A direct request to a dynamic route takes afterFiles rules before the route
-  // is accepted, so a rule that rewrites the source away refuses it as a source
-  // too. A static route is final before afterFiles, so the rule never applies.
+  // is accepted, so a rule that rewrites the source to a page without the
+  // intercept applies to it as a source too. The client then shows that page
+  // and sends it as the context, so Next.js renders the target directly. A
+  // static route is final before afterFiles, so the rule never applies.
   it.each([
-    { label: "a dynamic source", isDynamic: true, status: 404 },
-    { label: "a static source", isDynamic: false, status: 200 },
-  ])("applies afterFiles rewrites to $label", async ({ isDynamic, status }) => {
+    { label: "a dynamic source", isDynamic: true, interceptionContext: null },
+    { label: "a static source", isDynamic: false, interceptionContext: "/members/7" },
+  ])("applies afterFiles rewrites to $label", async ({ isDynamic, interceptionContext }) => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({
       isDynamic,
@@ -6993,15 +7053,696 @@ describe("createAppRscHandler", () => {
     const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
-    expect(response.status).toBe(status);
-    if (status === 200) {
-      expect(dispatchMatchedPage).toHaveBeenCalledWith(
-        expect.objectContaining({ interceptionContext: "/members/7" }),
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bypassInterceptionContextCache: interceptionContext === null,
+        cleanPathname: "/photos/1",
+        interceptionContext,
+      }),
+    );
+    if (interceptionContext === null) {
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
       );
-    } else {
-      expect(dispatchMatchedPage).not.toHaveBeenCalled();
     }
   });
+
+  // A direct request takes afterFiles rules unless beforeFiles leave it on a
+  // static route or a file, and fallback rules when neither matches after
+  // those, so a later phase can route a source back to the intercepting source
+  // that beforeFiles rewrote it away from. The client then shows the source
+  // and sends it as the context, and Next.js intercepts. Where routing ends
+  // anywhere else, the target renders directly.
+  const toGate = [{ source: "/members/:id", destination: "/gate/:id" }];
+  const gateBack = [{ source: "/gate/:id", destination: "/members/:id" }];
+  it.each([
+    {
+      label: "an unmatched path that afterFiles route back",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "a dynamic route that afterFiles route back",
+      gateRoute: "dynamic",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "a static route that afterFiles would route back",
+      gateRoute: "static",
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    { label: "an unmatched path that fallback route back", fallback: gateBack, intercepts: true },
+    {
+      label: "a dynamic route that fallback would route back",
+      gateRoute: "dynamic",
+      fallback: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path that afterFiles send to another one that fallback route back",
+      afterFiles: [{ source: "/gate/:id", destination: "/detour/:id" }],
+      fallback: [{ source: "/detour/:id", destination: "/members/:id" }],
+      intercepts: true,
+    },
+    {
+      label: "a public file that afterFiles would route back",
+      publicFiles: new Set(["/gate/7"]),
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path that afterFiles send to a public file before routing back",
+      publicFiles: new Set(["/file/7"]),
+      afterFiles: [
+        { source: "/gate/:id", destination: "/file/:id" },
+        { source: "/file/:id", destination: "/members/:id" },
+      ],
+      intercepts: false,
+    },
+    {
+      label: "a static Pages page that afterFiles would route back",
+      pagesRoute: "static",
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "a dynamic Pages page that afterFiles route back",
+      pagesRoute: "dynamic",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "a dynamic Pages page that fallback would route back",
+      pagesRoute: "dynamic",
+      fallback: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path that afterFiles route back to a static Pages page",
+      pagesRoute: "static",
+      pagesPathname: "/members/7",
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label:
+        "a path no Pages page owns in an app with a Pages directory that afterFiles route back",
+      pagesRoute: "none",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    // Only its render tells whether the entry serves the path, so the source
+    // is refused there, even where a later phase would route it back.
+    {
+      label:
+        "an unmatched path a Pages entry without matchers may serve that afterFiles route back",
+      pagesRoute: "indeterminate",
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path a Pages entry without matchers may serve that fallback route back",
+      pagesRoute: "indeterminate",
+      fallback: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "a dynamic route a Pages entry without matchers leaves to the App Router",
+      gateRoute: "dynamic",
+      pagesRoute: "indeterminate",
+      afterFiles: gateBack,
+      intercepts: true,
+    },
+    {
+      label: "a metadata route that afterFiles would route back",
+      metadataRoute: true,
+      afterFiles: gateBack,
+      intercepts: false,
+    },
+    {
+      label: "the image endpoint that afterFiles would route back",
+      beforeFiles: [{ source: "/members/:id", destination: "/_next/image" }],
+      afterFiles: [{ source: "/_next/image", destination: "/members/7" }],
+      intercepts: false,
+    },
+    {
+      label: "an unmatched path that fallback rewrites externally",
+      fallback: [{ source: "/:path*", destination: "https://legacy.example/:path*" }],
+      intercepts: false,
+    },
+    {
+      label: "an external URL",
+      beforeFiles: [{ source: "/members/:id", destination: "https://legacy.example/members/:id" }],
+      intercepts: false,
+    },
+    {
+      label: "a path whose query keeps afterFiles from routing it back",
+      beforeFiles: [{ source: "/members/:id", destination: "/gate/:id?detour=1" }],
+      afterFiles: [
+        {
+          source: "/gate/:id",
+          missing: [{ type: "query", key: "detour" }],
+          destination: "/members/:id",
+        },
+      ],
+      intercepts: false,
+    },
+  ] as {
+    afterFiles?: NextRewrite[];
+    beforeFiles?: NextRewrite[];
+    fallback?: NextRewrite[];
+    gateRoute?: "dynamic" | "static";
+    intercepts: boolean;
+    label: string;
+    metadataRoute?: boolean;
+    pagesPathname?: string;
+    pagesRoute?: "dynamic" | "indeterminate" | "none" | "static";
+    publicFiles?: Set<string>;
+  }[])(
+    "replays later rewrite phases for a source beforeFiles send to $label",
+    async ({
+      afterFiles = [],
+      beforeFiles = toGate,
+      fallback = [],
+      gateRoute,
+      intercepts,
+      metadataRoute,
+      pagesPathname = "/gate/7",
+      pagesRoute,
+      publicFiles,
+    }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        isDynamic: true,
+        pattern: "/members/:id",
+        routeSegments: ["members", ":id"],
+      });
+      const gatePageRoute = createPageRoute({
+        isDynamic: gateRoute === "dynamic",
+        pattern: "/gate/7",
+        routeSegments: ["gate", "7"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: { beforeFiles, afterFiles, fallback },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          if (pathname === "/gate/7" && gateRoute !== undefined) {
+            return { params: {}, route: gatePageRoute };
+          }
+          return null;
+        },
+        matchPagesRoute:
+          pagesRoute === undefined
+            ? undefined
+            : async (pathname: string) =>
+                pagesRoute === "indeterminate"
+                  ? "indeterminate"
+                  : pathname === pagesPathname && pagesRoute !== "none"
+                    ? { route: { isDynamic: pagesRoute === "dynamic", pattern: pagesPathname } }
+                    : null,
+        metadataRouteAnswersPath: metadataRoute
+          ? (pathname: string) => pathname === "/gate/7"
+          : undefined,
+        publicFiles,
+        renderPagesFallback: pagesRoute === undefined ? undefined : async () => null,
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: !intercepts,
+          cleanPathname: "/photos/1",
+          interceptionContext: intercepts ? "/members/7" : null,
+        }),
+      );
+    },
+  );
+
+  // Next.js serves a generated sitemap only at its children, so a direct
+  // request to its base, like one to a child a plain sitemap does not
+  // generate, takes the afterFiles rules back to the source.
+  it.each([
+    {
+      label: "a generated sitemap's base",
+      destination: "/gate/sitemap.xml",
+      generatesSitemaps: true,
+      intercepts: true,
+    },
+    {
+      label: "a generated sitemap",
+      destination: "/gate/sitemap/0.xml",
+      generatesSitemaps: true,
+      intercepts: false,
+    },
+    {
+      label: "a sitemap",
+      destination: "/gate/sitemap.xml",
+      generatesSitemaps: false,
+      intercepts: false,
+    },
+    {
+      label: "a sitemap child the sitemap does not generate",
+      destination: "/gate/sitemap/0.xml",
+      generatesSitemaps: false,
+      intercepts: true,
+    },
+  ])(
+    "follows the afterFiles rules for a source beforeFiles send to $label",
+    async ({ destination, generatesSitemaps, intercepts }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        isDynamic: true,
+        pattern: "/members/:id",
+        routeSegments: ["members", ":id"],
+      });
+      const sitemap = vi.fn(() => []);
+      const generateSitemaps = vi.fn(() => [{ id: 0 }]);
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [{ source: "/members/7", destination }],
+          afterFiles: [{ source: destination, destination: "/members/7" }],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          return null;
+        },
+        metadataRoutes: [
+          {
+            type: "sitemap",
+            isDynamic: true,
+            filePath: "/tmp/app/gate/sitemap.ts",
+            module: generatesSitemaps
+              ? { default: sitemap, generateSitemaps }
+              : { default: sitemap },
+            routePrefix: "/gate",
+            routeSegments: ["gate"],
+            servedUrl: "/gate/sitemap.xml",
+            contentType: "application/xml",
+          },
+        ],
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: !intercepts,
+          cleanPathname: "/photos/1",
+          interceptionContext: intercepts ? "/members/7" : null,
+        }),
+      );
+      expect(sitemap).not.toHaveBeenCalled();
+      expect(generateSitemaps).not.toHaveBeenCalled();
+    },
+  );
+
+  // The interception id names the tree of the source the later phase routes
+  // back to, so a supplemental refresh renders it.
+  it("accepts an interception id from a source afterFiles rewrites route back", async () => {
+    const interceptionId = "interception:slot:modal:/members/[id]:/members/[id]->/photos/:id";
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/members/7",
+      routeSegments: ["members", "7"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/members/:id", destination: "/gate/:id" }],
+        afterFiles: [{ source: "/gate/:id", destination: "/members/:id" }],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      hasInterceptionId: (requestedId) => requestedId === interceptionId,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/members/7"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+        return null;
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/members/7", interceptionId });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanPathname: "/photos/1", interceptionContext: "/members/7" }),
+    );
+  });
+
+  // A supplemental refresh names an intercepted tree the rewritten source
+  // never rendered.
+  it("rejects an interception id from a source rewritten to a page without the intercept", async () => {
+    const interceptionId = "interception:slot:modal:/members/[id]:/members/[id]->/photos/:id";
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/members/7",
+      routeSegments: ["members", "7"],
+    });
+    const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/members/:id", destination: "/login" }],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      hasInterceptionId: (requestedId) => requestedId === interceptionId,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/members/7"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+        if (pathname === "/login") return { params: {}, route: loginRoute };
+        return null;
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/members/7", interceptionId });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  // The source would render with the destination's search params, which the
+  // target request does not carry.
+  it.each([
+    { phase: "beforeFiles", isDynamic: false },
+    { phase: "afterFiles", isDynamic: true },
+  ])(
+    "does not render an interception source that $phase rewrites add a query to",
+    async ({ phase, isDynamic }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        isDynamic,
+        pattern: "/members/7",
+        routeSegments: ["members", "7"],
+      });
+      const rewrites = [{ source: "/members/7", destination: "/members/7?view=login" }];
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: phase === "beforeFiles" ? rewrites : [],
+          afterFiles: phase === "afterFiles" ? rewrites : [],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          return null;
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(404);
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    },
+  );
+
+  // Next.js merges each destination's query into the request before the next
+  // rule matches, so a later rule's query condition sees it, as it does for
+  // the target's own rewrites.
+  it("matches later source rewrites against the query an earlier destination adds", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/members/7", routeSegments: ["members", "7"] });
+    const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("photo"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [
+          { source: "/members/7", destination: "/members/7?gate=closed" },
+          {
+            source: "/members/7",
+            has: [{ type: "query", key: "gate", value: "closed" }],
+            destination: "/login",
+          },
+        ],
+        afterFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/members/7"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+        if (pathname === "/login") return { params: {}, route: loginRoute };
+        return null;
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanPathname: "/photos/1", interceptionContext: null }),
+    );
+  });
+
+  // A direct request takes the config rewrites from the destination source
+  // middleware rewrote it to, so a rule that routes that destination back to
+  // the source renders the source. The client then shows the source and sends
+  // it as the context, and Next.js intercepts. Without such a rule the client
+  // shows the destination, which does not intercept the target.
+  it.each([
+    { phase: "beforeFiles", routesBack: true },
+    { phase: "afterFiles", routesBack: true },
+    { phase: "fallback", routesBack: true },
+    { phase: "afterFiles", routesBack: false },
+  ])(
+    "takes the $phase rules from the destination source middleware rewrites to (routes back: $routesBack)",
+    async ({ phase, routesBack }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        isDynamic: true,
+        pattern: "/members/:id",
+        routeSegments: ["members", ":id"],
+      });
+      const gateBack = [
+        { source: "/gate/:id", destination: routesBack ? "/members/:id" : "/gate" },
+      ];
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: phase === "beforeFiles" ? gateBack : [],
+          afterFiles: phase === "afterFiles" ? gateBack : [],
+          fallback: phase === "fallback" ? gateBack : [],
+        },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          return null;
+        },
+        async runMiddleware({ cleanPathname }) {
+          const rewritten = cleanPathname === "/members/7";
+          return {
+            kind: "continue",
+            cleanPathname: rewritten ? "/gate/7" : cleanPathname,
+            rewritten,
+            search: rewritten ? "" : null,
+          };
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: !routesBack,
+          cleanPathname: "/photos/1",
+          interceptionContext: routesBack ? "/members/7" : null,
+        }),
+      );
+    },
+  );
+
+  // The source renders with the search params the target request carries, so
+  // a rewrite whose merged query leaves them exactly as they were, in order,
+  // keeps the source. Any other query would render it with different ones.
+  it.each([
+    {
+      label: "a destination query the target carries",
+      targetSearch: "?view=login",
+      intercepts: true,
+    },
+    {
+      label: "a destination query the target carries after its other params",
+      targetSearch: "?a=1&view=login",
+      intercepts: true,
+    },
+    {
+      label: "a destination query that moves a param the target carries",
+      targetSearch: "?view=login&a=1",
+      intercepts: false,
+    },
+    {
+      label: "a middleware query that a later rule restores",
+      middlewareSearch: "?view=other",
+      targetSearch: "?view=login",
+      intercepts: true,
+    },
+    {
+      label: "a middleware query that no rule restores",
+      middlewareSearch: "?view=other",
+      sourceRuleQuery: "view=else",
+      targetSearch: "?view=login",
+      intercepts: false,
+    },
+  ] as {
+    intercepts: boolean;
+    label: string;
+    middlewareSearch?: string;
+    sourceRuleQuery?: string;
+    targetSearch: string;
+  }[])(
+    "compares the query the source rewrites leave with the target's for $label",
+    async ({ intercepts, middlewareSearch, sourceRuleQuery = "view=other", targetSearch }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({
+        pattern: "/members/7",
+        routeSegments: ["members", "7"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [
+            middlewareSearch === undefined
+              ? { source: "/members/7", destination: "/members/7?view=login" }
+              : {
+                  source: "/members/7",
+                  has: [{ type: "query", key: "view", value: sourceRuleQuery.split("=")[1] }],
+                  destination: "/members/7?view=login",
+                },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/members/7"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+          return null;
+        },
+        async runMiddleware({ cleanPathname }) {
+          const rewritten = middlewareSearch !== undefined && cleanPathname === "/members/7";
+          return {
+            kind: "continue",
+            cleanPathname,
+            rewritten,
+            search: rewritten ? middlewareSearch : null,
+          };
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+      const rscUrl = await createRscRequestUrl(`/docs/photos/1${targetSearch}`, headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      if (intercepts) {
+        expect(response.status).toBe(200);
+        expect(dispatchMatchedPage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bypassInterceptionContextCache: false,
+            cleanPathname: "/photos/1",
+            interceptionContext: "/members/7",
+          }),
+        );
+      } else {
+        expect(response.status).toBe(404);
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   // A direct request rebuilds its rewrite context after middleware, so a
   // `Host` that middleware adds selects host-conditioned beforeFiles rules.
@@ -7058,8 +7799,12 @@ describe("createAppRscHandler", () => {
     const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
-    expect(response.status).toBe(404);
-    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    // `/denied` does not intercept the target, so the target renders directly.
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ cleanPathname: "/photos/1", interceptionContext: null }),
+    );
   });
 
   it("authorizes a source on the target's route with different params", async () => {
@@ -7115,7 +7860,10 @@ describe("createAppRscHandler", () => {
     // A request URL can never carry these unescaped, so raw matching must not.
     "/feed/café",
     "/feed/{secret}",
-  ])("rejects non-canonical interception source %s before route matching", async (source) => {
+    // The client never sends a query or fragment in its context.
+    "/feed?x=1",
+    "/feed#x",
+  ])("renders the target directly for non-canonical interception source %s", async (source) => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({
       isDynamic: true,
@@ -7172,16 +7920,26 @@ describe("createAppRscHandler", () => {
     const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("secret");
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
-    expect(runMiddleware).not.toHaveBeenCalled();
+    expect(runMiddleware.mock.calls.map(([{ cleanPathname }]) => cleanPathname)).toEqual([
+      "/photos/1",
+    ]);
     expect(matchInterceptRoute).not.toHaveBeenCalled();
-    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bypassInterceptionContextCache: true,
+        interceptionContext: null,
+        route: targetRoute,
+      }),
+    );
   });
 
-  it("rejects non-canonical interception sources before config redirects", async () => {
+  it("applies the target's own redirects for a non-canonical interception source", async () => {
     const handler = createHandler({
       configHeaders: [],
       configRedirects: [{ source: "/photos/:id", destination: "/viewer/:id", permanent: false }],
@@ -7191,14 +7949,14 @@ describe("createAppRscHandler", () => {
 
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
-    expect(response.status).toBe(400);
-    expect(response.headers.get("location")).toBeNull();
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain("/docs/viewer/1");
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
   });
 
-  it("rejects interception sources containing a raw query delimiter", async () => {
+  it("renders the target directly for a context containing a raw query delimiter", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const matchInterceptRoute = vi.fn(() => ({ route: createPageRoute(), params: {} }));
     const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
@@ -7214,12 +7972,17 @@ describe("createAppRscHandler", () => {
     const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(matchInterceptRoute).not.toHaveBeenCalled();
-    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: null, route: targetRoute }),
+    );
   });
 
-  it("rejects malformed encoded interception sources before middleware", async () => {
+  it("renders the target directly for a malformed encoded interception source", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
     const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
@@ -7243,9 +8006,116 @@ describe("createAppRscHandler", () => {
     const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
-    expect(response.status).toBe(400);
-    expect(middlewarePaths).toEqual([]);
-    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(middlewarePaths).toEqual(["/photos/1"]);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: null, route: targetRoute }),
+    );
+  });
+
+  describe.each([
+    ["one that fails canonical decoding", "/feed/%"],
+    ["a malformed one", "feed"],
+    ["a canonical one that names no source", "/feed"],
+  ])("an unverified interception context, %s", (_label, interceptionContext) => {
+    const dispatchWithContext = async (
+      pathname: string,
+      overrides: Partial<HandlerOptions>,
+    ): Promise<Parameters<DispatchAppWorkerResponseStage>> => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () =>
+          new Response("stage", { headers: { "Cache-Control": "public, s-maxage=3600" } }),
+      );
+      const handler = createHandler({ configHeaders: [], ...overrides });
+      const headers = createRscRequestHeaders({ interceptionContext });
+      const rscUrl = await createRscRequestUrl(pathname, headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(dispatchResponseStage).toHaveBeenCalledOnce();
+      return dispatchResponseStage.mock.calls[0]!;
+    };
+
+    it("keeps an App page out of the shared response stage", async () => {
+      const route = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const matchRoute = (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route } : null;
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/photos/1", {
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      expect(props).toMatchObject({ kind: "app-page", bypassInterceptionContextCache: true });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+
+    it("keeps a Route Handler out of the shared response stage", async () => {
+      const route = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/route",
+        routeHandler: { GET: () => new Response("get") },
+        routeSegments: ["route"],
+      });
+      const matchRoute = (pathname: string) =>
+        pathname === "/route" ? { params: {}, route } : null;
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/route", {
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      expect(props).toMatchObject({
+        kind: "app-route-handler",
+        bypassInterceptionContextCache: true,
+      });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+
+    it("keeps a metadata route out of the shared response stage", async () => {
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/robots.txt", {
+        isMetadataRoute: (pathname) => pathname === "/robots.txt",
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+      });
+
+      expect(props).toMatchObject({ kind: "app-metadata" });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+
+    it("keeps an unmatched route's not-found page out of the shared response stage", async () => {
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/missing", {
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+      });
+
+      expect(props).toMatchObject({ kind: "app-not-found" });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
+
+    it("keeps a hybrid Pages page out of the shared response stage", async () => {
+      const [, props, dispatchOptions] = await dispatchWithContext("/docs/pages", {
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback: async (options) =>
+          options.dispatchPagesResponseStage?.(options.request, "page", "static") ?? null,
+      });
+
+      expect(props).toMatchObject({
+        kind: "hybrid-pages",
+        isRscRequest: true,
+      });
+      expect(dispatchOptions).toEqual({ cache: "bypass" });
+    });
   });
 
   it("passes the raw interception source to the one-decode route matcher", async () => {
@@ -8159,28 +9029,95 @@ describe("createAppRscHandler", () => {
 
   // Next.js implements interception as a generated rewrite whose destination is
   // the intercepting route, so middleware rewriting the source away never
-  // renders the source tree. Vinext renders that tree directly and must fail
-  // closed when its authorization pass changes the source route.
+  // renders the source tree. The client shows the page middleware rewrote to
+  // and sends it as the context, so when that page does not intercept the
+  // target, the target renders directly.
   // Ref: Next.js test/e2e/app-dir/interception-middleware-rewrite/
   // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/interception-middleware-rewrite
-  it("does not render an interception source that middleware rewrites away", async () => {
+  it.each(["/login", "/login?from=feed"])(
+    "renders the target directly when middleware rewrites the source to %s",
+    async (destination) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+      const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
+      const dispatchMatchedPage = vi.fn(async () => new Response("photo"));
+      const middlewarePaths: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/feed/secret"
+            ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+            : null,
+        matchRoute(pathname: string) {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/feed/secret") return { params: {}, route: sourceRoute };
+          if (pathname === "/login") return { params: {}, route: loginRoute };
+          return null;
+        },
+        middlewareModule: {
+          default(request: NextRequest) {
+            middlewarePaths.push(request.nextUrl.pathname);
+            return request.nextUrl.pathname === "/feed/secret"
+              ? new Response(null, {
+                  headers: {
+                    "x-middleware-rewrite": `https://example.test/docs${destination}`,
+                  },
+                })
+              : new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("photo");
+      expect(middlewarePaths).toEqual(["/photos/1", "/feed/secret"]);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: true,
+          cleanPathname: "/photos/1",
+          interceptionContext: null,
+        }),
+      );
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    },
+  );
+
+  // A Server Action rerenders the page it was posted to, as Next.js does with
+  // the context the client sends.
+  it("dispatches a Server Action without a source that middleware rewrites to a page without the intercept", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
-    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
+    const handleServerActionRequest = vi.fn(async () => new Response("action"));
     const handler = createHandler({
       configHeaders: [],
-      dispatchMatchedPage,
+      handleServerActionRequest,
       matchInterceptRoute: (_pathname, sourcePathname) =>
-        sourcePathname === "/feed/secret" ? { route: sourceRoute, params: {} } : null,
-      matchRoute: (pathname: string) =>
-        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+        sourcePathname === "/feed/secret"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed/secret") return { params: {}, route: sourceRoute };
+        if (pathname === "/login") return { params: {}, route: loginRoute };
+        return null;
+      },
       middlewareModule: {
         default(request: NextRequest) {
           return request.nextUrl.pathname === "/feed/secret"
             ? new Response(null, {
-                headers: {
-                  "x-middleware-rewrite": "https://example.test/docs/login",
-                },
+                headers: { "x-middleware-rewrite": "https://example.test/docs/login" },
               })
             : new Response(null, { headers: { "x-middleware-next": "1" } });
         },
@@ -8188,11 +9125,21 @@ describe("createAppRscHandler", () => {
     });
 
     const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
-    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
-    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+    headers.set("content-type", "text/plain");
+    headers.set("next-action", "interception-action");
+    const response = await handler(
+      new Request("https://example.test/docs/photos/1", { body: "[]", headers, method: "POST" }),
+      null,
+    );
 
-    expect(response.status).toBe(404);
-    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(handleServerActionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionId: "interception-action",
+        interceptionContext: null,
+        isRscRequest: true,
+      }),
+    );
   });
 
   it("forwards RSC cache-busting params when source middleware rewrites externally", async () => {
@@ -8462,6 +9409,8 @@ describe("createAppRscHandler", () => {
     { sourceMiddleware: "next", interceptionContext: null },
     { sourceMiddleware: "rewrite to /club/other", interceptionContext: null },
     { sourceMiddleware: "deny", interceptionContext: null },
+    { sourceMiddleware: "rewrite to /club/acme?x=1", interceptionContext: null },
+    { sourceMiddleware: "external rewrite", interceptionContext: null },
   ])(
     "intercepts from a source without the slot only through a rewrite to one with it (source middleware: $sourceMiddleware)",
     async ({ sourceMiddleware, interceptionContext }) => {
@@ -8536,6 +9485,11 @@ describe("createAppRscHandler", () => {
               return new Response(null, { headers: { "x-middleware-next": "1" } });
             }
             if (sourceMiddleware === "deny") return new Response("denied", { status: 401 });
+            if (sourceMiddleware === "external rewrite") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://upstream.example/club/acme" },
+              });
+            }
             return new Response(null, {
               headers: {
                 "x-middleware-rewrite": `https://example.test/docs${sourceMiddleware.slice("rewrite to ".length)}`,
@@ -8545,12 +9499,17 @@ describe("createAppRscHandler", () => {
         },
       });
 
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
       const headers = createRscRequestHeaders({ interceptionContext: "/club/static" });
       const rscUrl = await createRscRequestUrl("/docs/club/static/pics/1", headers);
-      const response = await handler(
-        new Request(`https://example.test${rscUrl}`, { headers }),
-        null,
-      );
+      let response: Response;
+      try {
+        fetchSpy.mockResolvedValue(new Response("upstream"));
+        response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
 
       expect(response.status).toBe(200);
       expect(middlewarePaths).toEqual(["/club/static/pics/1", "/club/static"]);
@@ -8560,6 +9519,576 @@ describe("createAppRscHandler", () => {
       );
     },
   );
+
+  // A source without the slot beside the slot owner's own route renders the
+  // whole intercepting route, as Next.js's interception rewrite does. Source
+  // authorization still runs on it: a refused source renders the target
+  // directly, and a request selecting the intercept by id is refused.
+  it.each([
+    { sourceMiddleware: "next", interceptionId: null, interceptionContext: "/club/static" },
+    {
+      sourceMiddleware: "rewrite to /club/acme",
+      interceptionId: null,
+      interceptionContext: "/club/acme",
+    },
+    { sourceMiddleware: "deny", interceptionId: null, interceptionContext: null },
+    { sourceMiddleware: "deny", interceptionId: "club-modal", interceptionContext: null },
+  ])(
+    "renders the whole intercepting route from a source without the slot (source middleware: $sourceMiddleware, id: $interceptionId)",
+    async ({ sourceMiddleware, interceptionId, interceptionContext }) => {
+      const targetRoute = createPageRoute({
+        isDynamic: true,
+        params: ["slug", "id"],
+        pattern: "/club/:slug/pics/:id",
+        routeSegments: ["club", "[slug]", "pics", "[id]"],
+      });
+      const staticRoute = createPageRoute({
+        pattern: "/club/static",
+        routeSegments: ["club", "static"],
+      });
+      const clubRoute = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/club/:slug",
+        routeSegments: ["club", "[slug]"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        hasInterceptionId: (id) => id === "club-modal",
+        matchInterceptRoute: (_pathname, sourcePathname) => {
+          if (sourcePathname === "/club/static") {
+            return {
+              authorizationParams: {},
+              authorizationRoute: staticRoute,
+              interceptionRendersWholeInterceptingRoute: true,
+              interceptionSourceIsConcrete: true,
+              interceptionSourceLacksSlot: true,
+              params: { slug: "static" } as Record<string, string | string[]>,
+              route: clubRoute,
+            };
+          }
+          if (sourcePathname === "/club/acme") {
+            return {
+              params: { slug: "acme" } as Record<string, string | string[]>,
+              route: clubRoute,
+            };
+          }
+          return null;
+        },
+        matchRoute(pathname: string) {
+          if (pathname === "/club/static/pics/1") {
+            return {
+              params: { id: "1", slug: "static" } as Record<string, string | string[]>,
+              route: targetRoute,
+            };
+          }
+          if (pathname === "/club/static") {
+            return { params: {} as Record<string, string | string[]>, route: staticRoute };
+          }
+          if (pathname === "/club/acme") {
+            return {
+              params: { slug: "acme" } as Record<string, string | string[]>,
+              route: clubRoute,
+            };
+          }
+          return null;
+        },
+        middlewareModule: {
+          default(request: NextRequest) {
+            if (request.nextUrl.pathname !== "/club/static" || sourceMiddleware === "next") {
+              return new Response(null, { headers: { "x-middleware-next": "1" } });
+            }
+            if (sourceMiddleware === "deny") return new Response("denied", { status: 401 });
+            return new Response(null, {
+              headers: {
+                "x-middleware-rewrite": `https://example.test/docs${sourceMiddleware.slice("rewrite to ".length)}`,
+              },
+            });
+          },
+        },
+      });
+
+      const headers = createRscRequestHeaders({
+        interceptionContext: "/club/static",
+        interceptionId: interceptionId ?? undefined,
+      });
+      const rscUrl = await createRscRequestUrl("/docs/club/static/pics/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      if (interceptionId !== null) {
+        expect(response.status).toBe(400);
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+        return;
+      }
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: interceptionContext === null,
+          interceptionContext,
+        }),
+      );
+      if (interceptionContext !== null) {
+        // As for an ordinary intercept, the source keys every cache the
+        // response reaches apart from the target's own: the RSC URL shared
+        // caches store it under, and the entry the render reads.
+        const plainUrl = await createRscRequestUrl(
+          "/docs/club/static/pics/1",
+          createRscRequestHeaders(),
+        );
+        expect(rscUrl).not.toBe(plainUrl);
+        expect(appIsrRscKey("/club/static/pics/1", null, undefined, interceptionContext)).not.toBe(
+          appIsrRscKey("/club/static/pics/1"),
+        );
+      }
+    },
+  );
+
+  // An unmatched URL's not-found page sends /_not-found, which Next.js's
+  // interception rewrite matches from `Next-Url` alone, never running
+  // middleware or redirects on it. The intercept renders only where a direct
+  // request to /_not-found renders cleanly; anything else drops the source
+  // and renders the target directly, never the source's redirect or 404. A
+  // request selecting the intercept by id is refused. A rewrite that keeps
+  // the /_not-found path is a clean pass, as for any other source; one to
+  // another path never adopts that path as the source. An external rewrite
+  // drops the source without proxying.
+  it.each([
+    { refusal: "none", interceptionId: null },
+    { refusal: "none", sameRewrite: "middleware", interceptionId: null },
+    { refusal: "none", sameRewrite: "config", interceptionId: null },
+    { refusal: "none", sameRewrite: "middleware with a trailing slash", interceptionId: null },
+    { refusal: "middleware redirect", interceptionId: null },
+    { refusal: "middleware redirect", interceptionId: "slug-modal" },
+    { refusal: "middleware rewrite", interceptionId: null },
+    { refusal: "middleware rewrite", interceptionId: "slug-modal" },
+    { refusal: "middleware external rewrite", interceptionId: null },
+    { refusal: "middleware external rewrite", interceptionId: "slug-modal" },
+    { refusal: "config redirect", interceptionId: null },
+    { refusal: "config redirect", interceptionId: "slug-modal" },
+    { refusal: "config rewrite", interceptionId: null },
+    { refusal: "config rewrite", interceptionId: "slug-modal" },
+  ])(
+    "intercepts from an unmatched URL's not-found page only where /_not-found renders (refusal: $refusal, same-path rewrite: $sameRewrite, id: $interceptionId)",
+    async ({ refusal, sameRewrite, interceptionId }) => {
+      const targetRoute = createPageRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/photos/:id",
+        routeSegments: ["photos", "[id]"],
+      });
+      const slugRoute = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/:slug",
+        routeSegments: ["[slug]"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const middlewarePaths: string[] = [];
+      const interceptSourcePathnames: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        configRedirects:
+          refusal === "config redirect"
+            ? [{ source: "/_not-found", destination: "/login", permanent: false }]
+            : [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles:
+            refusal === "config rewrite"
+              ? [{ source: "/_not-found", destination: "/acme" }]
+              : sameRewrite === "config"
+                ? [{ source: "/_not-found", destination: "/_not-found" }]
+                : [],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        hasInterceptionId: (id) => id === "slug-modal",
+        // /acme intercepts on its own, so only the refusal keeps a rewrite
+        // to it from adopting it as the source.
+        matchInterceptRoute: (_pathname, sourcePathname) => {
+          interceptSourcePathnames.push(sourcePathname);
+          return sourcePathname === "/_not-found" || sourcePathname === "/acme"
+            ? {
+                interceptionRendersWholeInterceptingRoute: sourcePathname === "/_not-found",
+                interceptionSourceIsConcrete: true,
+                params: { slug: sourcePathname.slice(1) } as Record<string, string | string[]>,
+                route: slugRoute,
+              }
+            : null;
+        },
+        // Like the real matcher, a trailing slash matches the same route.
+        matchRoute(pathname: string) {
+          const routePathname = pathname.length > 1 ? pathname.replace(/\/$/, "") : pathname;
+          if (routePathname === "/photos/1") {
+            return { params: { id: "1" } as Record<string, string | string[]>, route: targetRoute };
+          }
+          if (routePathname === "/_not-found" || routePathname === "/acme") {
+            return {
+              params: { slug: routePathname.slice(1) } as Record<string, string | string[]>,
+              route: slugRoute,
+            };
+          }
+          return null;
+        },
+        middlewareModule: {
+          default(request: NextRequest) {
+            middlewarePaths.push(request.nextUrl.pathname);
+            if (request.nextUrl.pathname === "/_not-found" && refusal === "middleware redirect") {
+              return Response.redirect("https://example.test/docs/login", 307);
+            }
+            if (request.nextUrl.pathname === "/_not-found" && refusal === "middleware rewrite") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/acme" },
+              });
+            }
+            if (
+              request.nextUrl.pathname === "/_not-found" &&
+              refusal === "middleware external rewrite"
+            ) {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://upstream.example/acme" },
+              });
+            }
+            if (
+              request.nextUrl.pathname === "/_not-found" &&
+              sameRewrite === "middleware with a trailing slash"
+            ) {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/_not-found/" },
+              });
+            }
+            if (request.nextUrl.pathname === "/_not-found" && sameRewrite === "middleware") {
+              // A rewrite to the request's own URL that only sets a header.
+              return new Response(null, {
+                headers: {
+                  "x-middleware-override-headers": "x-from-middleware",
+                  "x-middleware-request-x-from-middleware": "1",
+                  "x-middleware-rewrite": request.nextUrl.href,
+                },
+              });
+            }
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const headers = createRscRequestHeaders({
+        interceptionContext: "/_not-found",
+        interceptionId: interceptionId ?? undefined,
+      });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      let response: Response;
+      try {
+        fetchSpy.mockResolvedValue(new Response("upstream"));
+        response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+
+      expect(response.headers.get("location")).toBeNull();
+      if (interceptionId !== null) {
+        expect(response.status).toBe(400);
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+        return;
+      }
+      expect(response.status).toBe(200);
+      expect(middlewarePaths).toEqual(
+        refusal === "config redirect" ? ["/photos/1"] : ["/photos/1", "/_not-found"],
+      );
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      if (refusal === "none") {
+        // The source is only ever looked up as /_not-found, under its rules.
+        expect(interceptSourcePathnames).not.toContain("/_not-found/");
+        expect(dispatchMatchedPage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bypassInterceptionContextCache: false,
+            interceptionContext: "/_not-found",
+          }),
+        );
+        return;
+      }
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: true,
+          interceptionContext: null,
+          route: targetRoute,
+        }),
+      );
+    },
+  );
+
+  // A root-level intercept is reached from /_not-found even where no route
+  // matches it: its own owner, the root page for a sibling intercept or a root
+  // route group's page for its slot, renders as Next.js's interception rewrite
+  // does. The source pass still decides, and another context with no route of
+  // its own still renders the target directly, or is refused with an id. As
+  // /_not-found matches no route here, its afterFiles and fallback rules apply
+  // too, as they do to a direct request to it.
+  it.each([
+    ...["group slot", "sibling"].flatMap((owner) => [
+      { owner, context: "/_not-found", outcome: "none" },
+      { owner, context: "/_not-found", outcome: "same-path rewrite" },
+      { owner, context: "/_not-found", outcome: "redirect" },
+      { owner, context: "/_not-found", outcome: "afterFiles external rewrite" },
+      { owner, context: "/_not-found", outcome: "fallback external rewrite" },
+      { owner, context: "/missing", outcome: "none" },
+      { owner, context: "/missing", outcome: "rewrite to /_not-found" },
+    ]),
+    // A target in the slot's own group shares its layouts with the owner, yet
+    // the whole intercepting route still needs its source authorized.
+    ...["none", "redirect", "afterFiles external rewrite"].map((outcome) => ({
+      owner: "group slot over a target in its group",
+      context: "/_not-found",
+      outcome,
+    })),
+  ])(
+    "intercepts a root-level $owner from /_not-found without a route of its own (context: $context, source: $outcome)",
+    async ({ owner, context, outcome }) => {
+      const targetSegments =
+        owner === "group slot over a target in its group"
+          ? ["(g)", "photos", "[id]"]
+          : ["photos", "[id]"];
+      const ownerMatcherRoute =
+        owner !== "sibling"
+          ? {
+              params: [],
+              pattern: "/",
+              patternParts: [],
+              routeSegments: ["(g)"],
+              slots: {
+                modal: {
+                  id: "slot:modal:/(g)",
+                  intercepts: [
+                    {
+                      sourceMatchPattern: "/",
+                      sourcePageSegments: ["(g)", "@modal", "(.)photos", "[id]"],
+                      targetPattern: "/photos/:id",
+                      interceptLayouts: [],
+                      page: "group-photos-modal",
+                      params: ["id"],
+                    },
+                  ],
+                },
+              },
+            }
+          : {
+              ids: { route: "graph-route:/" },
+              params: [],
+              pattern: "/",
+              patternParts: [],
+              routeSegments: [],
+              siblingIntercepts: [
+                {
+                  id: "interception:/(.)photos/[id]",
+                  targetPattern: "/photos/:id",
+                  sourceMatchPattern: "/",
+                  sourcePageSegments: ["(.)photos", "[id]"],
+                  slotId: "slot:__vinext_sibling_intercept:/",
+                  interceptLayouts: [],
+                  page: "root-photos-intercept",
+                  params: ["id"],
+                },
+              ],
+            };
+      const matcherRoutes = [
+        ownerMatcherRoute,
+        {
+          params: ["id"],
+          pattern: "/photos/:id",
+          patternParts: ["photos", ":id"],
+          routeSegments: targetSegments,
+        },
+      ];
+      const matcher = createAppRscRouteMatcher(matcherRoutes as any);
+      const ownerRoute = createPageRoute({
+        pattern: "/",
+        routeSegments: ownerMatcherRoute.routeSegments,
+      });
+      const targetRoute = createPageRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/photos/:id",
+        routeSegments: targetSegments,
+      });
+      const handlerRoutes = new Map<string, TestRoute>([
+        ["/", ownerRoute],
+        ["/photos/:id", targetRoute],
+      ]);
+      const toHandlerMatch = (
+        result: { route: { pattern: string }; params: Record<string, string | string[]> } | null,
+      ) =>
+        result ? { params: result.params, route: handlerRoutes.get(result.route.pattern)! } : null;
+      const interceptionId = matcher.findIntercept("/photos/1", "/_not-found")?.interceptionId;
+      if (!interceptionId) throw new Error("Expected a graph-owned interception id");
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const externalRewrite = [{ source: "/_not-found", destination: "https://upstream.example/" }];
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: outcome === "afterFiles external rewrite" ? externalRewrite : [],
+          beforeFiles: [],
+          fallback: outcome === "fallback external rewrite" ? externalRewrite : [],
+        },
+        dispatchMatchedPage,
+        hasInterceptionId: (id) => matcher.hasInterceptionId(id),
+        matchInterceptRoute(pathname, sourcePathname, id, acceptsSourceWithoutSlot) {
+          const intercept = matcher.findIntercept(
+            pathname,
+            sourcePathname,
+            id,
+            acceptsSourceWithoutSlot,
+          );
+          if (!intercept) return null;
+          return {
+            interceptionRendersRootOwnerFromRouteMiss: intercept.rendersRootOwnerFromRouteMiss,
+            interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
+            interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
+            interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+            interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot,
+            params: intercept.sourceMatchedParams,
+            route: handlerRoutes.get(matcherRoutes[intercept.sourceRouteIndex].pattern)!,
+          };
+        },
+        matchRoute: (pathname: string) => toHandlerMatch(matcher.matchRoute(pathname)),
+        middlewareModule: {
+          default(request: NextRequest) {
+            if (request.nextUrl.pathname === context && outcome === "redirect") {
+              return Response.redirect("https://example.test/docs/login", 307);
+            }
+            if (request.nextUrl.pathname === context && outcome === "rewrite to /_not-found") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/_not-found" },
+              });
+            }
+            if (request.nextUrl.pathname === context && outcome === "same-path rewrite") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": request.nextUrl.href },
+              });
+            }
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+      const request = async (id?: string) => {
+        const headers = createRscRequestHeaders({
+          interceptionContext: context,
+          interceptionId: id,
+        });
+        const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+        return handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+      };
+
+      const intercepts =
+        context === "/_not-found" && (outcome === "none" || outcome === "same-path rewrite");
+      const withId = await request(interceptionId);
+      expect(withId.status).toBe(intercepts ? 200 : 400);
+      const response = await request();
+      // Any other source a rewrite refuses answers as its direct request would.
+      expect(response.status).toBe(outcome === "rewrite to /_not-found" ? 404 : 200);
+      if (response.status === 404) {
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+        return;
+      }
+      expect(response.headers.get("location")).toBeNull();
+      expect(dispatchMatchedPage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: !intercepts,
+          interceptionContext: intercepts ? "/_not-found" : null,
+          route: targetRoute,
+        }),
+      );
+    },
+  );
+
+  // A destination query keeps the source from intercepting, and a source
+  // without the slot then renders the target directly.
+  it("renders the target directly when a config rewrite adds a query to a source without the slot", async () => {
+    const targetRoute = createPageRoute({
+      isDynamic: true,
+      params: ["slug", "id"],
+      pattern: "/club/:slug/pics/:id",
+      routeSegments: ["club", "[slug]", "pics", "[id]"],
+    });
+    const staticRoute = createPageRoute({
+      pattern: "/club/static",
+      routeSegments: ["club", "static"],
+    });
+    const clubRoute = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/club/:slug",
+      routeSegments: ["club", "[slug]"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/club/static", destination: "/club/acme?x=1" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname, _interceptionId, acceptsSlotless) => {
+        if (sourcePathname === "/club/static") {
+          return acceptsSlotless
+            ? {
+                interceptionSourceLacksSlot: true,
+                params: {} as Record<string, string | string[]>,
+                route: staticRoute,
+              }
+            : null;
+        }
+        if (sourcePathname === "/club/acme") {
+          return {
+            params: { slug: "acme" } as Record<string, string | string[]>,
+            route: clubRoute,
+          };
+        }
+        return null;
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/club/static/pics/1") {
+          return {
+            params: { id: "1", slug: "static" } as Record<string, string | string[]>,
+            route: targetRoute,
+          };
+        }
+        if (pathname === "/club/static") {
+          return { params: {} as Record<string, string | string[]>, route: staticRoute };
+        }
+        if (pathname === "/club/acme") {
+          return {
+            params: { slug: "acme" } as Record<string, string | string[]>,
+            route: clubRoute,
+          };
+        }
+        return null;
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/club/static" });
+    const rscUrl = await createRscRequestUrl("/docs/club/static/pics/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: null }),
+    );
+  });
 
   // A sibling intercept opened from a deeper source renders the intercepting
   // route itself, but the deeper source is what a source rewrite reaches, so
@@ -8831,40 +10360,71 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledOnce();
   });
 
-  it("still fails closed when a source rewrite reaches a route outside the interception", async () => {
-    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
-    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
-    const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
-    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
-    const handler = createHandler({
-      configHeaders: [],
-      dispatchMatchedPage,
-      // Only the raw source is an interception source; `/login` is not.
-      matchInterceptRoute: (_pathname, sourcePathname) =>
-        sourcePathname === "/feed" ? { route: localeRootRoute, params: { locale: "feed" } } : null,
-      matchRoute(pathname: string) {
-        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
-        if (pathname === "/login") return { params: {}, route: loginRoute };
-        return null;
-      },
-      middlewareModule: {
-        default(request: NextRequest) {
-          return request.nextUrl.pathname === "/feed"
-            ? new Response(null, {
-                headers: { "x-middleware-rewrite": "https://example.test/docs/login" },
-              })
-            : new Response(null, { headers: { "x-middleware-next": "1" } });
+  // A rewrite to a page without the intercept renders the target directly, as
+  // the client then sends that page as the context. One that reaches an
+  // intercepting source other than the route it rewrites to, such as the
+  // slot owner standing in for a path without a route of its own, still fails
+  // closed.
+  it.each([
+    { destination: "/login", status: 200 },
+    { destination: "/vault/missing", status: 404 },
+  ])(
+    "renders a source rewrite to $destination outside the interception",
+    async ({ destination, status }) => {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+      const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
+      const vaultRoute = createPageRoute({ pattern: "/vault", routeSegments: ["vault"] });
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        // `/login` is not an interception source; `/vault/missing` reaches the
+        // `/vault` slot owner.
+        matchInterceptRoute: (_pathname, sourcePathname) => {
+          if (sourcePathname === "/feed") {
+            return {
+              route: localeRootRoute,
+              params: { locale: "feed" } as Record<string, string | string[]>,
+            };
+          }
+          if (sourcePathname === "/vault/missing") return { route: vaultRoute, params: {} };
+          return null;
         },
-      },
-    });
+        matchRoute(pathname: string) {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/login") return { params: {}, route: loginRoute };
+          if (pathname === "/vault") return { params: {}, route: vaultRoute };
+          return null;
+        },
+        middlewareModule: {
+          default(request: NextRequest) {
+            return request.nextUrl.pathname === "/feed"
+              ? new Response(null, {
+                  headers: { "x-middleware-rewrite": `https://example.test/docs${destination}` },
+                })
+              : new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
 
-    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
-    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
-    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
 
-    expect(response.status).toBe(404);
-    expect(dispatchMatchedPage).not.toHaveBeenCalled();
-  });
+      expect(response.status).toBe(status);
+      if (status === 200) {
+        expect(dispatchMatchedPage).toHaveBeenCalledWith(
+          expect.objectContaining({ cleanPathname: "/photos/1", interceptionContext: null }),
+        );
+      } else {
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   // The re-resolved source becomes the context the client sends back, so a
   // rewrite the inbound header contract would reject (non-canonical, or over

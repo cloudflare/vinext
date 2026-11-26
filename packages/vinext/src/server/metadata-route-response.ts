@@ -60,6 +60,7 @@ import {
 } from "./cache-control.js";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { interceptionMarkerPatternParam } from "../routing/route-pattern.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { VINEXT_METADATA_ROUTE_CACHE_HEADER } from "./headers.js";
 import {
@@ -786,6 +787,12 @@ function metadataRouteRawParams(
   const params: AppPageParams = Object.create(null);
   let urlIndex = 0;
   for (const part of route.patternParts ?? []) {
+    const markerParam = interceptionMarkerPatternParam(part);
+    if (markerParam) {
+      const value = urlParts[urlIndex++];
+      if (value !== undefined) params[markerParam.name] = value.slice(markerParam.marker.length);
+      continue;
+    }
     if (!part.startsWith(":")) {
       urlIndex++;
       continue;
@@ -1035,6 +1042,44 @@ export function isMetadataRouteRequestPath(
       return true;
     }
     if (matchMetadataRoute(route, cleanPathname, functions, getUrlParts)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a metadata route answers a rewrite destination, as
+ * `renderMetadataRouteRequest` selects one, without running the route. The
+ * base of a sitemap with generateSitemaps, a child of a sitemap without it,
+ * and an image child without generateImageMetadata get no response there and
+ * fall through to later routing.
+ */
+export function metadataRouteAnswersRewrittenPath(
+  metadataRoutes: readonly MetadataRuntimeRoute[],
+  routePathname: string,
+): boolean {
+  const cleanPathname = normalizePathnameForRouteMatch(routePathname);
+  let urlParts: string[] | undefined;
+  const getUrlParts = () => (urlParts ??= cleanPathname.split("/").filter(Boolean));
+  let routeUrlParts: string[] | undefined;
+  const getRouteUrlParts = () => (routeUrlParts ??= routePathname.split("/").filter(Boolean));
+  for (const route of metadataRoutes) {
+    const functions = getMetadataRouteFunctions(route);
+    if (route.type === "sitemap" && route.isDynamic && functions.generateSitemaps) {
+      if (
+        functions.defaultExport &&
+        isGeneratedSitemapPath(route, cleanPathname) &&
+        isGeneratedSitemapPath(route, routePathname)
+      ) {
+        return true;
+      }
+      continue;
+    }
+    if (
+      matchMetadataRoute(route, cleanPathname, functions, getUrlParts) &&
+      matchMetadataRoute(route, routePathname, functions, getRouteUrlParts)
+    ) {
       return true;
     }
   }

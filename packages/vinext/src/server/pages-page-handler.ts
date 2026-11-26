@@ -104,6 +104,7 @@ import {
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
 import { logRequestError } from "./request-error-log.js";
+import type { FontOwners } from "vinext/shims/font-utils";
 
 export async function renderTracedPagesPageResponse(
   options: Parameters<typeof renderPagesPageResponse>[0],
@@ -366,12 +367,17 @@ export type CreatePagesPageHandlerOptions = {
   setDocumentInitialHead: ((head: ReactNode[]) => void) | undefined;
   /** `flushPreloads` from `next/dynamic`. */
   flushPreloads: (() => Promise<void> | void) | undefined;
-  /** `getSSRFontLinks` from `next/font/google`. */
-  getFontLinks: () => string[];
-  /** Combined styles from `next/font/google` + `next/font/local`. */
-  getFontStyles: () => string[];
-  /** Combined font preloads. */
-  getFontPreloads: () => Array<{ href: string; type: string }>;
+  /**
+   * The modules whose fonts the document of the page at `routePattern`
+   * carries: its own and `_app`'s. null carries every font.
+   */
+  getFontOwners?: (routePattern: string) => FontOwners | Promise<FontOwners>;
+  /** `getSSRFontLinks` from `next/font/google`, scoped to `owners`. */
+  getFontLinks: (owners?: FontOwners) => string[];
+  /** Combined styles from `next/font/google` + `next/font/local`, scoped to `owners`. */
+  getFontStyles: (owners?: FontOwners) => string[];
+  /** Combined font preloads, scoped to `owners`. */
+  getFontPreloads: (owners?: FontOwners) => Array<{ href: string; type: string }>;
   /** `renderToReadableStream` from `react-dom/server`. */
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
   /** `safeJsonStringify` from `vinext/html`. */
@@ -476,6 +482,7 @@ export function createPagesPageHandler(
     getSSRHeadHTML,
     setDocumentInitialHead,
     flushPreloads,
+    getFontOwners,
     getFontLinks,
     getFontStyles,
     getFontPreloads,
@@ -988,11 +995,13 @@ export function createPagesPageHandler(
           isStatusErrorRender &&
           (isStaticPropsRoute || isRouteMissErrorRender || options?.__forcedRoute !== undefined);
 
+        // The page's own and _app's fonts, whatever the process served before.
+        const fontOwners = getFontOwners ? await getFontOwners(route.pattern) : null;
         // Build font Link header early — available for ISR cached responses too.
         let fontLinkHeader = "";
         let allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
-          allFontPreloads = getFontPreloads();
+          allFontPreloads = getFontPreloads(fontOwners);
           if (allFontPreloads.length > 0) {
             // Font files are content-hashed immutable assets. The bare URL
             // must match both the HTML preload and the @font-face source.
@@ -1091,8 +1100,8 @@ export function createPagesPageHandler(
             flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
             fontLinkHeader,
             fontPreloads: allFontPreloads,
-            getFontLinks,
-            getFontStyles,
+            getFontLinks: () => getFontLinks(fontOwners),
+            getFontStyles: () => getFontStyles(fontOwners),
             getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
             clientTraceMetadata: shouldEmitPagesClientTraceMetadata(pageModule, AppComponent)
               ? vinextConfig.clientTraceMetadata

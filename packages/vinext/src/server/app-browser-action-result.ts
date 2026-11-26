@@ -104,6 +104,20 @@ export async function normalizeServerActionThrownValue(
   return data;
 }
 
+/**
+ * Settle an action call with its result: the returned value, or a throw of the
+ * value it failed with. Runs even when the response hands the page to a hard
+ * navigation, which does not always replace the document.
+ */
+export async function resolveServerActionReturnValue(
+  returnValue: AppBrowserServerActionResult<unknown>["returnValue"] | undefined,
+): Promise<unknown> {
+  if (!returnValue) return undefined;
+  // A failed action's thrown value may still be settling.
+  if (!returnValue.ok) throw await returnValue.data;
+  return returnValue.data;
+}
+
 export function shouldSyncServerActionHttpFallbackHead<TRoot>(
   result: AppBrowserServerActionResult<TRoot> | TRoot,
 ): boolean {

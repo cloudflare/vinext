@@ -66,6 +66,7 @@ function createRouteSnapshot(
     rootBoundaryId,
     routeId: "route:/dashboard",
     slotBindings,
+    wholeInterceptionSource: null,
   };
 }
 
@@ -430,6 +431,7 @@ function planFlightResponseFromSnapshots(options: {
   lane?: OperationToken["lane"];
   restoredHistorySnapshot?: boolean;
   routeManifest?: RouteManifest | null;
+  suppliedInterceptionSource?: { matchedUrl: string; routeId: string };
   targetSnapshot: RouteSnapshot;
   tokenGraphVersion?: string | null;
   traceFields?: NavigationPlannerState["traceFields"];
@@ -451,6 +453,9 @@ function planFlightResponseFromSnapshots(options: {
           : {}),
         href: options.targetSnapshot.displayUrl,
         ...(options.restoredHistorySnapshot ? { restoredHistorySnapshot: true } : {}),
+        ...(options.suppliedInterceptionSource
+          ? { suppliedInterceptionSource: options.suppliedInterceptionSource }
+          : {}),
         targetSnapshot: options.targetSnapshot,
       },
       token,
@@ -1108,6 +1113,235 @@ describe("navigationPlanner root-boundary decisions", () => {
       throw new Error("Expected proposeCommit decision");
     }
     expect(decision.proposal.preservePreviousSlotIds).toEqual(["slot:team:/dashboard"]);
+  });
+
+  it("replaces the slots the whole intercepting route renders, whatever the direct target leaves in its default", () => {
+    const layoutIds = ["layout:/", "layout:/club/[slug]"];
+    const asideSlot = "slot:aside:/";
+    const modalSlot = "slot:modal:/club/[slug]";
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        layoutIds,
+        [],
+        [
+          createSlotBinding(asideSlot, "layout:/", "default"),
+          createSlotBinding(modalSlot, "layout:/club/[slug]", "active"),
+        ],
+      ),
+      displayUrl: "https://example.com/club/static/pics/1",
+      matchedUrl: "/club/static/pics/1",
+      routeId: "route:/club/static/pics/1",
+      wholeInterceptionSource: "/club/static",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...currentSnapshot,
+      displayUrl: "https://example.com/club/static/pics/2",
+      matchedUrl: "/club/static/pics/2",
+      routeId: "route:/club/static/pics/2",
+    };
+    // The direct target route leaves the modal slot in its default.
+    const routeManifest = createRouteManifestForSnapshots(currentSnapshot, {
+      ...targetSnapshot,
+      slotBindings: [
+        createSlotBinding(asideSlot, "layout:/", "default"),
+        createSlotBinding(modalSlot, "layout:/club/[slug]", "default"),
+      ],
+    });
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot,
+      lane: "server-action",
+      routeManifest,
+      targetSnapshot,
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([asideSlot]);
+  });
+
+  // The whole intercepting route renders the slot owner's tree, whose layouts
+  // and root layout the direct target route need not share.
+  it("plans the whole intercepting route by the layouts and root layout it rendered", () => {
+    const sourceSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/", ["layout:/"]),
+      displayUrl: "https://example.com/club/static",
+      matchedUrl: "/club/static",
+      routeId: "route:/club/static",
+    };
+    const ownerLayoutIds = ["layout:/", "layout:/(shared)/club/[slug]"];
+    const wholeSnapshot = (id: string): RouteSnapshot => ({
+      ...createRouteSnapshot("/", ownerLayoutIds),
+      displayUrl: `https://example.com/club/static/pics/${id}`,
+      interceptionContext: "/club/static",
+      matchedUrl: `/club/static/pics/${id}`,
+      routeId: `route:/club/static/pics/${id}`,
+      wholeInterceptionSource: "/club/static",
+    });
+    const routeManifest = (directLayoutIds: readonly string[], directRoot: string) =>
+      createTestRouteManifest([
+        {
+          id: "route:/club/static",
+          layoutIds: ["layout:/"],
+          pattern: "/club/static",
+          rootBoundaryId: "root-boundary:/",
+        },
+        ...["1", "2"].map((id) => ({
+          id: `route:/club/static/pics/${id}`,
+          layoutIds: directLayoutIds,
+          pattern: `/club/static/pics/${id}`,
+          rootBoundaryId: directRoot,
+        })),
+      ]);
+
+    // A direct target under another root layout.
+    const fromSource = planFlightResponseFromSnapshots({
+      currentSnapshot: sourceSnapshot,
+      routeManifest: routeManifest(["layout:/(direct)"], "root-boundary:/(direct)"),
+      targetSnapshot: wholeSnapshot("1"),
+    });
+    expect(fromSource.kind).toBe("proposeCommit");
+    if (fromSource.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(fromSource.proposal.reason).toBe("currentRootBoundary");
+    expect(fromSource.proposal.preserveElementIds).toEqual(["layout:/"]);
+
+    // A direct target under other nested layouts.
+    const betweenTargets = planFlightResponseFromSnapshots({
+      currentSnapshot: wholeSnapshot("1"),
+      routeManifest: routeManifest(
+        ["layout:/", "layout:/(direct)/club/[slug]/pics/[id]"],
+        "root-boundary:/",
+      ),
+      targetSnapshot: wholeSnapshot("2"),
+    });
+    expect(betweenTargets.kind).toBe("proposeCommit");
+    if (betweenTargets.kind !== "proposeCommit") {
+      throw new Error("Expected proposeCommit decision");
+    }
+    expect(betweenTargets.proposal.preserveElementIds).toEqual(ownerLayoutIds);
+
+    // A root layout that doesn't head the layouts proves nothing.
+    const unproven = planFlightResponseFromSnapshots({
+      currentSnapshot: sourceSnapshot,
+      routeManifest: routeManifest(["layout:/"], "root-boundary:/"),
+      targetSnapshot: { ...wholeSnapshot("1"), layoutIds: ["layout:/(shared)/club/[slug]"] },
+    });
+    expect(unproven.kind).toBe("proposeCommit");
+    if (unproven.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(unproven.proposal.reason).toBe("unprovenTopologyFallback");
+    expect(unproven.proposal.preserveElementIds).toEqual([]);
+
+    // Nor does a root layout the manifest doesn't know.
+    const underUnknownRoot = (id: string): RouteSnapshot => ({
+      ...wholeSnapshot(id),
+      layoutIds: ["layout:/(other)", "layout:/(other)/club/[slug]"],
+      rootBoundaryId: "/(other)",
+    });
+    const unknownRoot = planFlightResponseFromSnapshots({
+      currentSnapshot: underUnknownRoot("1"),
+      routeManifest: routeManifest(["layout:/"], "root-boundary:/"),
+      targetSnapshot: underUnknownRoot("2"),
+    });
+    expect(unknownRoot.kind).toBe("proposeCommit");
+    if (unknownRoot.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(unknownRoot.proposal.reason).toBe("unprovenTopologyFallback");
+    expect(unknownRoot.proposal.preserveElementIds).toEqual([]);
+  });
+
+  // A link in the whole intercepting route sends its source as the
+  // interception context again, as Next.js does, so an ordinary interception
+  // from that source commits over it.
+  it("accepts an interception from the source of the visible whole intercepting route", () => {
+    const peekSlot = "slot:peek:/";
+    const wholeSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/(shared)/club/[slug]"],
+        [],
+        [createSlotBinding(peekSlot, "layout:/", "default")],
+      ),
+      displayUrl: "https://example.com/club/static/pics/1",
+      interceptionContext: "/club/static",
+      matchedUrl: "/club/static/pics/1",
+      routeId: "route:/club/static/pics/1",
+      wholeInterceptionSource: "/club/static",
+    };
+    const peekSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/"],
+        [],
+        [createSlotBinding(peekSlot, "layout:/", "active")],
+      ),
+      displayUrl: "https://example.com/peek",
+      interception: createInterceptionSnapshot({
+        slotId: peekSlot,
+        sourceMatchedUrl: "/club/static",
+        sourceRouteId: "route:/club/static",
+        targetMatchedUrl: "/peek",
+        targetRouteId: "route:/peek",
+      }),
+      interceptionContext: "/club/static",
+      matchedUrl: "/peek",
+      routeId: "route:/peek\u0000/club/static",
+    };
+    const routeManifest = createTestRouteManifest([
+      {
+        id: "route:/club/[slug]",
+        interceptions: [
+          {
+            ownerLayoutId: "layout:/",
+            slotId: peekSlot,
+            sourcePattern: "/",
+            targetPattern: "/peek",
+          },
+        ],
+        layoutIds: ["layout:/"],
+        pattern: "/club/:slug",
+        rootBoundaryId: "root-boundary:/",
+      },
+      {
+        id: "route:/club/[slug]/pics/[id]",
+        layoutIds: ["layout:/", "layout:/(shared)/club/[slug]"],
+        pattern: "/club/:slug/pics/:id",
+        rootBoundaryId: "root-boundary:/",
+      },
+      {
+        id: "route:/peek",
+        layoutIds: ["layout:/"],
+        pattern: "/peek",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+
+    const decision = planFlightResponseFromSnapshots({
+      currentSnapshot: wholeSnapshot,
+      routeManifest,
+      targetSnapshot: peekSnapshot,
+    });
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
+    expect(decision.proposal.preserveElementIds).toEqual(["layout:/"]);
+
+    // The proof must still name the source the whole intercepting route
+    // rendered for, not another page of the same route.
+    const otherSource = planFlightResponseFromSnapshots({
+      currentSnapshot: {
+        ...wholeSnapshot,
+        interceptionContext: "/club/other",
+        wholeInterceptionSource: "/club/other",
+      },
+      routeManifest,
+      targetSnapshot: peekSnapshot,
+    });
+    expect(otherSource.kind).toBe("hardNavigate");
+    expect(otherSource.trace.entries[0]?.code).toBe(
+      NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+    );
   });
 
   it("does not preserve default target slots when their owner layout is not retained", () => {
@@ -2108,6 +2342,245 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.trace.entries[0]?.code).toBe(
       NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
     );
+  });
+
+  describe("a traversal that renders its intercepted source from the source URL", () => {
+    // Next.js 16.2.7 returns softly to an intercepted entry after a reload: the
+    // traversal fetches the target with the entry's Next-Url and the source page
+    // from its own URL, whatever route the visible state shows.
+    function createSourceSuppliedTraversal() {
+      const currentSnapshot: RouteSnapshot = {
+        ...createRouteSnapshot("/", ["layout:/", "layout:/feed"]),
+        displayUrl: "https://example.com/feed/plain",
+        matchedUrl: "/feed/plain",
+        routeId: "route:/feed/plain",
+      };
+      const targetSnapshot: RouteSnapshot = {
+        ...createRouteSnapshot(
+          "/",
+          ["layout:/", "layout:/feed"],
+          [],
+          [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+        ),
+        displayUrl: "https://example.com/photos/42",
+        interception: createInterceptionSnapshot(),
+        interceptionContext: "/feed",
+        matchedUrl: "/photos/42",
+        routeId: "route:/photos/42\u0000/feed",
+      };
+      return { currentSnapshot, targetSnapshot };
+    }
+
+    it("commits against the source it rendered rather than the visible route", () => {
+      const { currentSnapshot, targetSnapshot } = createSourceSuppliedTraversal();
+
+      const decision = planFlightResponseFromSnapshots({
+        currentSnapshot,
+        lane: "traverse",
+        suppliedInterceptionSource: { matchedUrl: "/feed", routeId: "route:/feed" },
+        targetSnapshot,
+      });
+
+      expect(decision.kind).toBe("proposeCommit");
+      if (decision.kind !== "proposeCommit") {
+        throw new Error("Expected proposeCommit decision");
+      }
+      expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
+    });
+
+    it.each([
+      ["route id", { matchedUrl: "/feed", routeId: "route:/feed/plain" }],
+      ["matched URL", { matchedUrl: "/feed/plain", routeId: "route:/feed" }],
+    ])("rejects a rendered source with another %s", (_field, suppliedInterceptionSource) => {
+      const { currentSnapshot, targetSnapshot } = createSourceSuppliedTraversal();
+
+      const decision = planFlightResponseFromSnapshots({
+        currentSnapshot,
+        lane: "traverse",
+        suppliedInterceptionSource,
+        targetSnapshot,
+      });
+
+      expect(decision.kind).toBe("hardNavigate");
+      if (decision.kind !== "hardNavigate") {
+        throw new Error("Expected hardNavigate decision");
+      }
+      expect(decision.trace.entries[0]?.code).toBe(
+        NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+      );
+    });
+
+    // The feed's @modal belongs to the feed layout, which a page outside it,
+    // such as /gallery, doesn't render. The source tree the traversal shows
+    // renders it, as in Next.js, which returns softly there too.
+    describe("from a page outside the slot's layout", () => {
+      function createGalleryTraversal() {
+        const currentSnapshot: RouteSnapshot = {
+          ...createRouteSnapshot("/", ["layout:/"]),
+          displayUrl: "https://example.com/gallery",
+          matchedUrl: "/gallery",
+          routeId: "route:/gallery",
+        };
+        const targetSnapshot: RouteSnapshot = {
+          ...createRouteSnapshot(
+            "/",
+            ["layout:/", "layout:/feed"],
+            [],
+            [createSlotBinding("slot:modal:/feed", "layout:/feed", "active")],
+          ),
+          displayUrl: "https://example.com/photos/42",
+          interception: createInterceptionSnapshot(),
+          interceptionContext: "/feed",
+          matchedUrl: "/photos/42",
+          routeId: "route:/feed",
+        };
+        const routeManifest = createTestRouteManifest([
+          {
+            id: "route:/gallery",
+            layoutIds: ["layout:/"],
+            pattern: "/gallery",
+            rootBoundaryId: "root-boundary:/",
+          },
+          {
+            id: "route:/feed",
+            interceptions: [
+              {
+                ownerLayoutId: "layout:/feed",
+                slotId: "slot:modal:/feed",
+                sourcePattern: "/feed",
+                targetPattern: "/photos/42",
+              },
+            ],
+            layoutIds: ["layout:/", "layout:/feed"],
+            pattern: "/feed",
+            rootBoundaryId: "root-boundary:/",
+            slotBindings: [createSlotBinding("slot:modal:/feed", "layout:/feed", "default")],
+          },
+          {
+            id: "route:/photos/42",
+            layoutIds: ["layout:/"],
+            pattern: "/photos/42",
+            rootBoundaryId: "root-boundary:/",
+          },
+        ]);
+        return { currentSnapshot, routeManifest, targetSnapshot };
+      }
+
+      it.each([
+        ["a restored history snapshot", { restoredHistorySnapshot: true }],
+        [
+          "a rendered source",
+          { suppliedInterceptionSource: { matchedUrl: "/feed", routeId: "route:/feed" } },
+        ],
+      ])("commits %s whose tree renders the slot's layout", (_case, source) => {
+        const { currentSnapshot, routeManifest, targetSnapshot } = createGalleryTraversal();
+
+        const decision = planFlightResponseFromSnapshots({
+          currentSnapshot,
+          lane: "traverse",
+          routeManifest,
+          targetSnapshot,
+          ...source,
+        });
+
+        expect(decision.kind).toBe("proposeCommit");
+        if (decision.kind !== "proposeCommit") {
+          throw new Error("Expected proposeCommit decision");
+        }
+        expect(decision.proposal.reason).toBe("interceptedCurrentRootBoundary");
+        expect(decision.proposal.preserveElementIds).toEqual(["layout:/"]);
+      });
+
+      it("rejects a source tree that doesn't render the slot's layout", () => {
+        const { currentSnapshot, routeManifest, targetSnapshot } = createGalleryTraversal();
+
+        const decision = planFlightResponseFromSnapshots({
+          currentSnapshot,
+          lane: "traverse",
+          routeManifest,
+          suppliedInterceptionSource: { matchedUrl: "/feed", routeId: "route:/feed" },
+          targetSnapshot: {
+            ...targetSnapshot,
+            slotBindings: [createSlotBinding("slot:modal:/feed", "layout:/photos", "active")],
+          },
+        });
+
+        expect(decision.kind).toBe("hardNavigate");
+        if (decision.kind !== "hardNavigate") {
+          throw new Error("Expected hardNavigate decision");
+        }
+        expect(decision.trace.entries[0]?.code).toBe(
+          NavigationTraceReasonCodes.interceptedRejectedMissingSlotProof,
+        );
+      });
+
+      // Next.js restores the entry's own tree: a slot the root layout shows on
+      // /gallery stays /gallery's, never beside the feed's modal.
+      it("keeps none of the visible state's slots beneath a rendered source", () => {
+        const { currentSnapshot, routeManifest, targetSnapshot } = createGalleryTraversal();
+
+        const decision = planFlightResponseFromSnapshots({
+          currentSnapshot: {
+            ...currentSnapshot,
+            slotBindings: [createSlotBinding("slot:sidebar:/", "layout:/", "active")],
+          },
+          lane: "traverse",
+          routeManifest,
+          suppliedInterceptionSource: { matchedUrl: "/feed", routeId: "route:/feed" },
+          targetSnapshot: {
+            ...targetSnapshot,
+            slotBindings: [
+              createSlotBinding("slot:modal:/feed", "layout:/feed", "active"),
+              createSlotBinding("slot:sidebar:/", "layout:/", "default"),
+            ],
+          },
+        });
+
+        expect(decision.kind).toBe("proposeCommit");
+        if (decision.kind !== "proposeCommit") {
+          throw new Error("Expected proposeCommit decision");
+        }
+        expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
+      });
+
+      it("rejects a fresh traversal without its source's render", () => {
+        const { currentSnapshot, routeManifest, targetSnapshot } = createGalleryTraversal();
+
+        const decision = planFlightResponseFromSnapshots({
+          currentSnapshot,
+          lane: "traverse",
+          routeManifest,
+          targetSnapshot,
+        });
+
+        expect(decision.kind).toBe("hardNavigate");
+        if (decision.kind !== "hardNavigate") {
+          throw new Error("Expected hardNavigate decision");
+        }
+        expect(decision.trace.entries[0]?.code).toBe(
+          NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+        );
+      });
+    });
+
+    it("leaves a push checked against the visible route", () => {
+      const { currentSnapshot, targetSnapshot } = createSourceSuppliedTraversal();
+
+      const decision = planFlightResponseFromSnapshots({
+        currentSnapshot,
+        lane: "navigation",
+        suppliedInterceptionSource: { matchedUrl: "/feed", routeId: "route:/feed" },
+        targetSnapshot,
+      });
+
+      expect(decision.kind).toBe("hardNavigate");
+      if (decision.kind !== "hardNavigate") {
+        throw new Error("Expected hardNavigate decision");
+      }
+      expect(decision.trace.entries[0]?.code).toBe(
+        NavigationTraceReasonCodes.interceptedRejectedUnknownSource,
+      );
+    });
   });
 
   it("does not preserve layouts across root-boundary uncertainty", () => {

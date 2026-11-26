@@ -16,7 +16,7 @@ import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
 import vinext from "../packages/vinext/src/index.js";
-import { createIsolatedFixture } from "./helpers.js";
+import { createIsolatedFixture, startWorkerdWorker, type WorkerdWorker } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/cf-static-export");
 const TRAILING_SLASH_FIXTURE_DIR = path.resolve(
@@ -32,11 +32,7 @@ type CloudflarePluginFactory = (options: {
   viteEnvironment: { name: string; childEnvironments: string[] };
 }) => import("vite").Plugin;
 
-type ExportWorker = {
-  root: string;
-  worker: { url: Promise<URL>; dispose(): Promise<void> };
-  baseUrl: string;
-};
+type ExportWorker = { root: string; worker: WorkerdWorker; baseUrl: string };
 
 /** Builds and exports a fixture, then runs its Worker in workerd. */
 async function startExportWorker(fixtureDir: string, prefix: string): Promise<ExportWorker> {
@@ -60,30 +56,8 @@ async function startExportWorker(fixtureDir: string, prefix: string): Promise<Ex
   await builder.buildApp();
   await runPrerender({ root });
 
-  const wranglerPath = path.join(root, "node_modules/wrangler/wrangler-dist/cli.js");
-  const wrangler = (await import(pathToFileURL(wranglerPath).href)) as {
-    unstable_startWorker(options: {
-      config: string;
-      dev: {
-        remote: false;
-        persist: false;
-        logLevel: "none";
-        watch: false;
-        server: { hostname: string; port: 0 };
-      };
-    }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
-  };
-  const worker = await wrangler.unstable_startWorker({
-    config: path.join(root, "dist/server/wrangler.json"),
-    dev: {
-      remote: false,
-      persist: false,
-      logLevel: "none",
-      watch: false,
-      server: { hostname: "127.0.0.1", port: 0 },
-    },
-  });
-  return { root, worker, baseUrl: (await worker.url).origin };
+  const worker = await startWorkerdWorker(root, path.join(root, "dist/server/wrangler.json"));
+  return { root, worker, baseUrl: worker.baseUrl };
 }
 
 describe("static export on Workers: unmatched URLs", () => {
@@ -96,7 +70,7 @@ describe("static export on Workers: unmatched URLs", () => {
   }, 240_000);
 
   afterAll(async () => {
-    await worker?.dispose();
+    await worker?.teardown();
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -160,7 +134,7 @@ describe("static export on Workers: trailingSlash", () => {
   }, 240_000);
 
   afterAll(async () => {
-    await worker?.dispose();
+    await worker?.teardown();
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
 

@@ -117,6 +117,12 @@ import {
   hasExportedName,
 } from "./build/report.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
+import {
+  collectDevPagesFontOwners,
+  createFontOwnerManifestPlugin,
+  createPagesFontOwnerManifestPlugin,
+} from "./plugins/font-owner-manifest.js";
+import { fontOwnerKey } from "./build/font-owner-manifest.js";
 import { createServerModuleScopePlugin, realDirectoryPath } from "./plugins/server-module-scope.js";
 import {
   createRscScanGlobImportsPlugin,
@@ -304,6 +310,7 @@ import {
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
   parseStaticObjectLiteral,
   generateGoogleFontsVirtualModule,
+  createFontOwnerPlugin,
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
@@ -1704,15 +1711,17 @@ function hasReactDirective(code: string): boolean {
 /**
  * Resolve a project directory through symlinks the way Vite resolves
  * `config.root` (and Next.js its project dir), so route files, `server.config.root`
- * and module ids all share one path. Windows uses the JS realpath, as Vite
- * does, to keep mapped network drives.
+ * and module ids all share one path.
  */
 function resolveProjectDir(dir: string, preserveSymlinks: boolean | undefined): string {
   if (preserveSymlinks) return toSlash(dir);
   try {
-    return toSlash(
-      process.platform === "win32" ? fs.realpathSync(dir) : fs.realpathSync.native(dir),
-    );
+    const realDir = fs.realpathSync.native(dir);
+    // Like Vite, keep a mapped network drive's letter instead of its UNC path.
+    if (process.platform === "win32" && realDir.startsWith("\\\\") && !/^[\\/]{2}/.test(dir)) {
+      return toSlash(fs.realpathSync(dir));
+    }
+    return toSlash(realDir);
   } catch {
     return toSlash(dir);
   }
@@ -2144,6 +2153,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let clientReferenceModules: ReadonlyMap<string, readonly string[]> | null = null;
   let clientReferenceAlwaysRenderedFiles: string[] = [];
   let clientReferenceRoutelessFiles: string[] = [];
+  // App routes whose fonts the route font manifest scopes, in dev and build,
+  // and the keys of the modules that load fonts.
+  let fontOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let fontOwnerGlobalNotFoundFiles: string[] = [];
+  const fontOwnerKeys = new Set<string>();
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -2223,7 +2237,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      { nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader, prerenderSecret },
+      {
+        devFontOwners: isServeCommand,
+        nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
+        prerenderSecret,
+      },
     );
   }
 
@@ -2251,6 +2269,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       prerenderSecret,
+      isServeCommand,
     );
   }
 
@@ -3699,6 +3718,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "instrumentation-client",
             ),
             "vinext/dev-error-overlay": path.resolve(__dirname, "client", "dev-error-overlay"),
+            "vinext/route-announcer": path.resolve(__dirname, "client", "route-announcer"),
             "vinext/html": path.resolve(__dirname, "server", "html"),
             ...(clientInjectModule === null
               ? {
@@ -5654,6 +5674,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 appDirectoryNotFoundPath(routes, appNotFoundPath),
               ].filter((path): path is string => path !== null);
               clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
+              fontOwnerRoutes = routes;
+              // With or without app/global-not-found: a route-miss 404 with
+              // `globalNotFound` enabled renders it, or the default, alone.
+              fontOwnerGlobalNotFoundFiles = [
+                ...(globalNotFoundPath ? [globalNotFoundPath] : []),
+                ...(globalErrorPath ? [globalErrorPath] : []),
+              ];
               clientReferenceAlwaysRenderedFiles = [
                 ...(globalErrorPath ? [globalErrorPath] : []),
                 ...rootBoundaryFiles(routes),
@@ -5706,6 +5733,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
                 actionOwners: this.environment.config.command === "build" ? undefined : null,
+                devFontOwners: this.environment.config.command !== "build",
                 i18n: nextConfig?.i18n,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,
@@ -5807,8 +5835,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               classifyDynamicRoutes
                 ? {
                     route: (route) => isAppPageRouteRenderedDynamically(route, readMdxEsm),
-                    intercept: (intercept, layoutPaths) =>
-                      isAppInterceptRenderedDynamically(intercept, layoutPaths, readMdxEsm),
+                    intercept: (intercept, layoutPaths, slotDefaultPaths) =>
+                      isAppInterceptRenderedDynamically(
+                        intercept,
+                        layoutPaths,
+                        readMdxEsm,
+                        slotDefaultPaths,
+                      ),
                   }
                 : undefined,
             );
@@ -8072,6 +8105,18 @@ export const loadServerActionClient = ${
                           )
                         : undefined,
                       classifyDevPageRoute,
+                      (files) => {
+                        const environment = server.environments["ssr"];
+                        if (!environment) return Promise.resolve(null);
+                        // No module has loaded a font, so none is any page's:
+                        // skip the walk on each request.
+                        if (fontOwnerKeys.size === 0) return Promise.resolve([]);
+                        return collectDevPagesFontOwners(environment, files, {
+                          canonicalizeModuleId: canonicalize,
+                          isOwner: (id) => fontOwnerKeys.has(fontOwnerKey(root, id)),
+                          ownerKey: (id) => fontOwnerKey(root, id),
+                        });
+                      },
                     ),
                   };
                 }
@@ -8753,6 +8798,32 @@ export const loadServerActionClient = ${
         },
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
+    // Font owner marks for route-scoped font styles — see src/plugins/fonts.ts.
+    // Runs before the font plugins, which rewrite the next/font imports.
+    createFontOwnerPlugin({
+      shimsDir: _shimsDir,
+      onOwner(key) {
+        fontOwnerKeys.add(key);
+      },
+    }),
+    // The Pages Router's per-page font owners — see src/plugins/font-owner-manifest.ts
+    createPagesFontOwnerManifestPlugin({
+      canonicalizeModuleId: canonicalize,
+      async getRoutes() {
+        if (!hasPagesDir) return { appFile: null, pages: [] };
+        const pages = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+        return {
+          appFile: findFileWithExts(pagesDir, "_app", fileMatcher),
+          pages: [
+            ...pages.map((route) => ({ pattern: route.pattern, filePath: route.filePath })),
+            // The error page renders as a page of its own, like Next.js' `/_error`
+            // entry, with only `_app`'s fonts when the app has no custom one.
+            { pattern: "/_error", filePath: findFileWithExts(pagesDir, "_error", fileMatcher) },
+          ],
+        };
+      },
+      ownerKeys: fontOwnerKeys,
+    }),
     // Google Fonts import rewrite + self-hosting — see src/plugins/fonts.ts
     createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir),
     // Local font path resolution — see src/plugins/fonts.ts
@@ -9581,6 +9652,20 @@ export const loadServerActionClient = ${
           clientReferenceAlwaysRenderedFiles = [];
           clientReferenceRoutelessFiles = [];
         },
+      }),
+    );
+    plugins.push(
+      createFontOwnerManifestPlugin({
+        canonicalizeModuleId: canonicalize,
+        async getManager(config) {
+          const rscPluginModule = await rscPluginModulePromise;
+          return rscPluginModule?.getPluginApi(config)?.manager;
+        },
+        getRoutes: () => fontOwnerRoutes,
+        getAlwaysRenderedFiles: () => clientReferenceAlwaysRenderedFiles,
+        getRoutelessFiles: () => clientReferenceRoutelessFiles,
+        getGlobalNotFoundFiles: () => fontOwnerGlobalNotFoundFiles,
+        ownerKeys: fontOwnerKeys,
       }),
     );
     plugins.push(createScanBuildCssPlugin());

@@ -15,7 +15,10 @@ to the point where a maintainer only has to review it. Every review or comment
 on it, and its checks finishing, is a round in the sandbox that wrote the fix.
 The issue keeps its **fix: in progress** label while rounds go on, until the
 fix is ready, when **fix: ready** takes its place, or stalls. A fix that goes
-back in review is **fix: in progress** again.
+back in review, such as a ready fix a review has findings on, is **fix: in
+progress** again. The labels and the comment go
+wherever the issue is kept: on GitHub, or in Alcora. On a confidential issue
+the comment says a fix is ready without linking its pull request.
 
 Its triggers take the tracked pull requests of every workflow by default:
 those a sandbox step opened and kept its sandbox for. **Pull requests opened
@@ -80,11 +83,14 @@ the pull request, and every step of it is in the graph:
    commit they reviewed. **Check review state** then tests the approvals of
    the head as it is now: by default anyone's is enough; list reviewers in
    **Who has to approve it** to need each of them. Once it holds and **Checks
-   pass?** too, the pull request is **Ready for review**, the fix is **Fix
-   ready**, the issue gets one comment saying a fix is ready, and **Label it
-   ready** labels it **fix: ready**. Until then, **Awaiting approval** notes
-   who is missing.
-4. **Findings.** **Address it** continues the sandbox and agent that wrote the
+   pass?** too, the pull request is **Ready for review** and the fix is **Fix
+   ready**. Once **Whole stack ready?** holds, the issue gets one comment
+   saying a fix is ready, and **Label it ready** labels it **fix: ready**.
+   Until then, **Awaiting approval** notes who is missing.
+4. **Findings.** **Was it ready?** A fix that was **Fix ready** is no longer:
+   **Fixing again** puts it back in review, and **Back in progress** labels the
+   issue **fix: in progress** in place of **fix: ready**, before any work
+   starts. **Address it** continues the sandbox and agent that wrote the
    fix. The review may be of an earlier commit than the head (rounds queue),
    so the agent is told both, and answers what still applies. Its answers go
    in the review's threads (**Reply in threads**). If it left an inline
@@ -128,10 +134,24 @@ comment would replace a BigBonk request that is still waiting. Findings in a
 review's own text are answered in a comment to the reviewer, before BigBonk
 is asked.
 
+## A stack
+
+The agent may fix an issue with a stack of pull requests, each into the
+branch of the one before it. Each is reviewed and made ready on its own, and
+they merge from the bottom up. The stack shares the one sandbox, so its
+rounds go one at a time, and 50 rounds is for the whole stack. Each round's
+agent is told the stack, with every open branch checked out at its head. A
+finding about code a lower pull request added is fixed on that one's branch,
+and merged up into each branch above it, which the agent pushes; it never
+force-pushes. **Whole stack ready?** holds once every open pull request of
+the stack is **Fix ready**, so the issue hears of the fix once, for the whole
+stack. A fix of one pull request is a stack of one.
+
 ## Checks
 
-Checks finishing on the head start a round too. When they failed, **Address
-it** works on them as on a review, and BigBonk is asked to review what it
+Checks finishing on the head start a round too. When they failed, a fix
+that was ready goes back in progress first, as after a review's findings
+(**Was it ready?**), and **Address it** works on them as on a review, and BigBonk is asked to review what it
 pushed. When the agent finds every failure was a flake or the
 infrastructure's, it pushes nothing, and **Re-run them** re-runs the failed
 jobs of the GitHub Actions workflows that failed, each at most twice; when
@@ -145,7 +165,7 @@ in review. Clanky reviews the push, by itself or when it says to ask it;
 BigBonk is asked once the checks pass on it (above).
 
 A round that needs a person, failed checks the agent finds nothing to change
-for, flaky checks that have been re-run twice already, or 30 rounds without
+for, flaky checks that have been re-run twice already, or 50 rounds without
 settling leave the issue **Fix stalled** too. When the agent stops to ask the
 maintainers questions, the issue shows **Needs an answer** until a member
 answers on its triage page.

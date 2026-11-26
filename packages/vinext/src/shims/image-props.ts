@@ -179,19 +179,37 @@ export function isSvgUrl(src: string): boolean {
   }
 }
 
-export function getFillStyle(
+/**
+ * Inline style for the rendered `<img>`, ported from Next.js
+ * `get-img-props.js` (`imgStyle`):
+ *
+ * - `fill` images get the absolute-positioned fill box. Like Next.js it sets
+ *   no `object-fit` of its own: the deprecated `objectFit` and
+ *   `objectPosition` props, the caller's `style` or a stylesheet decide it.
+ * - Every image gets `color: transparent` until it fails to load
+ *   (`showAltText`), so its alt text is not painted before then.
+ * - The caller's `style` comes last, so its own `color` still wins.
+ */
+export function getImageStyle(
+  fill: boolean | undefined,
   style?: React.CSSProperties,
   backgroundStyle?: React.CSSProperties,
+  legacy?: { objectFit?: string; objectPosition?: string },
+  showAltText?: boolean,
 ): React.CSSProperties {
-  return {
-    position: "absolute",
-    inset: 0,
-    width: "100%",
-    height: "100%",
-    objectFit: "cover",
-    ...backgroundStyle,
-    ...style,
-  };
+  const imgStyle: React.CSSProperties = {};
+  if (fill) {
+    imgStyle.position = "absolute";
+    imgStyle.inset = 0;
+    imgStyle.width = "100%";
+    imgStyle.height = "100%";
+    if (legacy?.objectFit !== undefined) {
+      imgStyle.objectFit = legacy.objectFit as React.CSSProperties["objectFit"];
+    }
+    if (legacy?.objectPosition !== undefined) imgStyle.objectPosition = legacy.objectPosition;
+  }
+  if (!showAltText) imgStyle.color = "transparent";
+  return { ...imgStyle, ...backgroundStyle, ...style };
 }
 
 /**
@@ -318,7 +336,7 @@ function getImageWidths(width: number): number[] {
 
 export function generateImageAttributes(
   src: string,
-  width: number,
+  width: number | undefined,
   quality: number = 75,
   sizes?: string,
 ): { src: string; srcSet: string } {
@@ -340,6 +358,18 @@ export function generateImageAttributes(
             `${imageOptimizationUrl(src, candidateWidth, quality)} ${candidateWidth}w`,
         )
         .join(", "),
+    };
+  }
+
+  // Next.js getWidths(): an image with no width (`fill`) offers every
+  // images.deviceSizes entry as a `w` descriptor, and `src` is the largest.
+  if (width === undefined) {
+    return {
+      src: imageOptimizationUrl(src, RESPONSIVE_WIDTHS[RESPONSIVE_WIDTHS.length - 1], quality),
+      srcSet: RESPONSIVE_WIDTHS.map(
+        (candidateWidth) =>
+          `${imageOptimizationUrl(src, candidateWidth, quality)} ${candidateWidth}w`,
+      ).join(", "),
     };
   }
 
@@ -380,6 +410,9 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
     unoptimized: _unoptimized,
     overrideSrc,
     loading,
+    // Deprecated props: Next.js consumes them and applies them to fill images only.
+    objectFit,
+    objectPosition,
     ...rest
   } = props;
 
@@ -415,7 +448,7 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
       fetchPriority: priority ? ("high" as const) : undefined,
       decoding: "async" as const,
       className,
-      style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
+      style: getImageStyle(fill, style, blurStyle, { objectFit, objectPosition }),
       ...rest,
       // Next.js generateImgAttrs() returns `sizes: undefined` for inline sources.
       sizes: isInlineSrc ? undefined : (sizes ?? (fill ? "100vw" : undefined)),
@@ -453,8 +486,8 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
   const skipOpt =
     (isSvg && !__dangerouslyAllowSVG) || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
   const optimizedAttributes =
-    imgWidth && !fill && !skipOpt
-      ? generateImageAttributes(resolvedSrc, imgWidth, imgQuality, sizes)
+    (fill || imgWidth) && !skipOpt
+      ? generateImageAttributes(resolvedSrc, fill ? undefined : imgWidth, imgQuality, sizes)
       : null;
   const optimizedSrc = skipOpt
     ? resolvedSrc
@@ -488,7 +521,7 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
     srcSet,
     sizes: sizes ?? (fill ? "100vw" : undefined),
     className,
-    style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
+    style: getImageStyle(fill, style, blurStyle, { objectFit, objectPosition }),
     ...rest,
   };
   return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };

@@ -9,6 +9,7 @@ import { toSlash } from "pathslash";
 import { createBuilder, createServer, type Plugin, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { startWorkerdWorker, type WorkerdWorker } from "./helpers.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
   import.meta.dirname,
@@ -1193,7 +1194,7 @@ describe("bundled module identity on the Cloudflare Workers runtime", () => {
   let lexicalCjsPackageDir = "";
   let lexicalEsmPackageDir = "";
   let lexicalLinkedCjsPackageDir = "";
-  let worker: { url: Promise<URL>; dispose(): Promise<void> } | undefined;
+  let worker: WorkerdWorker | undefined;
   let baseUrl = "";
   let workerBundle = "";
   let esmIdentityChunks: string[] = [];
@@ -1247,35 +1248,12 @@ export default handler;
     const workerConfigPath = path.join(serverDir, "wrangler.json");
     await includeAdditionalWorkerModules(workerConfigPath);
 
-    const wrangler = (await import(
-      pathToFileURL(path.join(root, "node_modules/wrangler/wrangler-dist/cli.js")).href
-    )) as {
-      unstable_startWorker(options: {
-        config: string;
-        dev: {
-          remote: false;
-          persist: false;
-          logLevel: "none";
-          watch: false;
-          server: { hostname: string; port: 0 };
-        };
-      }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
-    };
-    worker = await wrangler.unstable_startWorker({
-      config: workerConfigPath,
-      dev: {
-        remote: false,
-        persist: false,
-        logLevel: "none",
-        watch: false,
-        server: { hostname: "127.0.0.1", port: 0 },
-      },
-    });
-    baseUrl = (await worker.url).origin;
+    worker = await startWorkerdWorker(root, workerConfigPath);
+    baseUrl = worker.baseUrl;
   }, 180_000);
 
   afterAll(async () => {
-    await worker?.dispose();
+    await worker?.teardown();
     await removeHybridFixture(root);
   });
 
@@ -1365,7 +1343,7 @@ export default handler;
 
 describe("bundled module identity on a Pages-only Cloudflare Workers runtime", () => {
   let root = "";
-  let worker: { url: Promise<URL>; dispose(): Promise<void> } | undefined;
+  let worker: WorkerdWorker | undefined;
   let baseUrl = "";
   let serverDir = "";
   let emittedIdentityFiles = {} as EmittedIdentityFiles;
@@ -1419,35 +1397,12 @@ describe("bundled module identity on a Pages-only Cloudflare Workers runtime", (
     const workerConfigPath = path.join(serverDir, "wrangler.json");
     await includeAdditionalWorkerModules(workerConfigPath);
 
-    const wrangler = (await import(
-      pathToFileURL(path.join(root, "node_modules/wrangler/wrangler-dist/cli.js")).href
-    )) as {
-      unstable_startWorker(options: {
-        config: string;
-        dev: {
-          remote: false;
-          persist: false;
-          logLevel: "none";
-          watch: false;
-          server: { hostname: string; port: 0 };
-        };
-      }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
-    };
-    worker = await wrangler.unstable_startWorker({
-      config: workerConfigPath,
-      dev: {
-        remote: false,
-        persist: false,
-        logLevel: "none",
-        watch: false,
-        server: { hostname: "127.0.0.1", port: 0 },
-      },
-    });
-    baseUrl = (await worker.url).origin;
+    worker = await startWorkerdWorker(root, workerConfigPath);
+    baseUrl = worker.baseUrl;
   }, 180_000);
 
   afterAll(async () => {
-    await worker?.dispose();
+    await worker?.teardown();
     await removeHybridFixture(root);
   });
 

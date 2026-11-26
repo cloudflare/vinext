@@ -200,6 +200,19 @@ function reduceApprovedVisibleCommitState(
             const targetBinding =
               action.slotBindings.find((binding) => binding.slotId === slotId) ??
               state.slotBindings.find((binding) => binding.slotId === slotId);
+            // A refresh installs fresh layouts, but a slot its payload left out
+            // for this state to keep stays as it is shown, as Next.js keeps a
+            // default segment's content, while its owner renders for the same
+            // params.
+            if (action.operation.lane === "refresh") {
+              const ownerLayoutId = targetBinding?.ownerLayoutId;
+              return (
+                !Object.hasOwn(action.elements, slotId) &&
+                ownerLayoutId != null &&
+                state.bfcacheIds[ownerLayoutId] !== undefined &&
+                action.bfcacheIds[ownerLayoutId] === state.bfcacheIds[ownerLayoutId]
+              );
+            }
             return (
               targetBinding?.ownerLayoutId !== null &&
               targetBinding?.ownerLayoutId !== undefined &&

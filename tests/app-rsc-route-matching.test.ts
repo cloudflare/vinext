@@ -370,28 +370,30 @@ describe("App RSC route matching", () => {
     });
   });
 
+  // Next.js's interception rewrite captures the params above the marker from
+  // `Next-Url`, so the source's `lang` wins over the target's.
   it("finds intercepting routes and merges source and target params", () => {
     const matcher = createAppRscRouteMatcher([
-      route("/feed/:id", ["feed", ":id"], {
+      route("/:lang/feed", [":lang", "feed"], {
         modal: {
           intercepts: [
             {
-              targetPattern: "/photos/:id",
+              targetPattern: "/:lang/photos/:id",
               interceptLayouts: ["modal-layout"],
               page: "photo-page",
-              params: ["id"],
+              params: ["lang", "id"],
             },
           ],
         },
       }),
     ]);
 
-    expect(matcher.findIntercept("/photos/target-id", "/feed/source-id")).toMatchObject({
+    expect(matcher.findIntercept("/fr/photos/target-id", "/en/feed")).toMatchObject({
       sourceRouteIndex: 0,
       slotKey: "modal",
-      targetPattern: "/photos/:id",
+      targetPattern: "/:lang/photos/:id",
       page: "photo-page",
-      matchedParams: { id: "target-id" },
+      matchedParams: { lang: "en", id: "target-id" },
     });
   });
 
@@ -1179,8 +1181,9 @@ describe("App RSC route matching", () => {
     });
 
     // A source outside the owner's tree, such as a static sibling in another
-    // route group, has no slot to render the intercept into, so the request
-    // renders the target directly. A Route Handler owner never renders.
+    // route group, has no slot to render the intercept into. Without an owner
+    // route of its own to render whole, the request renders the target
+    // directly. A Route Handler owner never renders.
     it("does not intercept from a source without the intercepted slot", () => {
       const matcher = createAppRscRouteMatcher([
         route("/club/:slug", ["club", ":slug"], {
@@ -1234,6 +1237,580 @@ describe("App RSC route matching", () => {
         route("/feed/about", ["feed", "about"]),
       ]);
       expect(handlerMatcher.findIntercept("/feed/hidden", "/feed/about")).toBeNull();
+    });
+
+    // Next.js's interception rewrite applies to any source under the
+    // intercepting route's path and renders that route's tree whole, so a
+    // static sibling without the slot renders the slot owner's route, taking
+    // the owner's params from the source pathname.
+    it("renders the slot owner's route whole for a source without the slot", () => {
+      const clubModal = {
+        sourceMatchPattern: "/club/:slug",
+        sourcePageSegments: ["(shared)", "club", "[slug]", "@modal", "(.)pics", "[id]"],
+        targetPattern: "/club/:slug/pics/:id",
+        interceptLayouts: [],
+        page: "pics-modal",
+        params: ["slug", "id"],
+      };
+      const staticRoute = {
+        ...route("/club/static", ["club", "static"]),
+        routeSegments: ["(other)", "club", "static"],
+      };
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug", ["club", ":slug"], { modal: { intercepts: [clubModal] } }),
+          routeSegments: ["(shared)", "club", "[slug]"],
+        },
+        staticRoute,
+      ]);
+
+      for (const target of ["/club/static/pics/1", "/club/acme/pics/1"]) {
+        expect(matcher.findIntercept(target, "/club/static")).toMatchObject({
+          page: "pics-modal",
+          sourceRouteIndex: 0,
+          sourceRouteLacksSlot: true,
+          rendersWholeInterceptingRoute: true,
+          // The source is still authorized, since its middleware can rewrite
+          // it to a route with the slot.
+          rendersTargetLayouts: false,
+          authorizationSourceRouteIndex: 1,
+          matchedParams: { slug: "static", id: "1" },
+          sourceMatchedParams: { slug: "static" },
+        });
+      }
+      expect(matcher.findIntercept("/club/acme/pics/1", "/club/acme")).toMatchObject({
+        sourceRouteIndex: 0,
+        sourceRouteLacksSlot: false,
+        rendersWholeInterceptingRoute: false,
+        matchedParams: { slug: "acme", id: "1" },
+      });
+
+      // A Route Handler at the owner's path has no tree to render.
+      const handlerMatcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug", ["club", ":slug"], { modal: { intercepts: [clubModal] } }),
+          routeSegments: ["(shared)", "club", "[slug]"],
+          routeHandler: {},
+        },
+        staticRoute,
+      ]);
+      expect(handlerMatcher.findIntercept("/club/static/pics/1", "/club/static")).toBeNull();
+    });
+
+    // The interception rewrite captures every param of the intercepting route
+    // from the source, those of the slot's folders above the marker too.
+    it("takes the params of the slot's folders from the source of a whole intercepting route", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/teams/:team", ["teams", ":team"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/teams/:team/:album",
+                  sourcePageSegments: [
+                    "(shared)",
+                    "teams",
+                    "[team]",
+                    "@modal",
+                    "[album]",
+                    "(.)pics",
+                    "[id]",
+                  ],
+                  targetPattern: "/teams/:team/:album/pics/:id",
+                  interceptLayouts: [],
+                  page: "pics-modal",
+                  params: ["team", "album", "id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["(shared)", "teams", "[team]"],
+        },
+        {
+          ...route("/teams/:team/:album", ["teams", ":team", ":album"]),
+          routeSegments: ["(other)", "teams", "[team]", "[album]"],
+        },
+      ]);
+
+      expect(matcher.findIntercept("/teams/other/two/pics/1", "/teams/acme/one")).toMatchObject({
+        sourceRouteIndex: 0,
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { team: "acme", album: "one", id: "1" },
+        sourceMatchedParams: { team: "acme", album: "one" },
+      });
+    });
+
+    // An unmatched URL's not-found page sends /_not-found and shows none of
+    // the intercepting route's tree, so the intercept renders that tree
+    // whole, as Next.js's client shows it: the owner's layouts with the
+    // params /_not-found gives them, and nothing in the owner's children.
+    it("renders the slot owner's route whole from an unmatched URL's not-found page", () => {
+      const modal = (targetPattern: string, marker: string, params: string[]) => ({
+        sourceMatchPattern: "/:slug",
+        sourcePageSegments: ["[slug]", "@modal", marker, "[id]"],
+        targetPattern,
+        interceptLayouts: [],
+        page: `${marker}-modal`,
+        params,
+      });
+      const slugRoute = {
+        ...route("/:slug", [":slug"], {
+          modal: {
+            intercepts: [
+              modal("/photos/:id", "(..)photos", ["id"]),
+              modal("/:slug/pics/:id", "(.)pics", ["slug", "id"]),
+            ],
+          },
+        }),
+        routeSegments: ["[slug]"],
+      };
+      const matcher = createAppRscRouteMatcher([slugRoute]);
+
+      expect(matcher.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "(..)photos-modal",
+        sourceRouteIndex: 0,
+        sourceRouteLacksSlot: false,
+        rendersWholeInterceptingRoute: true,
+        authorizationSourceRouteIndex: 0,
+        matchedParams: { slug: "_not-found", id: "1" },
+        sourceMatchedParams: { slug: "_not-found" },
+      });
+      expect(matcher.findIntercept("/x/pics/3", "/_not-found")).toMatchObject({
+        page: "(.)pics-modal",
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { slug: "_not-found", id: "3" },
+      });
+      // A page that shows the tree keeps its own segments.
+      expect(matcher.findIntercept("/photos/1", "/acme")).toMatchObject({
+        rendersWholeInterceptingRoute: false,
+        matchedParams: { slug: "acme", id: "1" },
+      });
+
+      // Without the owner's own route to render, the target renders directly.
+      const ownerless = createAppRscRouteMatcher([
+        {
+          ...slugRoute,
+          slots: {
+            modal: {
+              intercepts: [
+                { ...modal("/photos/:id", "(..)photos", ["id"]), sourcePageSegments: undefined },
+              ],
+            },
+          },
+        },
+      ]);
+      expect(ownerless.findIntercept("/photos/1", "/_not-found")).toBeNull();
+      expect(ownerless.findIntercept("/photos/1", "/acme")).not.toBeNull();
+    });
+
+    it("renders a catch-all slot owner's route whole from an unmatched URL's not-found page", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/:rest+", [":rest+"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/:rest+",
+                  sourcePageSegments: ["[...rest]", "@modal", "(..)photos", "[id]"],
+                  targetPattern: "/photos/:id",
+                  interceptLayouts: [],
+                  page: "photos-modal",
+                  params: ["id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["[...rest]"],
+        },
+      ]);
+
+      expect(matcher.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "photos-modal",
+        sourceRouteIndex: 0,
+        sourceRouteLacksSlot: false,
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { rest: ["_not-found"], id: "1" },
+        sourceMatchedParams: { rest: ["_not-found"] },
+      });
+    });
+
+    // A sibling intercept renders the intercepting route itself, from any
+    // source, so /_not-found is simply its concrete source, as Next.js's
+    // interception rewrite captures the owner's params from `Next-Url`.
+    it("renders a sibling intercept from an unmatched URL's not-found page as its own route", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/:slug" },
+          pattern: "/:slug",
+          patternParts: [":slug"],
+          routeSegments: ["[slug]"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/photos/:id",
+              sourceMatchPattern: "/:slug",
+              sourcePageSegments: ["[slug]", "(..)photos", "[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/:slug",
+              interceptLayouts: [],
+              page: "photos-intercept",
+              params: ["id"],
+            },
+          ],
+        },
+      ] as any);
+
+      expect(matcher.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "photos-intercept",
+        slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: true,
+        sourceRouteLacksSlot: false,
+        rendersWholeInterceptingRoute: false,
+        authorizationSourceRouteIndex: 0,
+        matchedParams: { slug: "_not-found", id: "1" },
+        sourceMatchedParams: { slug: "_not-found" },
+      });
+    });
+
+    // Next.js's interception rewrites are tried in order, and a root-level
+    // intercept's header regex matches any `Next-Url`, /_not-found included.
+    // Over a shared target, the earlier root-level intercept wins from an
+    // unmatched URL's not-found page as from any matched page.
+    it("selects the earlier root-level intercept over a shared target from an unmatched URL's not-found page", () => {
+      const rootRoute = {
+        ids: { route: "graph-route:/" },
+        pattern: "/",
+        patternParts: [],
+        routeSegments: [],
+        siblingIntercepts: [
+          {
+            targetPattern: "/photos/:id",
+            sourceMatchPattern: "/",
+            sourcePageSegments: ["(.)photos", "[id]"],
+            slotId: "slot:__vinext_sibling_intercept:/",
+            interceptLayouts: [],
+            page: "root-photos-intercept",
+            params: ["id"],
+          },
+        ],
+      };
+      const matcher = createAppRscRouteMatcher([
+        rootRoute,
+        {
+          ...route("/:slug", [":slug"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/:slug",
+                  sourcePageSegments: ["[slug]", "@modal", "(..)photos", "[id]"],
+                  targetPattern: "/photos/:id",
+                  interceptLayouts: [],
+                  page: "slug-photos-modal",
+                  params: ["id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["[slug]"],
+        },
+      ] as any);
+
+      for (const sourcePathname of ["/_not-found", "/acme"]) {
+        expect(matcher.findIntercept("/photos/1", sourcePathname)).toMatchObject({
+          page: "root-photos-intercept",
+          slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          sourceRouteIndex: 0,
+          sourceRouteIsConcrete: true,
+          rendersRootOwnerFromRouteMiss: false,
+          matchedParams: { id: "1" },
+        });
+      }
+      // Where no route matches /_not-found, the root page stands in for it.
+      const rootOnly = createAppRscRouteMatcher([rootRoute] as any);
+      expect(rootOnly.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "root-photos-intercept",
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: false,
+        rendersRootOwnerFromRouteMiss: true,
+      });
+      expect(rootOnly.findIntercept("/photos/1", "/missing")).toMatchObject({
+        sourceRouteIsConcrete: false,
+        rendersRootOwnerFromRouteMiss: false,
+      });
+    });
+
+    // A root-level sibling intercept without a root page is owned by a stand-in
+    // route. From /_not-found it would render through that route, or through
+    // the top-level `[slug]` route /_not-found matches, neither of which
+    // Next.js shows. Next.js shows the root layout and the intercept; vinext
+    // renders the target directly instead.
+    it("renders the target directly for a root-level sibling intercept with a stand-in owner from an unmatched URL's not-found page", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/plain" },
+          pattern: "/plain",
+          patternParts: ["plain"],
+          routeSegments: ["plain"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/photos/:id",
+              sourceMatchPattern: "/",
+              sourcePageSegments: ["(.)photos", "[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/",
+              interceptLayouts: [],
+              page: "root-photos-intercept",
+              params: ["id"],
+            },
+          ],
+        },
+        { ...route("/:slug", [":slug"]), routeSegments: ["[slug]"] },
+      ] as any);
+
+      expect(matcher.findIntercept("/photos/1", "/_not-found")).toBeNull();
+      expect(matcher.findIntercept("/photos/1", "/plain")).not.toBeNull();
+    });
+
+    // From /_not-found the first intercept whose source and target match
+    // decides, as Next.js's first matching interception rewrite does: a route
+    // group's slot intercept wins over a later `[slug]` one. When the group has
+    // no page of its own to render it, Next.js still shows the group's modal;
+    // vinext renders the target directly rather than the later intercept.
+    it("never falls through to a later intercept from an unmatched URL's not-found page", () => {
+      const groupModal = {
+        gmodal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/",
+              sourcePageSegments: ["(g)", "@gmodal", "(.)photos", "[id]"],
+              targetPattern: "/photos/:id",
+              interceptLayouts: [],
+              page: "group-photos-modal",
+              params: ["id"],
+            },
+          ],
+        },
+      };
+      const slugRoute = {
+        ...route("/:slug", [":slug"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/:slug",
+                sourcePageSegments: ["[slug]", "@modal", "(..)photos", "[id]"],
+                targetPattern: "/photos/:id",
+                interceptLayouts: [],
+                page: "slug-photos-modal",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+        routeSegments: ["[slug]"],
+      };
+
+      const withGroupPage = createAppRscRouteMatcher([
+        { ...route("/", [], groupModal), routeSegments: ["(g)"] },
+        slugRoute,
+      ]);
+      expect(withGroupPage.findIntercept("/photos/1", "/_not-found")).toMatchObject({
+        page: "group-photos-modal",
+        sourceRouteIndex: 0,
+        rendersWholeInterceptingRoute: true,
+        rendersRootOwnerFromRouteMiss: false,
+      });
+      expect(
+        createAppRscRouteMatcher([
+          { ...route("/", [], groupModal), routeSegments: ["(g)"] },
+        ]).findIntercept("/photos/1", "/_not-found"),
+      ).toMatchObject({
+        page: "group-photos-modal",
+        sourceRouteIsConcrete: false,
+        rendersWholeInterceptingRoute: true,
+        rendersRootOwnerFromRouteMiss: true,
+      });
+
+      const withoutGroupPage = createAppRscRouteMatcher([
+        { ...route("/home", ["home"], groupModal), routeSegments: ["(g)", "home"] },
+        slugRoute,
+      ]);
+      expect(withoutGroupPage.findIntercept("/photos/1", "/_not-found")).toBeNull();
+    });
+
+    // The whole intercepting route renders only when its source passes, so it
+    // never skips that source's authorization, even for a target in the
+    // slot's own group, whose layouts the target's request renders too.
+    it("never lets the whole intercepting route skip its source's authorization", () => {
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/", [], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/",
+                  sourcePageSegments: ["(g)", "@modal", "(.)photos", "[id]"],
+                  targetPattern: "/photos/:id",
+                  interceptLayouts: [],
+                  page: "group-photos-modal",
+                  params: ["id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["(g)"],
+        },
+        {
+          ...route("/photos/:id", ["photos", ":id"]),
+          routeSegments: ["(g)", "photos", "[id]"],
+        },
+        { ...route("/about", ["about"]), routeSegments: ["(other)", "about"] },
+      ] as any);
+
+      // From the group's own page the target's request renders the same tree.
+      expect(matcher.findIntercept("/photos/1", "/")).toMatchObject({
+        rendersWholeInterceptingRoute: false,
+        rendersTargetLayouts: true,
+        rawRendersTargetLayouts: true,
+      });
+      for (const sourcePathname of ["/_not-found", "/about"]) {
+        expect(matcher.findIntercept("/photos/1", sourcePathname)).toMatchObject({
+          rendersWholeInterceptingRoute: true,
+          rendersTargetLayouts: false,
+          rawRendersTargetLayouts: false,
+        });
+      }
+    });
+
+    // A page in a route group below the slot's directory, such as
+    // `club/[slug]/(children)/page.tsx`, is the slot owner's own route, as the
+    // route graph places the slot at its URL level. A route a visible segment
+    // deeper only inherits the slot.
+    it("renders the whole intercepting route of an owner whose page is in a route group", () => {
+      const clubModal = {
+        sourceMatchPattern: "/club/:slug",
+        sourcePageSegments: ["(shared)", "club", "[slug]", "@modal", "(.)pics", "[id]"],
+        targetPattern: "/club/:slug/pics/:id",
+        interceptLayouts: [],
+        page: "pics-modal",
+        params: ["slug", "id"],
+      };
+      const staticRoute = {
+        ...route("/club/static", ["club", "static"]),
+        routeSegments: ["(other)", "club", "static"],
+      };
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug", ["club", ":slug"], { modal: { intercepts: [clubModal] } }),
+          routeSegments: ["(shared)", "club", "[slug]", "(children)"],
+        },
+        staticRoute,
+      ]);
+      expect(matcher.findIntercept("/club/static/pics/1", "/club/static")).toMatchObject({
+        page: "pics-modal",
+        sourceRouteIndex: 0,
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { slug: "static", id: "1" },
+      });
+
+      // With the slot's folders above the marker, the pattern of the source
+      // names a deeper path, so only the owner's segments identify it.
+      const tracksMatcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug", ["club", ":slug"], {
+            modal: {
+              intercepts: [
+                {
+                  sourceMatchPattern: "/club/:slug/:album",
+                  sourcePageSegments: [
+                    "(shared)",
+                    "club",
+                    "[slug]",
+                    "@modal",
+                    "[album]",
+                    "(.)tracks",
+                    "[id]",
+                  ],
+                  targetPattern: "/club/:slug/:album/tracks/:id",
+                  interceptLayouts: [],
+                  page: "tracks-modal",
+                  params: ["slug", "album", "id"],
+                },
+              ],
+            },
+          }),
+          routeSegments: ["(shared)", "club", "[slug]", "(children)"],
+        },
+        {
+          ...route("/club/static/:album", ["club", "static", ":album"]),
+          routeSegments: ["(other)", "club", "static", "[album]"],
+        },
+      ]);
+      expect(
+        tracksMatcher.findIntercept("/club/static/two/tracks/1", "/club/static/one"),
+      ).toMatchObject({
+        page: "tracks-modal",
+        sourceRouteIndex: 0,
+        rendersWholeInterceptingRoute: true,
+        matchedParams: { slug: "static", album: "one", id: "1" },
+      });
+
+      const deeperMatcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug/about", ["club", ":slug", "about"], {
+            modal: { intercepts: [clubModal] },
+          }),
+          routeSegments: ["(shared)", "club", "[slug]", "(children)", "about"],
+        },
+        staticRoute,
+      ]);
+      expect(deeperMatcher.findIntercept("/club/static/pics/1", "/club/static")).toBeNull();
+    });
+
+    it("prefers the whole intercepting route among intercepts whose source lacks the slot", () => {
+      const intercept = (page: string, sourcePageSegments?: string[]) => ({
+        sourceMatchPattern: "/club/:slug",
+        ...(sourcePageSegments ? { sourcePageSegments } : {}),
+        targetPattern: "/club/:slug/pics/:id",
+        interceptLayouts: [],
+        page,
+        params: ["slug", "id"],
+      });
+      const matcher = createAppRscRouteMatcher([
+        {
+          ...route("/club/:slug", ["club", ":slug"], {
+            // Only a rewrite of the source can give it this slot.
+            drawer: { intercepts: [intercept("pics-drawer")] },
+            modal: {
+              intercepts: [
+                intercept("pics-modal", [
+                  "(shared)",
+                  "club",
+                  "[slug]",
+                  "@modal",
+                  "(.)pics",
+                  "[id]",
+                ]),
+              ],
+            },
+          }),
+          routeSegments: ["(shared)", "club", "[slug]"],
+        },
+        route("/club/static", ["club", "static"]),
+      ]);
+
+      for (const acceptsSourceWithoutSlot of [false, true]) {
+        expect(
+          matcher.findIntercept(
+            "/club/static/pics/1",
+            "/club/static",
+            null,
+            acceptsSourceWithoutSlot,
+          ),
+        ).toMatchObject({
+          page: "pics-modal",
+          sourceRouteIndex: 0,
+          sourceRouteLacksSlot: true,
+          rendersWholeInterceptingRoute: true,
+        });
+      }
     });
 
     it("prefers an intercept whose source has the slot over one whose source lacks it", () => {
@@ -1776,6 +2353,7 @@ type TestRoute = {
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
+  routeSegments?: string[];
   slots?: Record<string, { id?: string; intercepts?: TestIntercept[] }>;
   siblingIntercepts?: TestSiblingIntercept[];
 };

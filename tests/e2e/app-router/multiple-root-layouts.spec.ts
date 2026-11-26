@@ -54,9 +54,12 @@ for (const entry of ["/pin", "/"] as const) {
     expect(new URL(page.url()).pathname).toBe("/");
     expect(await page.evaluate(() => Reflect.get(window, "__pinDocument"))).toBeUndefined();
     await expect(page.locator("body#pin-root")).toHaveCount(0);
+    // Like Next.js, the client router appends its route announcer to the body
+    // once it hydrates.
+    await waitForAppRouterHydration(page);
     expect(
       await page
-        .locator("body#site-root > :not(script)")
+        .locator("body#site-root > :not(script, next-route-announcer)")
         .evaluateAll((elements) => elements.map((element) => element.localName)),
     ).toEqual(["header", "main", "footer"]);
   });

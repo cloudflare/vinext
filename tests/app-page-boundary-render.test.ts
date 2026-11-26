@@ -10,6 +10,7 @@ import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -1504,6 +1505,243 @@ describe("app page boundary render helpers", () => {
       statusCode: 404,
     });
   }
+
+  // Next.js heads an intercepted render by the intercepting route's tree, so
+  // the metadata files of the intercepting page's own path apply, the deepest
+  // winning and a dynamic one filled with the intercepting route's params,
+  // while those of the source's other slots don't.
+  describe("the metadata files of an intercepted render's head", () => {
+    const metadataFile = (
+      type: "opengraph-image" | "twitter-image",
+      routeSegments: string[],
+      options: { href?: string; servedUrl?: string },
+    ): MetadataFileRoute => ({
+      contentType: "image/png",
+      filePath: `/app/${routeSegments.join("/")}/${type}.png`,
+      ...(options.href
+        ? {
+            headData: {
+              href: options.href,
+              kind: type === "twitter-image" ? ("twitter" as const) : ("openGraph" as const),
+            },
+          }
+        : { module: {} }),
+      isDynamic: !options.href,
+      routePrefix: "/feed",
+      routeSegments,
+      servedUrl: options.servedUrl ?? `/${type}.png`,
+      type,
+    });
+    const interceptPage = {
+      default: () => null,
+      metadata: { title: "Intercept page title" },
+    } satisfies TestModule;
+    const render = (
+      intercept: Record<string, unknown>,
+      pageSegments: string[],
+      routeHead: typeof UNPREPARED_ROUTE_HEAD | null,
+    ) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        intercept: {
+          interceptLayouts: [],
+          interceptPage,
+          interceptParams: { id: "1" },
+          interceptSourcePageSegments: pageSegments,
+          ...intercept,
+        },
+        matchedParams: {},
+        metadataRoutes: [
+          metadataFile("opengraph-image", ["feed", "@modal"], { href: "/modal-og.png" }),
+          metadataFile("twitter-image", ["feed", "@modal", "(grp)"], {
+            href: "/group-twitter.png",
+          }),
+          metadataFile("opengraph-image", pageSegments, {
+            servedUrl: `/${pageSegments.join("/")}/opengraph-image-abc`,
+          }),
+        ],
+        request: new Request("https://example.com/photo/1"),
+        requestUrl: "https://example.com/photo/1",
+        route: {
+          childrenSlot: { id: "children:/feed", ownerTreePath: "/feed", state: "unmatched" },
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 0,
+          page: null,
+          pattern: "/feed",
+          routeSegments: ["feed"],
+          slots: { modal: { layoutIndex: 0, name: "modal", ownerTreePosition: 1, page: null } },
+        },
+        ...(routeHead ? { routeHead } : {}),
+        statusCode: 404,
+      });
+
+    for (const routeHead of [UNPREPARED_ROUTE_HEAD, null]) {
+      const head = routeHead ? "route's head" : "convention's head";
+
+      // Rendered whole, as from a source URL without a page of its own, the
+      // intercept heads the route the same way.
+      for (const rendersInterceptionSource of [true, false]) {
+        const render_ = rendersInterceptionSource ? "beneath its source" : "whole";
+
+        it(`reads the slot intercept's own path in the ${head}, rendered ${render_}`, async () => {
+          const response = await render(
+            { interceptSlotKey: "modal", rendersInterceptionSource },
+            ["feed", "@modal", "(grp)", "(..)photo", "[id]"],
+            routeHead,
+          );
+          const html = await response?.text();
+
+          expect(html).toContain("/feed/@modal/(grp)/(..)photo/1/opengraph-image-abc");
+          expect(html).toContain("/group-twitter.png");
+          expect(html).not.toContain("/modal-og.png");
+        });
+      }
+
+      it(`reads the sibling intercept's own path in the ${head}`, async () => {
+        const response = await render(
+          { interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY },
+          ["feed", "(..)photo", "[id]"],
+          routeHead,
+        );
+        const html = await response?.text();
+
+        expect(html).toContain("/feed/(..)photo/1/opengraph-image-abc");
+        expect(html).not.toContain("/modal-og.png");
+        expect(html).not.toContain("/group-twitter.png");
+      });
+    }
+
+    // Next.js's interception rewrite captures the params above the marker
+    // from the source URL: `/en/feed` intercepting `/fr/photo/1` heads by
+    // `/en/feed/...`.
+    for (const [kind, interceptSlotKey, pageSegments] of [
+      ["slot", "modal", ["[lang]", "feed", "@modal", "(..)photo", "[id]"]],
+      ["sibling", SIBLING_PAGE_INTERCEPT_SLOT_KEY, ["[lang]", "feed", "(..)photo", "[id]"]],
+    ] as const) {
+      it(`fills the ${kind} intercept's params above the marker from the source`, async () => {
+        const response = await renderAppPageHttpAccessFallback<TestModule>({
+          ...createCommonOptions(),
+          intercept: {
+            interceptLayouts: [],
+            interceptPage,
+            interceptParams: { id: "1", lang: "fr" },
+            interceptSlotKey,
+            interceptSourcePageSegments: [...pageSegments],
+          },
+          matchedParams: { lang: "en" },
+          metadataRoutes: [
+            metadataFile("opengraph-image", [...pageSegments], {
+              servedUrl: `/${pageSegments.join("/")}/opengraph-image-abc`,
+            }),
+          ],
+          request: new Request("https://example.com/fr/photo/1"),
+          requestUrl: "https://example.com/fr/photo/1",
+          route: {
+            layoutTreePositions: [0],
+            layouts: [{ default: RootLayout }],
+            notFound: notFoundModuleWithMetadata,
+            notFoundTreePosition: 0,
+            page: null,
+            pattern: "/[lang]/feed",
+            routeSegments: ["[lang]", "feed"],
+            slots: { modal: { layoutIndex: 0, name: "modal", ownerTreePosition: 2, page: null } },
+          },
+          routeHead: UNPREPARED_ROUTE_HEAD,
+          statusCode: 404,
+        });
+        const html = await response?.text();
+
+        expect(html).toContain(
+          `/en/feed/${pageSegments.slice(2, -1).join("/")}/1/opengraph-image-abc`,
+        );
+      });
+    }
+
+    // A static source route doesn't declare the slot's own dynamic folder
+    // above the marker, which the rewrite still captures from its URL.
+    it("fills a slot's dynamic folder above the marker from a static source's URL", async () => {
+      const pageSegments = ["teams", "@modal", "[team]", "(.)pics", "[id]"];
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        intercept: {
+          interceptLayouts: [],
+          interceptPage,
+          interceptParams: { id: "1", team: "bravo" },
+          interceptSlotKey: "modal",
+          interceptSourceMatchedUrl: "/teams/acme",
+          interceptSourcePageSegments: pageSegments,
+        },
+        matchedParams: {},
+        metadataRoutes: [
+          metadataFile("opengraph-image", pageSegments, {
+            servedUrl: "/teams/[team]/(.)pics/[id]/opengraph-image-abc",
+          }),
+        ],
+        request: new Request("https://example.com/teams/bravo/pics/1"),
+        requestUrl: "https://example.com/teams/bravo/pics/1",
+        route: {
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 0,
+          page: null,
+          pattern: "/teams/acme",
+          routeSegments: ["teams", "acme"],
+          slots: { modal: { layoutIndex: 0, name: "modal", ownerTreePosition: 1, page: null } },
+        },
+        routeHead: UNPREPARED_ROUTE_HEAD,
+        statusCode: 404,
+      });
+      const html = await response?.text();
+
+      expect(html).toContain("/teams/acme/(.)pics/1/opengraph-image-abc");
+    });
+
+    // A source page before the slot keeps the source route's head, which the
+    // client keeps with its own files.
+    it("keeps the source page's files for a slot intercept that keeps the source head", async () => {
+      const pageSegments = ["feed", "@modal", "(..)photo", "[id]"];
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        intercept: {
+          interceptLayouts: [],
+          interceptPage,
+          interceptParams: { id: "1" },
+          interceptSlotKey: "modal",
+          interceptSourcePageSegments: pageSegments,
+          rendersInterceptionSource: true,
+        },
+        matchedParams: { slug: "a" },
+        metadataRoutes: [
+          metadataFile("opengraph-image", ["feed", "[slug]"], { href: "/source-og.png" }),
+          metadataFile("opengraph-image", pageSegments, {
+            servedUrl: `/${pageSegments.join("/")}/opengraph-image-abc`,
+          }),
+        ],
+        request: new Request("https://example.com/photo/1"),
+        requestUrl: "https://example.com/photo/1",
+        route: {
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 0,
+          page: { default: () => null, metadata: { title: "Source page title" } },
+          pattern: "/feed/[slug]",
+          routeSegments: ["feed", "[slug]"],
+          slots: { modal: { layoutIndex: 0, name: "modal", ownerTreePosition: 1, page: null } },
+        },
+        routeHead: UNPREPARED_ROUTE_HEAD,
+        statusCode: 404,
+      });
+      const html = await response?.text();
+
+      expect(html).toContain("Source page title");
+      expect(html).toContain("/source-og.png");
+      expect(html).not.toContain("opengraph-image-abc");
+    });
+  });
 
   it("keeps the source route's head for a slot intercept whose render threw the signal", async () => {
     // Next.js's client renders the head of the first leaf on a children-first

@@ -42,10 +42,12 @@ import {
 } from "./app-browser-visible-commit.js";
 import {
   resolveServerActionOperationLane,
+  resolveServerActionReturnValue,
   shouldScheduleRefreshForDiscardedServerAction,
   type ServerActionRevalidationKind,
 } from "./app-browser-action-result.js";
 import type { AppElements } from "./app-elements.js";
+import type { InterceptionSourceIdentity } from "./navigation-planner.js";
 import type { NavigationRuntimeVisibleCommitMode } from "../client/navigation-runtime.js";
 import {
   clearAppNavigationFailureTarget,
@@ -142,6 +144,7 @@ type BrowserNavigationPayloadOptions = {
   restoredBfcacheIds?: Readonly<Record<string, string>> | null;
   reuseCurrentBfcacheIds?: boolean;
   scrollIntent?: AppRouterScrollIntent | null;
+  suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHistoryIndex?: number | null;
   targetHref: string;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
@@ -1054,6 +1057,7 @@ export function createAppBrowserNavigationController(
         renderId,
         restoredBfcacheIds: options.restoredBfcacheIds,
         reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
+        suppliedInterceptionSource: options.suppliedInterceptionSource,
         type: options.actionType,
       };
       const pending =
@@ -1214,12 +1218,13 @@ export function createAppBrowserNavigationController(
       // The commit cannot be classified without the RouteManifest. An action
       // that still owns the router reloads, like a hard-navigate decision
       // below; a superseded one is discarded like a no-commit decision.
+      // Either way the action ran, so its caller gets its result.
       if (isCurrentNavigation(startedNavigationId)) {
         performHardNavigation(targetHref);
-        return undefined;
+      } else {
+        notifyDiscardedServerActionRevalidation(lifecycleOptions);
       }
-      notifyDiscardedServerActionRevalidation(lifecycleOptions);
-      return resolveSameUrlActionReturnValue(returnValue);
+      return resolveServerActionReturnValue(returnValue);
     }
     const {
       approvedCommit,
@@ -1247,10 +1252,10 @@ export function createAppBrowserNavigationController(
 
     if (decision.disposition === "hard-navigate") {
       // Same-URL action hard navigations do not expose a navigation outcome to
-      // callers. If the loop guard blocks, the degraded state is still the
-      // existing return contract: no visible commit and no action value.
+      // callers. Like Next.js, the action still settles with its own result:
+      // the loop guard can block the navigation, so the document may stay.
       performHardNavigation(targetHref);
-      return undefined;
+      return resolveServerActionReturnValue(returnValue);
     }
 
     if (approvedCommit) {
@@ -1269,7 +1274,7 @@ export function createAppBrowserNavigationController(
         // See the same-URL hard-navigation note above. The guard result is
         // deliberately not surfaced through the server-action return channel.
         performHardNavigation(targetHref);
-        return undefined;
+        return resolveServerActionReturnValue(returnValue);
       }
 
       if (latestApproval.approvedCommit) {
@@ -1292,21 +1297,7 @@ export function createAppBrowserNavigationController(
     // update was skipped due to a superseding navigation. That preserves the
     // existing caller contract; a future Phase 2 router state model could make
     // skipped UI updates observable to the caller without conflating them here.
-    return resolveSameUrlActionReturnValue(returnValue);
-  }
-
-  async function resolveSameUrlActionReturnValue(
-    returnValue: { ok: boolean; data: unknown } | undefined,
-  ): Promise<unknown> {
-    if (returnValue) {
-      if (!returnValue.ok) {
-        // A failed action's thrown value may still be settling.
-        throw await returnValue.data;
-      }
-      return returnValue.data;
-    }
-
-    return undefined;
+    return resolveServerActionReturnValue(returnValue);
   }
 
   function attachBrowserRouterState(

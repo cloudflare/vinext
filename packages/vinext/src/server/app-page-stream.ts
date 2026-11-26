@@ -9,9 +9,10 @@ import type { RootParams } from "vinext/shims/root-params";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
-import { getNextErrorDigest } from "./next-error-digest.js";
+import { getNextErrorDigest, parseNextHttpErrorDigest } from "./next-error-digest.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
 import { isInsideUnifiedScope } from "vinext/shims/unified-request-context";
+import { isStaticGenerationAccessError } from "vinext/shims/internal/headers-state";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
@@ -179,10 +180,19 @@ export type AppPageSsrHandler = {
        *  error-document shell (with the original flight payload and
        *  bootstrap) instead of rejecting. See handleSsr. */
       fallbackToErrorDocumentOnShellError?: boolean;
+      /** Whether a caught document that can't render answers with its error
+       *  shell. See handleSsr. */
+      fallbackToErrorDocumentOnCaughtShellError?: boolean;
       /** Whether the RSC render threw the given shell error. See handleSsr. */
       isServerComponentError?: (error: unknown) => boolean;
-      /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
-      resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+      /** Whether the RSC render threw the given error as a `dynamic = "error"`
+       *  request API access. See handleSsr. */
+      isStaticGenerationError?: (error: unknown) => boolean;
+      /** The slot or route boundaries that catch a shell error. See handleSsr. */
+      resolveCaughtNotFoundBoundaries?: (
+        error: unknown,
+        countPageRejections: (rendered: unknown) => number,
+      ) => readonly string[] | null;
       dynamicStaleTimeSeconds?: number;
       getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
     },
@@ -245,8 +255,14 @@ type RenderAppPageHtmlStreamOptions = {
   fallbackToErrorDocumentOnShellError?: boolean;
   /** Whether the RSC render threw the given shell error. See handleSsr. */
   isServerComponentError?: (error: unknown) => boolean;
-  /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
-  resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+  /** Whether the RSC render threw the given error as a `dynamic = "error"`
+   *  request API access. See handleSsr. */
+  isStaticGenerationError?: (error: unknown) => boolean;
+  /** The slot or route boundaries that catch a shell error. See handleSsr. */
+  resolveCaughtNotFoundBoundaries?: (
+    error: unknown,
+    countPageRejections: (rendered: unknown) => number,
+  ) => readonly string[] | null;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
   /** Report an SSR/Fizz render failure through instrumentation. */
@@ -281,7 +297,7 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   renderHtmlStream: () => Promise<ReadableStream<Uint8Array> | AppSsrRenderResult>;
   /**
    * The document of a special error that rejected the shell. With
-   * `caughtDocument`, parallel slot boundaries caught it in the page's own
+   * `caughtDocument`, boundaries in the route's tree caught it in the page's own
    * document, which that response sends.
    */
   renderSpecialErrorResponse: (
@@ -291,7 +307,7 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   resolveSpecialError: (error: unknown) => TSpecialError | null;
 };
 
-/** The page's document, rendered with the slot boundaries that caught its shell error. */
+/** The page's document, rendered with the boundaries that caught its shell error. */
 type AppPageCaughtShellErrorDocument = {
   htmlStream: ReadableStream<Uint8Array>;
   /** React-emitted preload `Link` header (already capped). */
@@ -312,7 +328,18 @@ type AppPageRscErrorTracker = {
    * loses server-side markers such as generateMetadata()'s.
    */
   getCapturedSpecialErrors: (error: unknown) => readonly unknown[];
+  /**
+   * Every notFound(), forbidden() or unauthorized() the RSC render threw,
+   * whatever its status, as the boundaries in a document can catch each.
+   */
+  getCapturedAccessFallbackErrors: () => readonly unknown[];
   isCapturedError: (error: unknown) => boolean;
+  /**
+   * Whether the RSC render threw the given error, or the error with its
+   * digest, as a `dynamic = "error"` route's request API access, which fails
+   * static generation.
+   */
+  isStaticGenerationError: (error: unknown) => boolean;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
 
@@ -360,6 +387,7 @@ export async function renderAppPageHtmlStream(
     mirrorNextFlight: options.mirrorNextFlight,
     fallbackToErrorDocumentOnShellError: options.fallbackToErrorDocumentOnShellError,
     isServerComponentError: options.isServerComponentError,
+    isStaticGenerationError: options.isStaticGenerationError,
     resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
     dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
     getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
@@ -533,6 +561,8 @@ export function createAppPageRscErrorTracker(
   let capturedSpecialError: unknown = null;
   const capturedErrors = new Set<unknown>();
   const capturedDigests = new Set<string>();
+  const staticGenerationErrors = new Set<unknown>();
+  const staticGenerationDigests = new Set<string>();
   const specialErrorsByDigest = new Map<string, unknown[]>();
 
   return {
@@ -546,12 +576,24 @@ export function createAppPageRscErrorTracker(
       const digest = getNextErrorDigest(error);
       return (digest !== null && specialErrorsByDigest.get(digest)) || [];
     },
+    getCapturedAccessFallbackErrors() {
+      return Array.from(specialErrorsByDigest).flatMap(([digest, errors]) =>
+        parseNextHttpErrorDigest(digest) ? errors : [],
+      );
+    },
     isCapturedError(error) {
       if (capturedErrors.has(error)) return true;
       const digest = getNextErrorDigest(error);
       return digest !== null && capturedDigests.has(digest);
     },
+    isStaticGenerationError(error) {
+      if (staticGenerationErrors.has(error)) return true;
+      const digest = getNextErrorDigest(error);
+      return digest !== null && staticGenerationDigests.has(digest);
+    },
     onRenderError(error, requestInfo, errorContext) {
+      const isStaticGenerationError = isStaticGenerationAccessError(error);
+      if (isStaticGenerationError) staticGenerationErrors.add(error);
       if (isNavigationSignalError(error)) {
         // Navigation signal throws (NEXT_REDIRECT, NEXT_NOT_FOUND,
         // NEXT_HTTP_ERROR_FALLBACK) are not real failures, so keep the first
@@ -569,6 +611,7 @@ export function createAppPageRscErrorTracker(
       const digest = typeof result === "string" ? result : getNextErrorDigest(error);
       if (digest !== null && !isNavigationSignalError(error)) {
         capturedDigests.add(digest);
+        if (isStaticGenerationError) staticGenerationDigests.add(digest);
       } else if (digest !== null) {
         specialErrorsByDigest.set(digest, [...(specialErrorsByDigest.get(digest) ?? []), error]);
       }

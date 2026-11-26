@@ -112,6 +112,9 @@ async function expectInterceptionSourceAuthorization(baseUrl: string): Promise<v
   expect(control.headers.get("x-auth-guard")).toBe("blocked");
   expect(await control.text()).not.toContain(GUARDED_MARKER);
 
+  // Next.js never rejects a request over its `Next-Url`, so a context that
+  // names no canonical source is treated as absent and the target renders on
+  // its own.
   const traversal = await fetch(`${baseUrl}/photos/1`, {
     headers: interceptionHeaders("/feed/.."),
   });
@@ -119,10 +122,14 @@ async function expectInterceptionSourceAuthorization(baseUrl: string): Promise<v
   expect({
     status: traversal.status,
     authGuard: traversal.headers.get("x-auth-guard"),
+    cacheControl: traversal.headers.get("cache-control"),
+    rendersTarget: traversalBody.includes("Refresh"),
     exposedGuardedContent: traversalBody.includes(GUARDED_MARKER),
   }).toEqual({
-    status: 400,
+    status: 200,
     authGuard: null,
+    cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
+    rendersTarget: true,
     exposedGuardedContent: false,
   });
 
@@ -245,16 +252,24 @@ describe.each([
     expect(memberDirect.status).toBe(200);
     expect(await memberDirect.text()).toContain(GUARDED_MEMBER_MARKER);
 
+    // The anonymous client shows the login page the rule served, which does
+    // not intercept the photo, so it navigates to the photo page itself.
     const anonymous = await fetch(`${baseUrl}/photos/1`, {
       headers: interceptionHeaders("/members/7"),
     });
     const anonymousBody = await anonymous.text();
     expect({
       status: anonymous.status,
+      rendersPhoto: anonymousBody.includes("Refresh"),
+      rendersModal: anonymousBody.includes("MEMBERS-PHOTO-MODAL"),
       exposedGuardedContent: anonymousBody.includes(GUARDED_MEMBER_MARKER),
+      retainsSource: retainedElementIds(anonymousBody).includes("page:/members/7"),
     }).toEqual({
-      status: 404,
+      status: 200,
+      rendersPhoto: true,
+      rendersModal: false,
       exposedGuardedContent: false,
+      retainsSource: false,
     });
 
     // The client keeps the member page it shows beneath the modal, so the

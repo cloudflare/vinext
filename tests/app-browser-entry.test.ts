@@ -40,7 +40,10 @@ import {
   prepareConsumedPrefetchResponseForPublication,
   resolvePrefetchNavigationResponseUrl,
 } from "../packages/vinext/src/server/app-browser-prefetch-response.js";
-import { createVisitedResponseCacheEntry } from "../packages/vinext/src/server/app-visited-response-cache.js";
+import {
+  createVisitedResponseCacheEntry,
+  isVisitedResponseCacheEntryForPreviousNextUrl,
+} from "../packages/vinext/src/server/app-visited-response-cache.js";
 import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
@@ -113,6 +116,7 @@ import {
   createHistoryStateWithTreeSnapshotId,
   createInitialBfcacheIdMap,
   createNextBfcacheIdMap,
+  COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
@@ -126,10 +130,12 @@ import {
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveInterceptionContextFromPreviousNextUrl,
+  resolveNavigationInterceptionSource,
   resolveActiveRoutePaths,
   resolveHistoryTraversalIntent,
   resolveServerActionRequestState,
   resolvePendingNavigationCommitDispositionDecision,
+  type AppNavigationPayloadOrigin,
   type AppRouterState,
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
@@ -157,8 +163,14 @@ import {
   NavigationTraceTransactionCodes,
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
-import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
-import { resolveHeldRetainedElementIds } from "../packages/vinext/src/server/app-retained-elements.js";
+import {
+  navigationPlanner,
+  type InterceptionSourceIdentity,
+} from "../packages/vinext/src/server/navigation-planner.js";
+import {
+  resolveCommittedInterceptionSource,
+  resolveHeldRetainedElementIds,
+} from "../packages/vinext/src/server/app-retained-elements.js";
 import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 import {
   ACTION_REVALIDATED_HEADER,
@@ -1891,6 +1903,230 @@ describe("app browser entry state helpers", () => {
     expect(pending.action.previousNextUrl).toBe("/feed");
   });
 
+  // A payload of the whole intercepting route, for a source without the slot,
+  // carries no interception proof but still renders for that source, so a
+  // refresh or traversal of its entry sends the source again, as Next.js
+  // re-sends previousNextUrl.
+  it("keeps the source of a whole intercepting route for its entry", async () => {
+    const commit = async (
+      wholeInterceptionSource: string | undefined,
+      type: "navigate" | "traverse" = "navigate",
+      interceptionContext = "/club/static",
+    ) => {
+      const state = createState();
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState: state,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/club/static/pics/1", "/", interceptionContext, {
+            "page:/club/static/pics/1": React.createElement("main", null, "pic modal"),
+            ...(wholeInterceptionSource === undefined
+              ? {}
+              : { [AppElementsWire.keys.wholeInterceptionSource]: wholeInterceptionSource }),
+          }),
+        ),
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/club/static/pics/1",
+          {},
+        ),
+        operationLane: type === "traverse" ? "traverse" : "navigation",
+        previousNextUrl: "/club/static",
+        renderId: 1,
+        type,
+      });
+      return { pending, state };
+    };
+
+    for (const type of ["navigate", "traverse"] as const) {
+      const { pending, state } = await commit("/club/static", type);
+      expect(pending.interception).toBeNull();
+      expect(pending.previousNextUrl).toBe("/club/static");
+      expect(pending.action.previousNextUrl).toBe("/club/static");
+      // It commits as an ordinary navigation, under the target's own route.
+      const approval = approvePendingNavigationCommit({
+        activeNavigationId: 1,
+        currentState: state,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(state, pending),
+        startedNavigationId: 1,
+        targetHref: "https://example.com/club/static/pics/1",
+      });
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
+      expect(nextState.routeId).toBe("route:/club/static/pics/1");
+      expect(nextState.interception).toBeNull();
+      expect(nextState.previousNextUrl).toBe("/club/static");
+    }
+    // Without the mark, or with one naming another source, the payload is the
+    // target's own render.
+    expect((await commit(undefined)).pending.previousNextUrl).toBeNull();
+    expect((await commit("/club/other")).pending.previousNextUrl).toBeNull();
+  });
+
+  // A refresh of an intercept opened from an unmatched URL's not-found page
+  // sends /_not-found again and commits the whole intercepting route softly,
+  // as Next.js does when the root layout has no other slot.
+  it("keeps /_not-found as the source when an intercept from a not-found page refreshes", async () => {
+    const createWholeRouteElements = () =>
+      createResolvedElements("route:/photos/1", "/", "/_not-found", {
+        "page:/photos/1": React.createElement("main", null, "photo modal"),
+        [AppElementsWire.keys.wholeInterceptionSource]: "/_not-found",
+      });
+    const navigationSnapshot = createClientNavigationRenderSnapshot(
+      "https://example.com/photos/1",
+      {},
+    );
+    const state = createState({
+      elements: createWholeRouteElements(),
+      interceptionContext: "/_not-found",
+      navigationSnapshot,
+      previousNextUrl: "/_not-found",
+      routeId: "route:/photos/1",
+    });
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState: state,
+      nextElements: Promise.resolve(createWholeRouteElements()),
+      navigationSnapshot,
+      operationLane: "refresh",
+      previousNextUrl: "/_not-found",
+      renderId: 1,
+      type: "navigate",
+    });
+    expect(pending.previousNextUrl).toBe("/_not-found");
+
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState: state,
+      pending,
+      routeManifest: createRouteManifestForPendingCommit(state, pending),
+      startedNavigationId: 1,
+      targetHref: "https://example.com/photos/1",
+    });
+    if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+    const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
+    expect(nextState.routeId).toBe("route:/photos/1");
+    expect(nextState.interception).toBeNull();
+    expect(nextState.previousNextUrl).toBe("/_not-found");
+  });
+
+  // A sibling intercept's payload carries no interception proof, but its page
+  // is the intercepting route's own, so its entry keeps the source it was
+  // opened from, /_not-found included, as Next.js re-sends `previousNextUrl`
+  // while its tree holds an interception route.
+  it("keeps the source of a sibling intercept for its entry", async () => {
+    const commit = async (sourcePage: string, interceptionContext: string | null) => {
+      const state = createState();
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState: state,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/photos/1",
+            "/",
+            interceptionContext,
+            { "page:/photos/1": React.createElement("main", null, "photo") },
+            undefined,
+            [],
+            null,
+            sourcePage,
+          ),
+        ),
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/photos/1",
+          {},
+        ),
+        operationLane: "navigation",
+        previousNextUrl: interceptionContext,
+        renderId: 1,
+        type: "navigate",
+      });
+      return { pending, state };
+    };
+
+    for (const source of ["/_not-found", "/"]) {
+      const { pending, state } = await commit("/(.)photos/[id]/page", source);
+      expect(pending.interception).toBeNull();
+      expect(pending.previousNextUrl).toBe(source);
+      const approval = approvePendingNavigationCommit({
+        activeNavigationId: 1,
+        currentState: state,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(state, pending),
+        startedNavigationId: 1,
+        targetHref: "https://example.com/photos/1",
+      });
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      const nextState = applyApprovedVisibleCommit(state, approval.approvedCommit);
+      expect(nextState.interception).toBeNull();
+      expect(nextState.previousNextUrl).toBe(source);
+    }
+    // The target's own page keeps no source.
+    expect((await commit("/photos/[id]/page", "/_not-found")).pending.previousNextUrl).toBeNull();
+  });
+
+  // Next.js navigates and prefetches with `nextUrl`, the path of the tree it
+  // rendered. A sibling intercept's or a whole intercepting route's tree stops
+  // at the interception marker, so that is the owner's path with the source's
+  // values. It decides which targets intercept; the entry still sends the
+  // source it keeps, a page the server can check.
+  it("intercepts from an intercepting route's own tree path", () => {
+    const source = (
+      sourcePage: string,
+      previousNextUrl: string,
+      options: { basePath?: string; whole?: boolean; interception?: boolean } = {},
+    ) => {
+      const context = resolveInterceptionContextFromPreviousNextUrl(
+        previousNextUrl,
+        options.basePath,
+      );
+      const resolved = resolveNavigationInterceptionSource(
+        {
+          elements: createResolvedElements(
+            "route:/photos/1",
+            "/",
+            context,
+            options.whole ? { [AppElementsWire.keys.wholeInterceptionSource]: context } : {},
+            undefined,
+            [],
+            options.interception ? createInterceptionProof(context!, "/photos/1") : null,
+            sourcePage,
+          ),
+          previousNextUrl,
+        },
+        options.basePath ?? "",
+      );
+      expect(resolved.previousNextUrl).toBe(previousNextUrl);
+      return resolved.pathname;
+    };
+
+    // Sibling intercepts.
+    expect(source("/(.)photos/[id]/page", "/feed")).toBe("/");
+    expect(source("/(.)photos/[id]/page", "/_not-found")).toBe("/");
+    expect(source("/(.)photos/[id]/page", "/docs/feed", { basePath: "/docs" })).toBe("/docs");
+    expect(source("/(g)/feed/(.)photos/[id]/page", "/feed?tab=1")).toBe("/feed");
+    expect(source("/[team]/(..)photos/[id]/page", "/acme/members")).toBe("/acme");
+    // Whole intercepting routes, through the slot's folders above the marker.
+    expect(
+      source(
+        "/nextjs-compat/intercept-source-group/(shared)/club/[slug]/[album]/(.)tracks/[id]/page",
+        "/nextjs-compat/intercept-source-group/club/static/one",
+        { whole: true },
+      ),
+    ).toBe("/nextjs-compat/intercept-source-group/club/static/one");
+    expect(source("/(g)/(.)photos/[id]/page", "/_not-found", { whole: true })).toBe("/");
+    expect(source("/[slug]/(.)photos/[id]/page", "/_not-found", { whole: true })).toBe(
+      "/_not-found",
+    );
+    // A source page without a marker stops at the owner.
+    expect(source("/(g)/page", "/_not-found", { whole: true })).toBe("/");
+    expect(source("/[slug]/page", "/_not-found", { whole: true })).toBe("/_not-found");
+    expect(source("/club/[slug]/page", "/club/static", { whole: true })).toBe("/club/static");
+    expect(source("/[...rest]/page", "/a/b", { whole: true })).toBe("/a/b");
+    // A slot intercept keeps its source page beneath the modal.
+    expect(source("/feed/page", "/feed", { interception: true })).toBe(null);
+  });
+
   it("mints fresh bfcache ids instead of reusing current ids when requested", async () => {
     const currentRootLayout = React.createElement("div", null, "current root");
     const nextRootLayout = React.createElement("div", null, "next root");
@@ -2988,6 +3224,83 @@ describe("app browser entry state helpers", () => {
     expect((await commitHmr({ [fallbackId]: "next not-found" })).elements[fallbackId]).toBe(
       "next not-found",
     );
+  });
+
+  // A refresh leaves a mounted slot that shows its default out of its payload,
+  // and the slot stays as Next.js keeps a default segment's content, unless
+  // its owner now renders for other params.
+  it("keeps a default slot a refresh leaves out while its owner keeps its identity", async () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const asideSlotId = AppElementsWire.encodeSlotId("aside", "/");
+    const currentAside = React.createElement("aside", null, "aside default");
+    const nextRootLayout = React.createElement("section", null, "next root layout");
+    const bindings = [
+      {
+        ownerLayoutId: rootLayoutId,
+        slotId: asideSlotId,
+        slotName: "aside",
+        state: "default" as const,
+      },
+    ];
+    const currentState = createState({
+      bfcacheIds: { [rootLayoutId]: "0" },
+      elements: createResolvedElements(
+        "route:/settings",
+        "/",
+        null,
+        {
+          [asideSlotId]: currentAside,
+          [rootLayoutId]: React.createElement("section", null, "current root layout"),
+        },
+        [rootLayoutId],
+        bindings,
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      routeId: "route:/settings",
+      slotBindings: bindings,
+    });
+    const commitRefresh = async (extraEntries: Record<string, unknown> = {}) => {
+      const pending = await createPendingNavigationCommit({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        currentState,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/settings",
+            "/",
+            null,
+            { [rootLayoutId]: nextRootLayout, ...extraEntries },
+            [rootLayoutId],
+            bindings,
+          ),
+        ),
+        navigationSnapshot: currentState.navigationSnapshot,
+        operationLane: "refresh",
+        renderId: 21,
+        type: "navigate",
+      });
+      const approval = approvePendingNavigationCommit({
+        activeNavigationId: 1,
+        currentState,
+        pending,
+        routeManifest: createRouteManifestForPendingCommit(currentState, pending),
+        startedNavigationId: 1,
+        targetHref: "https://example.com/settings",
+      });
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      return applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+    };
+
+    const refreshed = await commitRefresh();
+    expect(refreshed.elements[rootLayoutId]).toBe(nextRootLayout);
+    expect(refreshed.elements[asideSlotId]).toBe(currentAside);
+    expect(refreshed.slotBindings).toEqual(bindings);
+
+    const otherParams = await commitRefresh({
+      [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: { [rootLayoutId]: "other params" },
+    });
+    expect(otherParams.elements[rootLayoutId]).toBe(nextRootLayout);
+    expect(Object.hasOwn(otherParams.elements, asideSlotId)).toBe(false);
   });
 
   it("preserves planner-approved named slot state across HMR replacement", async () => {
@@ -5170,7 +5483,8 @@ describe("app browser navigation controller", () => {
       expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
       expect(assign).not.toHaveBeenCalled();
 
-      await expect(commitAction(controller.beginNavigation())).resolves.toBeUndefined();
+      // The reload does not swallow the action's result (#4836).
+      await expect(commitAction(controller.beginNavigation())).resolves.toBe("action-result");
       expect(assign).toHaveBeenCalledWith("https://example.com/settings");
       expect(stateRef.current.routeId).toBe("route:/settings");
     } finally {
@@ -5430,14 +5744,15 @@ describe("app browser navigation controller", () => {
       const result = await controller.commitSameUrlNavigatePayload(
         nextElements,
         stateRef.current.navigationSnapshot,
-        undefined,
+        { data: "action-result", ok: true },
         undefined,
         {
           targetHref: actionTargetHref,
         },
       );
 
-      expect(result).toBeUndefined();
+      // Like Next.js, the action settles with its result (#4836).
+      expect(result).toBe("action-result");
       expect(assign).toHaveBeenCalledWith(actionTargetHref);
       expect(stateRef.current.routeId).toBe("route:/marketing");
     } finally {
@@ -10930,8 +11245,10 @@ describe("elements an intercepted payload leaves for the client to keep", () => 
     options: {
       navigationCommitKind?: "authoritative" | "detached";
       operationLane?: OperationLane;
+      payloadOrigin?: AppNavigationPayloadOrigin;
       previousNextUrl?: string;
       reuseCurrentBfcacheIds?: boolean;
+      suppliedInterceptionSource?: InterceptionSourceIdentity | null;
       type?: "navigate" | "replace" | "traverse";
     } = {},
   ) {
@@ -10941,10 +11258,11 @@ describe("elements an intercepted payload leaves for the client to keep", () => 
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/1", {}),
       nextElements: Promise.resolve(nextElements),
       operationLane: options.operationLane ?? "navigation",
-      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      payloadOrigin: options.payloadOrigin ?? FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
       previousNextUrl: options.previousNextUrl ?? "/members/7",
       renderId: 1,
       reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
+      suppliedInterceptionSource: options.suppliedInterceptionSource,
       type: options.type ?? "navigate",
     });
     return approvePendingNavigationCommit({
@@ -11345,6 +11663,119 @@ describe("elements an intercepted payload leaves for the client to keep", () => 
 
     expect(approval.approvedCommit).toBeNull();
     expect(approval.decision.disposition).toBe("hard-navigate");
+  });
+
+  // A traversal whose history entry no longer holds its tree can reuse the
+  // tree this client committed for the intercept, as the visited-response
+  // cache stores it. Next.js returns softly to the intercept over its source
+  // from any page, so the committed tree shows the source it was committed
+  // with, not the page the traversal starts from.
+  describe("a traversal back to a committed intercepted tree", () => {
+    async function commitIntercept(): Promise<AppElements> {
+      const sourceState = createSourceState();
+      const approval = await approve(sourceState, createInterceptedElements());
+      if (approval.approvedCommit === null) throw new Error("Expected approved visible commit");
+      const state = applyApprovedVisibleCommit(sourceState, approval.approvedCommit);
+      // The committed tree the visited-response cache stores for the entry.
+      return {
+        ...state.elements,
+        [AppElementsWire.keys.layoutIds]: state.layoutIds,
+        [AppElementsWire.keys.retainedElementIds]: [],
+        [AppElementsWire.keys.skippedLayoutIds]: [],
+        [AppElementsWire.keys.slotBindings]: state.slotBindings,
+      };
+    }
+
+    it("shows the intercept over the source it was committed with", async () => {
+      const committed = await commitIntercept();
+      const elsewhere = createState();
+
+      const approval = await approve(elsewhere, committed, {
+        operationLane: "traverse",
+        payloadOrigin: COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        suppliedInterceptionSource: resolveCommittedInterceptionSource(committed),
+        type: "traverse",
+      });
+
+      expect(approval.approvedCommit).not.toBeNull();
+      if (approval.approvedCommit === null) return;
+      const nextState = applyApprovedVisibleCommit(elsewhere, approval.approvedCommit);
+      expect(nextState.elements[PAGE_ID]).toBe(page);
+      expect(nextState.elements[MODAL_ID]).toBe("photo modal");
+      expect(nextState.interception).toEqual(interception);
+
+      // Against the page it starts from, the proof names no visible source.
+      const unsupplied = await approve(elsewhere, committed, {
+        operationLane: "traverse",
+        payloadOrigin: COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        type: "traverse",
+      });
+      expect(unsupplied.decision.disposition).toBe("hard-navigate");
+    });
+
+    it("names the proof's source only for a tree that holds the slot's layout", async () => {
+      const committed = await commitIntercept();
+      expect(resolveCommittedInterceptionSource(committed)).toEqual({
+        matchedUrl: "/members/7",
+        routeId: ROUTE_ID,
+      });
+
+      const { "layout:/members": _layout, ...withoutOwnerLayout } = committed;
+      expect(resolveCommittedInterceptionSource(withoutOwnerLayout)).toBeNull();
+      expect(resolveCommittedInterceptionSource(createInterceptedElements())).toBeNull();
+      expect(resolveCommittedInterceptionSource(createSourceState().elements)).toBeNull();
+
+      // Without the source the tree holds, the visible page is no source of
+      // the intercept and the traversal loads the document.
+      const approval = await approve(createState(), withoutOwnerLayout, {
+        operationLane: "traverse",
+        payloadOrigin: COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        suppliedInterceptionSource: resolveCommittedInterceptionSource(withoutOwnerLayout),
+        type: "traverse",
+      });
+      expect(approval.approvedCommit).toBeNull();
+      expect(approval.decision.disposition).toBe("hard-navigate");
+    });
+
+    // The cache keys an intercepted tree by its source's pathname, so a later
+    // intercept from the same page with another search replaces it. Next.js
+    // restores each history entry's own tree, so a traversal to an entry that
+    // names another source URL renders afresh instead.
+    it("is reused only for the history entry's own source URL", async () => {
+      const committed = await commitIntercept();
+      const createEntry = (elements: AppElements | undefined, previousNextUrl: string | null) =>
+        createVisitedResponseCacheEntry({
+          elements,
+          now: 0,
+          params: {},
+          previousNextUrl,
+          response: {
+            buffer: new ArrayBuffer(0),
+            contentType: "text/x-component",
+            paramsHeader: null,
+            renderedPathAndSearch: null,
+            url: "/photos/1.rsc",
+          },
+        });
+      const entry = createEntry(committed, "/members/7?tab=b");
+
+      expect(isVisitedResponseCacheEntryForPreviousNextUrl(entry, "/members/7?tab=b")).toBe(true);
+      expect(isVisitedResponseCacheEntryForPreviousNextUrl(entry, "/members/7?tab=a")).toBe(false);
+      expect(isVisitedResponseCacheEntryForPreviousNextUrl(entry, "/members/7")).toBe(false);
+      expect(
+        isVisitedResponseCacheEntryForPreviousNextUrl(createEntry(committed, null), "/members/7"),
+      ).toBe(false);
+      // Trees and responses without an intercept are the target's own render.
+      expect(
+        isVisitedResponseCacheEntryForPreviousNextUrl(
+          createEntry(createSourceState().elements, null),
+          "/members/7?tab=a",
+        ),
+      ).toBe(true);
+      expect(
+        isVisitedResponseCacheEntryForPreviousNextUrl(createEntry(undefined, null), "/members/7"),
+      ).toBe(true);
+    });
   });
 
   it("never classifies a payload that retains elements as complete", () => {

@@ -33,6 +33,7 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  resolveInterceptHeadFileMetadata,
   resolveInterceptLayoutsBesidePage,
   slotInterceptKeepsSourceHead,
   resolveAppPageHead,
@@ -47,7 +48,10 @@ import {
   resolveHttpAccessFallbackMetadata,
   resolveHttpAccessFallbackViewport,
 } from "./app-page-http-access-fallback-metadata.js";
-import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
+import {
+  resolveInterceptionSourceHead,
+  type AppPageInterceptOptions,
+} from "./app-page-element-builder.js";
 import { resolveSlotParamOverrides } from "./app-page-navigation-params.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
@@ -736,6 +740,43 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
         { slots: options.route?.slots ?? null },
         routePathname,
       );
+      // Like the intercepted render's own head, a head the intercepting tree
+      // heads reads that tree's metadata files. A slot intercept that keeps the
+      // source route's head keeps its files too; a whole intercepting route is
+      // headed by the intercepting tree, as its render is.
+      const rendersWholeInterceptingRoute =
+        intercept?.rendersInterceptionSource === true &&
+        intercept.rendersWholeInterceptingRoute === true;
+      const slotInterceptKey =
+        intercept?.interceptPage != null && !isSiblingIntercept
+          ? (intercept.interceptSlotKey ?? null)
+          : null;
+      const headFileMetadata = resolveInterceptHeadFileMetadata({
+        interceptParams: intercept?.interceptParams ?? null,
+        interceptSourceMatchedUrl: intercept?.interceptSourceMatchedUrl ?? null,
+        interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
+        interceptSlotKey:
+          slotInterceptKey !== null &&
+          options.route &&
+          (rendersWholeInterceptingRoute ||
+            !slotInterceptKeepsSourceHead({
+              interceptSlotKey: slotInterceptKey,
+              route: options.route,
+              sourceParallelRoutes: resolveActiveParallelRouteHeadInputs({
+                layoutTreePositions: options.route.layoutTreePositions,
+                params: options.matchedParams,
+                routeSegments: options.route.routeSegments ?? [],
+                slotParams,
+                slots: options.route.slots ?? null,
+              }),
+            }))
+            ? slotInterceptKey
+            : null,
+        isSiblingIntercept,
+        metadataRoutes: options.metadataRoutes,
+        params: options.matchedParams,
+        route: options.route ?? {},
+      });
       const parallelBranches = resolveActiveParallelRouteHeadInputs({
         interceptBranchSegments: intercept?.interceptBranchSegments ?? null,
         interceptLayouts: intercept?.interceptLayouts ?? null,
@@ -839,7 +880,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
             applyFileBasedMetadata: options.applyFileBasedMetadata,
             basePath: options.basePath ?? "",
             ...fallbackHeadOptions,
-            metadataRoutes: options.metadataRoutes,
+            ...headFileMetadata,
             routePath: options.route?.pattern ?? pathname,
           }),
         );
@@ -881,50 +922,69 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
           // intercept's page heads the route.
           const fullRouteSegments = route.routeSegments ?? [];
           const routePrimaryParallelBranch = resolvePrimaryParallelBranch(fullRouteSegments);
-          const sourceParallelBranches = resolveActiveParallelRouteHeadInputs({
-            layoutTreePositions: route.layoutTreePositions,
-            params: options.matchedParams,
-            routeSegments: fullRouteSegments,
-            slotParams,
-            slots: route.slots ?? null,
-          });
           const interceptSlotKey =
             intercept?.interceptPage != null && !isSiblingIntercept
               ? (intercept.interceptSlotKey ?? null)
               : null;
-          const routeParallelBranches =
-            interceptSlotKey === null ||
-            slotInterceptKeepsSourceHead({
-              interceptSlotKey,
-              route,
-              sourceParallelRoutes: sourceParallelBranches,
-            })
-              ? sourceParallelBranches
-              : resolveActiveParallelRouteHeadInputs({
-                  interceptBranchSegments: intercept?.interceptBranchSegments ?? null,
-                  interceptLayouts: intercept?.interceptLayouts ?? null,
-                  interceptLayoutSegments: intercept?.interceptLayoutSegments ?? null,
-                  interceptNotFoundBranchSegments:
-                    intercept?.interceptNotFoundBranchSegments ?? null,
-                  interceptNotFound: intercept?.interceptNotFound ?? null,
-                  interceptNotFoundTreePosition: intercept?.interceptNotFoundTreePosition ?? null,
-                  interceptPage: intercept?.interceptPage ?? null,
-                  interceptParams: intercept?.interceptParams ?? null,
-                  interceptSlotKey,
-                  interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
-                  layoutTreePositions: route.layoutTreePositions,
-                  params: options.matchedParams,
-                  routeSegments: fullRouteSegments,
-                  slotParams,
-                  slots: route.slots ?? null,
-                });
+          const resolveInterceptParallelBranches = (slotKey: string) =>
+            resolveActiveParallelRouteHeadInputs({
+              interceptBranchSegments: intercept?.interceptBranchSegments ?? null,
+              interceptLayouts: intercept?.interceptLayouts ?? null,
+              interceptLayoutSegments: intercept?.interceptLayoutSegments ?? null,
+              interceptNotFoundBranchSegments: intercept?.interceptNotFoundBranchSegments ?? null,
+              interceptNotFound: intercept?.interceptNotFound ?? null,
+              interceptNotFoundTreePosition: intercept?.interceptNotFoundTreePosition ?? null,
+              interceptPage: intercept?.interceptPage ?? null,
+              interceptParams: intercept?.interceptParams ?? null,
+              interceptSlotKey: slotKey,
+              interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
+              layoutTreePositions: route.layoutTreePositions,
+              params: options.matchedParams,
+              routeSegments: fullRouteSegments,
+              slotParams,
+              slots: route.slots ?? null,
+            });
           const routeLayoutModules = route.layouts ?? options.rootLayouts;
+          // A whole intercepting route heads as its render does: the layouts
+          // down to the slot's owner, the owner's `default` as its page and the
+          // intercepted slot's branch, which heads it after the default, and
+          // none of the other slots' defaults.
+          const wholeRouteHead =
+            interceptSlotKey !== null &&
+            intercept?.rendersInterceptionSource === true &&
+            intercept.rendersWholeInterceptingRoute === true
+              ? resolveInterceptionSourceHead({
+                  interceptSlotKey,
+                  parallelRouteHeadInputs: resolveInterceptParallelBranches(interceptSlotKey),
+                  route: { ...route, layouts: routeLayoutModules },
+                })
+              : null;
+          const routeParallelBranches = (() => {
+            if (wholeRouteHead) return [wholeRouteHead.interceptInput];
+            const sourceParallelBranches = resolveActiveParallelRouteHeadInputs({
+              layoutTreePositions: route.layoutTreePositions,
+              params: options.matchedParams,
+              routeSegments: fullRouteSegments,
+              slotParams,
+              slots: route.slots ?? null,
+            });
+            return interceptSlotKey === null ||
+              slotInterceptKeepsSourceHead({
+                interceptSlotKey,
+                route,
+                sourceParallelRoutes: sourceParallelBranches,
+              })
+              ? sourceParallelBranches
+              : resolveInterceptParallelBranches(interceptSlotKey);
+          })();
           const headOptions = {
             applyFileBasedMetadata: options.applyFileBasedMetadata,
             basePath: options.basePath ?? "",
-            layoutModules: routeLayoutModules,
-            layoutTreePositions: route.layoutTreePositions,
-            metadataRoutes: options.metadataRoutes,
+            layoutModules: wholeRouteHead?.layoutModules ?? routeLayoutModules,
+            layoutTreePositions: wholeRouteHead
+              ? wholeRouteHead.layoutTreePositions
+              : route.layoutTreePositions,
+            ...headFileMetadata,
             pageModule: isSiblingIntercept ? null : (route.page ?? null),
             parallelRoutes: [
               ...(routePrimaryParallelBranch ? [routePrimaryParallelBranch.head] : []),
@@ -946,14 +1006,14 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
           const recoveredHead = recoverAppPageRouteHead(prepareAppPageHead(headOptions), {
             applyFileBasedMetadata: options.applyFileBasedMetadata,
             basePath: options.basePath ?? "",
-            metadataRoutes: options.metadataRoutes,
+            ...headFileMetadata,
             resolvePlanOptions: () =>
               createRouteNotFoundHeadPlanOptions({
                 parallelBranches: routeParallelBranches,
                 params: effectiveParams,
                 primaryParallelBranch: routePrimaryParallelBranch,
                 rootNotFoundModule: options.rootNotFoundModule,
-                route: { ...route, layouts: routeLayoutModules },
+                route: wholeRouteHead?.notFoundRoute ?? { ...route, layouts: routeLayoutModules },
               }),
             routePath: route.pattern ?? pathname,
           });

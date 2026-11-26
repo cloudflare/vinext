@@ -31,7 +31,7 @@ import {
   __isDev,
   RESPONSIVE_WIDTHS,
   generateImageAttributes,
-  getFillStyle,
+  getImageStyle,
   imageOptimizationUrl,
   isDataOrBlobUrl,
   isRemoteUrl,
@@ -95,6 +95,36 @@ function createSyntheticLoadEvent(img: HTMLImageElement): React.SyntheticEvent<H
   };
 }
 
+const warnedMessages = new Set<string>();
+
+function warnOnce(message: string): void {
+  if (warnedMessages.has(message)) return;
+  warnedMessages.add(message);
+  console.warn(message);
+}
+
+/**
+ * Dev-only check that a loaded `fill` image without a narrower `sizes` is
+ * actually rendered close to the viewport width.
+ * Ported from Next.js `handleLoading` in packages/next/src/client/image-component.tsx.
+ */
+function warnFillImageSizes(img: HTMLImageElement, sizesInput: string | undefined): void {
+  if (sizesInput && sizesInput !== "100vw") return;
+  const widthViewportRatio = img.getBoundingClientRect().width / window.innerWidth;
+  if (widthViewportRatio >= 0.6) return;
+  const src = img.src;
+  const origSrc = new URL(src, "http://n").searchParams.get("url") || src;
+  if (sizesInput === "100vw") {
+    warnOnce(
+      `Image with src "${origSrc}" has "fill" prop and "sizes" prop of "100vw", but image is not rendered at full viewport width. Please adjust "sizes" to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes`,
+    );
+  } else {
+    warnOnce(
+      `Image with src "${origSrc}" has "fill" but is missing "sizes" prop. Please add it to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes`,
+    );
+  }
+}
+
 function preloadImageResource(input: {
   shouldPreload: boolean;
   src: string;
@@ -134,6 +164,9 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
     unoptimized: _unoptimized,
     overrideSrc,
     loading,
+    // Deprecated props: Next.js consumes them and applies them to fill images only.
+    objectFit,
+    objectPosition,
     ...rest
   },
   ref,
@@ -142,6 +175,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Matches Next.js behavior — prevents double-firing from React re-renders,
   // strict-mode double-invocation, or state updates inside the handler itself.
   // Ported from Next.js: https://github.com/vercel/next.js/pull/93209
+  const legacyFill = { objectFit, objectPosition };
   const lastLoadedSrcRef = useRef<string | undefined>(undefined);
   const lastErrorSrcRef = useRef<string | undefined>(undefined);
 
@@ -195,8 +229,24 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       ? loading
       : (loading ?? "lazy");
 
+  // Next.js treats these sources as unoptimized and skips the fill sizes check.
+  const isUnoptimized =
+    _unoptimized === true ||
+    __globallyUnoptimized ||
+    !src ||
+    isInlineSrc ||
+    (!loader && !__dangerouslyAllowSVG && isSvgUrl(src));
+  const checkFillSizes =
+    __isDev && fill && !isUnoptimized
+      ? (img: HTMLImageElement) => warnFillImageSizes(img, sizes)
+      : undefined;
+
   const [completedBlurSrc, setCompletedBlurSrc] = useState<string | undefined>(undefined);
   const blurComplete = completedBlurSrc === src;
+
+  // Next.js keeps the alt text transparent until the image fails to load
+  // (image-component.tsx: `showAltText`, set by the img's error handler).
+  const [showAltText, setShowAltText] = useState(false);
 
   const markBlurComplete = () => {
     if (placeholder !== "blur") return;
@@ -235,6 +285,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
             currentOnLoadingComplete?.(img);
           }
         }
+        checkFillSizes?.(img);
       }
       didInsertRef.current = true;
     }
@@ -242,7 +293,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
   // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
-  const handleLoad = onLoadingComplete
+  const handleUserLoad = onLoadingComplete
     ? (e: React.SyntheticEvent<HTMLImageElement>) => {
         if (lastLoadedSrcRef.current === src) return;
         lastLoadedSrcRef.current = src;
@@ -264,21 +315,21 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
             markBlurComplete();
           }
         : undefined;
-
-  const handleError = onError
+  const handleLoad = checkFillSizes
     ? (e: React.SyntheticEvent<HTMLImageElement>) => {
-        if (lastErrorSrcRef.current === src) return;
-        lastErrorSrcRef.current = src;
-        markBlurComplete();
-        onError(e);
+        handleUserLoad?.(e);
+        checkFillSizes(e.currentTarget);
       }
-    : placeholder === "blur"
-      ? () => {
-          if (lastErrorSrcRef.current === src) return;
-          lastErrorSrcRef.current = src;
-          markBlurComplete();
-        }
-      : undefined;
+    : handleUserLoad;
+
+  const handleError = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    // If the real image fails to load, this will ensure "alt" is visible.
+    setShowAltText(true);
+    if (lastErrorSrcRef.current === src) return;
+    lastErrorSrcRef.current = src;
+    markBlurComplete();
+    onError?.(e);
+  };
 
   if (_unoptimized === true || __globallyUnoptimized || isInlineSrc) {
     // Unoptimized images are fetched directly by the browser, so intentionally
@@ -311,11 +362,11 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         fetchPriority={priorityFetchPriority}
         decoding="async"
         className={className}
-        data-nimg={fill ? "fill" : "1"}
         onLoad={handleLoad}
         onError={handleError}
-        style={fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style }}
+        style={getImageStyle(fill, style, blurStyle, legacyFill, showAltText)}
         {...rest}
+        data-nimg={fill ? "fill" : "1"}
       />
     );
   }
@@ -343,8 +394,9 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         className={className}
         onLoad={handleLoad}
         onError={handleError}
-        style={fill ? getFillStyle(style) : style}
+        style={getImageStyle(fill, style, undefined, legacyFill, showAltText)}
         {...rest}
+        data-nimg={fill ? "fill" : "1"}
       />
     );
   }
@@ -399,11 +451,11 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
           decoding="async"
           sizes={imageSizes}
           className={className}
-          data-nimg="fill"
           onLoad={handleLoad}
           onError={handleError}
-          style={getFillStyle(style, blurStyle)}
+          style={getImageStyle(true, style, blurStyle, legacyFill, showAltText)}
           {...rest}
+          data-nimg="fill"
         />
       );
     }
@@ -412,7 +464,9 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       // @unpic/react forwards additional image props through transformProps and
       // merges `style` with generated layout styles at runtime, but its public
       // React type omits `style`.
-      const unpicRuntimeStyleProps: { style?: React.CSSProperties } = { style };
+      const unpicRuntimeStyleProps: { style?: React.CSSProperties } = {
+        style: getImageStyle(false, style, undefined, undefined, showAltText),
+      };
       preloadImageResource({
         shouldPreload,
         src,
@@ -431,6 +485,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
           fetchPriority={priorityFetchPriority}
           sizes={sizes}
           className={className}
+          data-nimg="1"
           {...unpicRuntimeStyleProps}
           background={bg}
           onLoad={handleLoad}
@@ -456,8 +511,8 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_next/image with the appropriate width.
   const optimizedAttributes =
-    imgWidth && !fill && !skipOptimization
-      ? generateImageAttributes(src, imgWidth, imgQuality, sizes)
+    (fill || imgWidth) && !skipOptimization
+      ? generateImageAttributes(src, fill ? undefined : imgWidth, imgQuality, sizes)
       : undefined;
   const srcSet = optimizedAttributes
     ? optimizedAttributes.srcSet
@@ -512,11 +567,11 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       srcSet={srcSet}
       sizes={imageSizes}
       className={className}
-      data-nimg={fill ? "fill" : "1"}
       onLoad={handleLoad}
       onError={handleError}
-      style={fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style }}
+      style={getImageStyle(fill, style, blurStyle, legacyFill, showAltText)}
       {...rest}
+      data-nimg={fill ? "fill" : "1"}
     />
   );
 });

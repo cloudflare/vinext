@@ -13,7 +13,7 @@ import React from "react";
  * beforeInteractive scripts flow through here, mirroring Next.js which registers
  * inline and src beforeInteractive scripts equally in the App Router runtime
  * (`(self.__next_s=...).push(...)`). An entry has `src` set for external
- * scripts and `innerHTML` set for inline scripts (never both).
+ * scripts and `content` set for inline scripts (never both).
  */
 export type BeforeInteractiveInlineScript = {
   /** Optional id attribute. */
@@ -21,10 +21,11 @@ export type BeforeInteractiveInlineScript = {
   /** External script URL. Set for src beforeInteractive scripts. */
   src?: string;
   /**
-   * Pre-escaped inline content (already passed through `escapeInlineContent`).
-   * Set for inline beforeInteractive scripts; omitted for src scripts.
+   * Raw inline script content, exactly as the author wrote it. The renderer
+   * encodes it as HTML-safe JSON, never as raw HTML. Set for inline
+   * beforeInteractive scripts; omitted for src scripts.
    */
-  innerHTML?: string;
+  content?: string;
   /** Nonce to emit on the `<script>` tag, when CSP is enabled. */
   nonce?: string;
   /**

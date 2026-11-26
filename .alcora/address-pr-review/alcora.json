@@ -3,7 +3,7 @@
   "type": "workflow",
   "name": "vinext/address-pr-review",
   "title": "Address PR review",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "description": "Takes a fix's draft pull request to the point where a maintainer only has to review it. Once its checks pass on a head BigBonk wasn't asked about, it asks BigBonk, and asks again when BigBonk says nothing for 15 minutes. Every review from BigBonk, Clanky or a maintainer, and the checks finishing, is a round in the sandbox that wrote the fix: findings are addressed and answered, reviewers are asked again, and once the head has the approvals it needs and the checks pass, the pull request is ready for review and the issue hears of it.",
   "readme": "README.md",
   "license": "MIT",
@@ -182,22 +182,38 @@
         }
       },
       {
-        "id": "say_ready",
-        "kind": "github.comment",
-        "name": "Say a fix is ready",
+        "id": "stack_ready",
+        "kind": "logic.if",
+        "name": "Whole stack ready?",
         "at": [11, 0],
         "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.fix_ready.outputs.stack_ready",
+              "op": "==",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      {
+        "id": "say_ready",
+        "kind": "issues.comment",
+        "name": "Say a fix is ready",
+        "at": [12, 0],
+        "config": {
           "target": "issue",
-          "body": "### A fix is ready for review: {{ trigger.pull_request.url | ref }}\n\nA pull request fixes this, with the reproduction kept as a regression test. {{ steps.approvals.outputs.approved }} approved its head, and its checks pass: it is waiting for a maintainer.\n\n<sub>Fixed by an AI agent; it may be wrong. · [Triage report]({{trigger.triage.url}}) · [Run #{{run.number}}]({{run.url}})</sub>",
+          "body": "{{#if trigger.issue.confidential}}### A fix is ready for review\n\nA fix is waiting for a maintainer, with the reproduction kept as a regression test. Its reviews approve it and its checks pass.\n\n{{else}}### A fix is ready for review: {{#if steps.fix_ready.outputs.stacked}}{{ steps.fix_ready.outputs.stack }}{{else}}{{ trigger.pull_request.url | ref }}{{/if}}\n\n{{#if steps.fix_ready.outputs.stacked}}A stack of {{ steps.fix_ready.outputs.stack_size }} pull requests fixes this, with the reproduction kept as a regression test. They merge in that order. Every one has the approvals it needs on its head, and its checks pass: they are waiting for a maintainer.{{else}}A pull request fixes this, with the reproduction kept as a regression test. {{ steps.approvals.outputs.approved }} approved its head, and its checks pass: it is waiting for a maintainer.{{/if}}\n\n{{/if}}<sub>Fixed by an AI agent; it may be wrong. · [Triage report]({{trigger.triage.url}}) · [Run #{{run.number}}]({{run.url}})</sub>",
           "mode": "news",
-          "news": "{{ trigger.pull_request.url }}"
+          "news": "{{#if steps.fix_ready.outputs.stacked}}{{ steps.fix_ready.outputs.stack }}{{else}}{{ trigger.pull_request.url }}{{/if}}"
         }
       },
       {
         "id": "label_ready",
-        "kind": "github.label",
+        "kind": "issues.label",
         "name": "Label it ready",
-        "at": [11, 1],
+        "at": [12, 1],
         "config": {
           "target": "issue",
           "labels": ["fix: ready"],
@@ -371,9 +387,48 @@
         }
       },
       {
+        "id": "was_ready",
+        "kind": "logic.if",
+        "name": "Was it ready?",
+        "at": [5, 6.4],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.pull_request.state",
+              "op": "==",
+              "value": "fix_ready"
+            }
+          ]
+        }
+      },
+      {
+        "id": "reopen",
+        "kind": "pulls.state",
+        "name": "Fixing again",
+        "at": [5, 7.6],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "in_review",
+          "note": "{{#if trigger.checks.commit}}Its checks failed on {{trigger.checks.commit}}{{else}}{{ trigger.review.author }} reviewed it with findings{{/if}}, which are being addressed."
+        }
+      },
+      {
+        "id": "label_reopen",
+        "kind": "issues.label",
+        "name": "Back in progress",
+        "at": [6, 7.6],
+        "config": {
+          "target": "issue",
+          "labels": ["fix: in progress"],
+          "remove": ["fix: ready"]
+        }
+      },
+      {
         "id": "rounds",
         "kind": "logic.if",
-        "name": "Under 30 rounds?",
+        "name": "Under 50 rounds?",
         "at": [6, 8.8],
         "config": {
           "mode": "all",
@@ -381,7 +436,7 @@
             {
               "path": "trigger.session.rounds",
               "op": "<",
-              "value": "30"
+              "value": "50"
             }
           ]
         }
@@ -503,7 +558,7 @@
       },
       {
         "id": "fixing_again",
-        "kind": "github.label",
+        "kind": "issues.label",
         "name": "Still fixing",
         "at": [14, 13.6],
         "config": {
@@ -865,7 +920,7 @@
           "pull": "{{trigger.pull_request.number}}",
           "approvedBy": "",
           "state": "stalled",
-          "note": "It took 30 rounds of review without settling."
+          "note": "It took 50 rounds of review without settling."
         }
       },
       {
@@ -894,7 +949,7 @@
       },
       {
         "id": "done_fixing",
-        "kind": "github.label",
+        "kind": "issues.label",
         "name": "Done fixing",
         "at": [17, 7.8],
         "config": {
@@ -915,8 +970,9 @@
       ["approvals", "checks_pass", "yes"],
       ["checks_pass", "ready", "yes"],
       ["ready", "fix_ready"],
-      ["fix_ready", "say_ready"],
-      ["fix_ready", "label_ready"],
+      ["fix_ready", "stack_ready"],
+      ["stack_ready", "say_ready", "yes"],
+      ["stack_ready", "label_ready", "yes"],
       ["approvals", "awaiting", "no"],
       ["awaiting", "fixing_again"],
       ["verdict", "bonk_timeout", "no_review"],
@@ -932,7 +988,11 @@
       ["clanky_asks", "stall_review", "no"],
       ["clanky_waits", "from_bot", "no"],
       ["from_bot", "stall_review", "yes"],
-      ["verdict", "rounds", "findings"],
+      ["verdict", "was_ready", "findings"],
+      ["was_ready", "reopen", "yes"],
+      ["reopen", "label_reopen"],
+      ["label_reopen", "rounds"],
+      ["was_ready", "rounds", "no"],
       ["rounds", "address", "yes"],
       ["rounds", "stall_rounds", "no"],
       ["address", "store_address"],
@@ -967,7 +1027,7 @@
       ["checks_left", "stall_human", "yes"],
       ["checks", "checks_current"],
       ["checks_current", "checks_failed", "yes"],
-      ["checks_failed", "rounds", "yes"],
+      ["checks_failed", "was_ready", "yes"],
       ["checks_failed", "approvals", "no"],
       ["checks_failed", "bonk_unasked", "no"],
       ["bonk_unasked", "first_bonk", "yes"],
@@ -1003,7 +1063,7 @@
       }
     ],
     "dependencies": {
-      "alcora/issue-fix": "^2.1.0",
+      "alcora/issue-fix": "^2.5.0",
       "alcora/github-user": "^1.0.0",
       "alcora/classify": "^1.1.0"
     },

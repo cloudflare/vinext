@@ -73,6 +73,7 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       ...(slot.notFoundPaths ?? []),
       ...slot.interceptingRoutes.flatMap((intercept) => [
         intercept.pagePath,
+        intercept.ownerDefaultPath,
         ...intercept.layoutPaths,
         ...(intercept.loadingPaths ?? []),
         intercept.notFoundPath,

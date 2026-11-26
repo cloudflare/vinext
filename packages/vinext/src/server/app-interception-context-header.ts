@@ -1,3 +1,24 @@
+import { restoreBasePath } from "../utils/base-path.js";
+
+/**
+ * The interception context of an unmatched URL's not-found page. Next.js
+ * builds `Next-Url` from the rendered router tree, which is then /_not-found.
+ */
+export const ROUTE_MISS_INTERCEPTION_CONTEXT = "/_not-found";
+
+/** The source href a state opened from an unmatched URL's not-found page keeps. */
+export function getRouteMissInterceptionSourceHref(basePath: string): string {
+  return restoreBasePath(ROUTE_MISS_INTERCEPTION_CONTEXT, basePath);
+}
+
+/** Whether a state's source is an unmatched URL's not-found page. */
+export function isRouteMissInterceptionSource(
+  previousNextUrl: string | null,
+  basePath: string,
+): boolean {
+  return previousNextUrl === getRouteMissInterceptionSourceHref(basePath);
+}
+
 /**
  * Normalize the `x-vinext-interception-context` header from inbound requests.
  *
@@ -24,7 +45,10 @@
  *
  * Anything that fails validation returns null, matching the prior behavior of
  * an absent header. This is intentionally more permissive than rejecting the
- * whole request — interception is a progressive enhancement.
+ * whole request — interception is a progressive enhancement. Next.js never
+ * rejects a request over its `Next-Url`, so the RSC handler also treats a value
+ * that passes these bounds but names no canonical source pathname as absent,
+ * and the target renders on its own.
  */
 
 /** Hard cap on the byte length of the interception-context header value. */

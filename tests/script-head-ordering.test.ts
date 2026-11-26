@@ -50,6 +50,37 @@ function extractHeadHtml(html: string): string {
   return html.slice(openMatch.index + openMatch[0].length, closeIndex);
 }
 
+type HoistedInlineScript = {
+  index: number;
+  tag: string;
+  attrs: Record<string, string>;
+  content: string;
+};
+
+/**
+ * Find the hoisted loaders for inline beforeInteractive scripts. Each loader
+ * carries `[[name, value], ...]` attribute pairs and the body as HTML-safe
+ * JSON, which never contains `<`, so the first `)</script>` after the payload
+ * ends it.
+ */
+function findHoistedInlineScripts(html: string): HoistedInlineScript[] {
+  return [
+    ...html.matchAll(/<script\b[^>]*>[^<]*\(document\.currentScript,([^<]*)\)<\/script[^>]*>/gi),
+  ].map((match) => {
+    const [attrs, content] = JSON.parse(match[1] ?? "") as [[string, string][], string];
+    return {
+      index: match.index,
+      tag: /^<script\b[^>]*>/i.exec(match[0])?.[0] ?? "",
+      attrs: Object.fromEntries(attrs),
+      content,
+    };
+  });
+}
+
+function findHoistedInlineScript(html: string, id: string): HoistedInlineScript | undefined {
+  return findHoistedInlineScripts(html).find((script) => script.attrs.id === id);
+}
+
 function indexOfMatch(html: string, pattern: RegExp): number {
   const match = pattern.exec(html);
   return match ? match.index : -1;
@@ -75,7 +106,7 @@ describe("inline beforeInteractive head ordering", () => {
     expect(res.status).toBe(200);
 
     const head = extractHeadHtml(html);
-    const scriptIndex = indexOfMatch(head, /<script\b[^>]*id="vinext-test-theme-init"/);
+    const scriptIndex = findHoistedInlineScript(head, "vinext-test-theme-init")?.index ?? -1;
     const stylesheetIndex = indexOfMatch(head, /<link\b[^>]*rel="stylesheet"/);
 
     expect(
@@ -96,7 +127,7 @@ describe("inline beforeInteractive head ordering", () => {
     const { html } = await fetchHtml(baseUrl, ROUTE);
     const head = extractHeadHtml(html);
 
-    const scriptIndex = indexOfMatch(head, /<script\b[^>]*id="vinext-test-theme-init"/);
+    const scriptIndex = findHoistedInlineScript(head, "vinext-test-theme-init")?.index ?? -1;
     const modulePreloadIndex = indexOfMatch(head, /<link\b[^>]*rel="modulepreload"/);
 
     expect(scriptIndex).toBeGreaterThanOrEqual(0);
@@ -110,7 +141,7 @@ describe("inline beforeInteractive head ordering", () => {
   it("emits the inline beforeInteractive <script> before every preload link", async () => {
     const { html } = await fetchHtml(baseUrl, ROUTE);
     const head = extractHeadHtml(html);
-    const scriptIndex = indexOfMatch(head, /<script\b[^>]*id="vinext-test-theme-init"/);
+    const scriptIndex = findHoistedInlineScript(head, "vinext-test-theme-init")?.index ?? -1;
     expect(scriptIndex).toBeGreaterThanOrEqual(0);
 
     // Any preload link (stylesheet, script, font) emitted by React Float or
@@ -128,35 +159,46 @@ describe("inline beforeInteractive head ordering", () => {
   it("does not duplicate the inline script inside <head>", async () => {
     const { html } = await fetchHtml(baseUrl, ROUTE);
     const head = extractHeadHtml(html);
-    const matches = [...head.matchAll(/<script\b[^>]*id="vinext-test-theme-init"/g)];
-    expect(matches).toHaveLength(1);
+    const hoisted = findHoistedInlineScripts(head).filter(
+      (script) => script.attrs.id === "vinext-test-theme-init",
+    );
+    expect(hoisted).toHaveLength(1);
+    expect(head).not.toMatch(/<script\b[^>]*id="vinext-test-theme-init"/);
   });
 
   it("preserves the inline script's body content", async () => {
     const { html } = await fetchHtml(baseUrl, ROUTE);
-    expect(html).toMatch(
-      /<script\b[^>]*id="vinext-test-theme-init"[^>]*>self\.__vinextThemeInitRan = true;<\/script>/,
+    expect(findHoistedInlineScript(html, "vinext-test-theme-init")?.content).toBe(
+      "self.__vinextThemeInitRan = true;",
     );
   });
 
-  it("escapes a <script opener in inline children so data cannot swallow the document", async () => {
-    // The /beforeinteractive-script-data page embeds `{"name":"<!--<script>"}`
-    // in an inline beforeInteractive Script. Left raw, `<!--<script>` puts the
-    // HTML tokenizer in the double-escaped script state, so the hoisted
-    // script's own `</script>` no longer closes it and the markup that follows
-    // becomes its text. React Fizz rewrites both `<script` and `</script`
-    // in script children to the `\u0073` form; the hoisted tag must match.
+  it("keeps markup in inline script data out of the HTML", async () => {
+    // The /beforeinteractive-script-data page embeds `<!--<script>`,
+    // `</head>` and `</body></html>` in string data of an inline
+    // beforeInteractive Script. Like Next.js, the hoisted tag carries the body
+    // as HTML-safe JSON, so none of it can open a tag, close the script, or
+    // match the stream's own `</head>` and `</body></html>` insertion points.
     const { res, html } = await fetchHtml(baseUrl, "/beforeinteractive-script-data");
     expect(res.status).toBe(200);
-    expect(html).toContain('self.__vinextScriptData = {"name":"<!--<\\u0073cript>"};</script>');
-    expect(html).not.toContain("<!--<script>");
+    const head = extractHeadHtml(html);
+    expect(findHoistedInlineScript(head, "vinext-test-script-data")?.content).toBe(
+      'self.__vinextScriptData = {"name":"<!--<script>","bio":"</head><p id=\\"profile-bio\\">bio</p></body></html>"};',
+    );
+    expect(head).not.toContain("<!--<script>");
+    expect(head).not.toContain("<p id=");
+    // The navigation runtime's own head scripts still land before the real
+    // `</head>`, outside the hoisted payload.
+    expect(head).toContain("vinext.navigationRuntime");
   });
 
   it("preserves passthrough attributes like data-*", async () => {
     const { html } = await fetchHtml(baseUrl, ROUTE);
     const head = extractHeadHtml(html);
-    const tagMatch = /<script\b[^>]*id="vinext-test-theme-init"[^>]*>/.exec(head);
-    expect(tagMatch?.[0]).toContain('data-vinext-test="theme-init"');
+    expect(findHoistedInlineScript(head, "vinext-test-theme-init")?.attrs).toMatchObject({
+      "data-vinext-test": "theme-init",
+      "data-nscript": "beforeInteractive",
+    });
   });
 
   it("applies the CSP nonce header to the hoisted inline script", async () => {
@@ -168,9 +210,11 @@ describe("inline beforeInteractive head ordering", () => {
     expect(res.headers.get("content-security-policy")).toMatch(/nonce-ordering-nonce/);
 
     const head = extractHeadHtml(html);
-    const tagMatch = /<script\b[^>]*id="vinext-test-theme-init"[^>]*>/.exec(head);
-    expect(tagMatch).not.toBeNull();
-    expect(tagMatch?.[0]).toContain('nonce="ordering-nonce"');
+    const hoisted = findHoistedInlineScript(head, "vinext-test-theme-init");
+    expect(hoisted).toBeDefined();
+    // The loader runs under the nonce, and so does the script it creates.
+    expect(hoisted?.tag).toContain('nonce="ordering-nonce"');
+    expect(hoisted?.attrs.nonce).toBe("ordering-nonce");
   });
 
   it("hoists external src beforeInteractive scripts into <head> with the data-nscript marker", async () => {

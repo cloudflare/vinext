@@ -1,0 +1,731 @@
+name: Next.js Deploy Suite (one Next.js version)
+
+# Runs the whole deploy suite against one Next.js ref. nextjs-deploy-suite.yml
+# calls this once per Next.js version, in parallel, so every artifact, cache
+# key and published run below is scoped to `inputs.next-ref`. Artifact and
+# cache names use the build job's `slug` output, a name-safe form of the ref.
+on:
+  workflow_call:
+    inputs:
+      vinext-ref:
+        description: vinext branch/ref to test. Empty = the triggering ref.
+        required: false
+        default: ""
+        type: string
+      vinext-sha:
+        description: Commit `vinext-ref` resolved to, shared by every version of one run
+        required: true
+        type: string
+      run-created-at:
+        description: When the calling workflow run was created (Unix ms). Orders published results and classifications, so overlapping runs can finish in any order.
+        required: true
+        type: string
+      next-ref:
+        description: Next.js ref to test against
+        required: true
+        type: string
+      suite-filter:
+        required: false
+        default: all
+        type: string
+      test-path:
+        required: false
+        default: ""
+        type: string
+      test-concurrency:
+        required: false
+        default: "2"
+        type: string
+      backfill-date:
+        required: false
+        default: ""
+        type: string
+      run-skipped-deployment-tests:
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      COMPAT_INGEST_SECRET:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build vinext + Next.js
+    # Browsers come from the Next.js checkout's pinned Playwright, which
+    # doesn't support Ubuntu 26.04 (what ubuntu-latest runs), so stay on 24.04.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40 # includes up to 10 minutes of classification retries
+    outputs:
+      publish-results: ${{ steps.publish.outputs.results }}
+      slug: ${{ steps.publish.outputs.slug }}
+    steps:
+      # Decide once whether this run is published to /compatibility. Results
+      # are stored per Next.js version, so every release tag (e.g. v16.4.6)
+      # gets its own series; the site only shows its public version unless
+      # `?version=` selects another one.
+      #
+      # Guardrails:
+      #   - Only the full suite (suite-filter=all, no test-path). Filtered
+      #     runs would publish a misleading partial snapshot that drags the
+      #     historical pass-rate trend off-course.
+      #   - Only when testing main. Scheduled runs always test main; manual
+      #     runs must leave `vinext-ref` at main. Branch runs are useful for
+      #     spot-checks but should not pollute the historical record.
+      #   - Only Next.js release tags, so branch refs used for investigation
+      #     never create a series.
+      #   - Not when the run includes suites that skip deploy mode upstream;
+      #     the published snapshots never run them.
+      #   - Historical backfills are an explicit manual exception. They must
+      #     supply a full SHA and valid past date (validated below), while the
+      #     main-ref gate lets PR branches exercise a dry run safely.
+      #     Backfills publish results only: they don't re-classify suites.
+      - name: Decide publishing
+        id: publish
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TRIGGER_REF: ${{ github.ref }}
+          VINEXT_REF: ${{ inputs.vinext-ref }}
+          NEXT_REF: ${{ inputs.next-ref }}
+          SUITE_FILTER: ${{ inputs.suite-filter }}
+          TEST_PATH: ${{ inputs.test-path }}
+          BACKFILL_DATE: ${{ inputs.backfill-date }}
+          RUN_SKIPPED: ${{ inputs.run-skipped-deployment-tests }}
+        run: |
+          # Artifact and cache names can't hold every character a Git ref
+          # can (e.g. `/`), so they use a slug. A ref that needed changing
+          # gets a hash suffix, so two refs never share a slug.
+          slug="${NEXT_REF//[^A-Za-z0-9._-]/-}"
+          if [ "${slug}" != "${NEXT_REF}" ]; then
+            slug="${slug}-$(printf '%s' "${NEXT_REF}" | sha256sum | cut -c1-8)"
+          fi
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
+          results=false
+          classify=false
+          if [ "${SUITE_FILTER}" = all ] && [ -z "${TEST_PATH}" ] && [ "${RUN_SKIPPED}" != true ] \
+            && [[ "${NEXT_REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            if [ -n "${BACKFILL_DATE}" ]; then
+              if [ "${EVENT_NAME}" = workflow_dispatch ] && [ "${TRIGGER_REF}" = refs/heads/main ]; then
+                results=true
+              fi
+            elif { [ "${EVENT_NAME}" = schedule ] && [ "${TRIGGER_REF}" = refs/heads/main ]; } \
+              || { [ "${EVENT_NAME}" = workflow_dispatch ] && { [ "${VINEXT_REF}" = main ] || [ -z "${VINEXT_REF}" ]; }; }; then
+              results=true
+              classify=true
+            fi
+          fi
+          echo "Publish results: ${results}; publish classification: ${classify}"
+          echo "results=${results}" >> "$GITHUB_OUTPUT"
+          echo "classify=${classify}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout vinext
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Backfills retain the current workflow harness in the workspace and
+          # check out the historical vinext source separately below.
+          ref: ${{ inputs.backfill-date && github.sha || inputs.vinext-sha }}
+
+      - name: Validate backfill inputs
+        if: inputs.backfill-date != ''
+        env:
+          BACKFILL_DATE: ${{ inputs.backfill-date }}
+          VINEXT_REF: ${{ inputs.vinext-ref }}
+        run: |
+          node <<'EOF'
+          const { BACKFILL_DATE, VINEXT_REF } = process.env
+          const createdAt = Date.parse(`${BACKFILL_DATE}T02:00:00Z`)
+          if (!/^[0-9a-f]{40}$/i.test(VINEXT_REF || '')) {
+            throw new Error('Backfills require a full 40-character vinext commit SHA')
+          }
+          if (
+            !/^\d{4}-\d{2}-\d{2}$/.test(BACKFILL_DATE || '') ||
+            !Number.isFinite(createdAt) ||
+            new Date(createdAt).toISOString() !== `${BACKFILL_DATE}T02:00:00.000Z` ||
+            createdAt > Date.now()
+          ) {
+            throw new Error('backfill-date must be a valid past YYYY-MM-DD date')
+          }
+          EOF
+
+      - name: Checkout historical vinext
+        if: inputs.backfill-date != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.vinext-ref }}
+          path: historical-vinext
+
+      - uses: ./.github/actions/setup
+        with:
+          node-version: ${{ inputs.backfill-date && '22' || '24' }}
+          run-install: ${{ inputs.backfill-date == '' }}
+
+      - name: Install historical vinext
+        if: inputs.backfill-date != ''
+        working-directory: historical-vinext
+        run: vp install --frozen-lockfile
+
+      - name: Enable pnpm shim for Next.js scripts
+        run: corepack enable pnpm
+
+      - name: Checkout Next.js
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: vercel/next.js
+          ref: ${{ inputs.next-ref }}
+          path: next.js
+
+      # Share the playwright-chromium cache with ci.yml, which keeps it hot
+      # on every run. Restore-only — ci.yml owns saving. Sidesteps the
+      # upstream Playwright extraction hang that started 2026-05-22 (runs
+      # 26265986264, 26279790373, 26281061094, 26281758803) by avoiding
+      # the download+extract path entirely on cache hit. The lockfile lives
+      # under next.js/ because that's where the prepare-step install pulls
+      # `playwright` from; if Next.js bumps Playwright before vinext does,
+      # the cache key won't match ci.yml's and we'd need to seed by running
+      # vinext's CI once on the new version first.
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        uses: ./.github/actions/playwright-cache
+        with:
+          browser: chromium
+          lockfile: next.js/pnpm-lock.yaml
+          mode: restore
+
+      - name: Build vinext
+        if: inputs.backfill-date == ''
+        run: vp run vinext#build
+
+      - name: Build historical vinext
+        if: inputs.backfill-date != ''
+        working-directory: historical-vinext
+        run: corepack pnpm build
+
+      - name: Prepare Next.js checkout
+        timeout-minutes: 15
+        run: bash scripts/run-nextjs-deploy-suite.sh "$GITHUB_WORKSPACE/next.js"
+        env:
+          CI: true
+          VINEXT_BUILD: "0"
+          NEXTJS_PREPARE: "1"
+          NEXTJS_PREPARE_ONLY: "1"
+          # The React-dependent test expectation updates follow the React
+          # installed in the vinext tree under test, including backfills.
+          VINEXT_DIR: ${{ inputs.backfill-date && format('{0}/historical-vinext', github.workspace) || github.workspace }}
+          # The Next.js workspace pulls `playwright-chromium` as a transitive
+          # dep, whose postinstall downloads Chrome via the Playwright CDN.
+          # Since 2026-05-22 that postinstall has wedged on this runner after
+          # the 167 MiB Chrome zip downloads but before extraction completes,
+          # silently consuming the whole job timeout (runs 26265986264,
+          # 26279790373, 26281061094). The explicit `pnpm playwright install
+          # chromium chromium-headless-shell` later in the prepare script is
+          # what actually provisions the browsers we use at test time, so
+          # skipping the transitive postinstall is safe.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+      # The workspace is the vinext-ref checkout, so a ref from before the
+      # skipped-deployment patch prepares a pristine harness. Fail instead of
+      # silently running the placeholder tests.
+      - name: Check the skipped-deployment harness patch
+        if: inputs.run-skipped-deployment-tests
+        run: |
+          if ! grep -q VINEXT_RUN_SKIPPED_DEPLOYMENT_TESTS "$GITHUB_WORKSPACE/next.js/test/lib/e2e-utils/index.ts"; then
+            echo "::error::run-skipped-deployment-tests needs a vinext-ref that includes scripts/patch-nextjs-skip-deployment.mjs"
+            exit 1
+          fi
+
+      - name: Generate deploy manifest
+        env:
+          SUITE_FILTER: ${{ inputs.suite-filter }}
+          TEST_PATH: ${{ inputs.test-path }}
+        run: |
+          args=(
+            "$GITHUB_WORKSPACE/next.js"
+            "$GITHUB_WORKSPACE/nextjs-deploy-manifest.json"
+            --filter "${SUITE_FILTER}"
+          )
+          if [ -n "${TEST_PATH:-}" ]; then
+            args+=(--match "${TEST_PATH}")
+          fi
+          node scripts/nextjs-deploy-manifest.mjs "${args[@]}"
+
+      # Classify every Next.js e2e test file by which router(s) its fixture
+      # exercises. The classification is independent of the test results —
+      # it describes the Next.js checkout itself — so we POST it to its own
+      # endpoint here in the build job and don't pass it through the test /
+      # report jobs. The /compatibility UI joins it onto each result row at
+      # query time.
+      - name: Classify Next.js test suites by router
+        env:
+          NEXTJS_DIR: ${{ github.workspace }}/next.js
+        run: |
+          # 1) Enumerate every *.test.{ts,tsx,js,jsx} under next.js/test/e2e/.
+          # 2) Run the classifier (walks each fixture dir, decides router kind).
+          node scripts/list-nextjs-e2e-suites.mjs "$NEXTJS_DIR" nextjs-all-suites.json
+          node scripts/classify-nextjs-suites.mjs \
+            "$NEXTJS_DIR" \
+            nextjs-all-suites.json \
+            nextjs-suite-routers.json
+
+      # Submit the classification to the worker. Decoupled from results
+      # ingestion so a re-classify can happen without re-running tests, and
+      # so a partial test run still publishes fresh classifications.
+      # Classifications are stored per Next.js version, since a suite's
+      # fixture can change between versions.
+      #
+      # Gated by the "Decide publishing" step at the top of this job.
+      # A filtered run still produces a complete classification (the
+      # classifier walks the whole Next.js checkout regardless of which
+      # tests will actually run), so the partial-data argument from the
+      # results endpoint doesn't apply here — but we keep the same gates
+      # for consistency and to avoid surprising the operator running a
+      # one-off workflow_dispatch.
+      - name: Submit suite classification to worker
+        if: steps.publish.outputs.classify == 'true'
+        env:
+          COMPAT_INGEST_URL: ${{ vars.COMPAT_INGEST_URL || 'https://vinext-web.vinext.workers.dev/api/compatibility' }}
+          COMPAT_INGEST_SECRET: ${{ secrets.COMPAT_INGEST_SECRET }}
+          NEXT_REF: ${{ inputs.next-ref }}
+          STARTED_AT: ${{ inputs.run-created-at }}
+        run: |
+          if [ -z "${COMPAT_INGEST_SECRET:-}" ]; then
+            echo "COMPAT_INGEST_SECRET not configured; skipping classification submission."
+            exit 0
+          fi
+          # Convert the suite → router map (object) into the endpoint's
+          # expected `{ nextRef, classifiedAt, suites: [{ suite, router }, ...] }` shape.
+          # Done with node to avoid a jq dependency and to keep the JSON
+          # construction safely string-typed.
+          node -e '
+            const fs = require("node:fs");
+            const map = JSON.parse(fs.readFileSync("nextjs-suite-routers.json", "utf8"));
+            const body = {
+              nextRef: process.env.NEXT_REF,
+              // The endpoint keeps a newer stored classification over an
+              // older run that posts later.
+              classifiedAt: Number(process.env.STARTED_AT),
+              suites: Object.entries(map).map(([suite, router]) => ({ suite, router })),
+            };
+            fs.writeFileSync("nextjs-classify-payload.json", JSON.stringify(body));
+            console.log("Classify payload:", body.suites.length, "suites");
+          '
+          CLASSIFY_URL="${COMPAT_INGEST_URL%/api/compatibility}/api/compatibility/classify"
+          echo "Submitting classifications to ${CLASSIFY_URL}"
+          # Retries cover transient 5xx responses, including the few minutes
+          # between a web deploy's D1 migration and its Worker going live.
+          if ! curl --silent --show-error --fail-with-body \
+            --retry 10 --retry-delay 60 \
+            -X POST "${CLASSIFY_URL}" \
+            -H "Content-Type: application/json" \
+            -H "X-Compat-Secret: ${COMPAT_INGEST_SECRET}" \
+            --data-binary @nextjs-classify-payload.json; then
+            echo "::warning::Suite classification POST failed (non-fatal)."
+          fi
+
+      # Kept as an artifact even after submission so the classification can
+      # be re-submitted manually (e.g. if the live POST hiccupped) or
+      # inspected when debugging misclassifications.
+      - name: Upload suite router classification
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nextjs-suite-routers-${{ steps.publish.outputs.slug }}
+          path: |
+            nextjs-suite-routers.json
+            nextjs-classify-payload.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Save build artifacts
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # The test job needs: vinext built dist + workspace metadata (for
+          # e2e-deploy.sh dependency injection), the scripts, the prepared
+          # Next.js checkout, Playwright browsers, and the filtered manifest.
+          # next.js/ is under $GITHUB_WORKSPACE so it's included in ".".
+          path: |
+            .
+            ~/.cache/ms-playwright
+            nextjs-deploy-manifest.json
+          key: nextjs-deploy-build-${{ github.sha }}-${{ github.run_id }}-${{ steps.publish.outputs.slug }}
+
+  test:
+    name: Deploy suite (${{ matrix.group }})
+    needs: build
+    # Browsers come from the Next.js checkout's pinned Playwright, which
+    # doesn't support Ubuntu 26.04 (what ubuntu-latest runs), so stay on 24.04.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          [
+            1/16,
+            2/16,
+            3/16,
+            4/16,
+            5/16,
+            6/16,
+            7/16,
+            8/16,
+            9/16,
+            10/16,
+            11/16,
+            12/16,
+            13/16,
+            14/16,
+            15/16,
+            16/16,
+          ]
+
+    steps:
+      - name: Restore build artifacts
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .
+            ~/.cache/ms-playwright
+            nextjs-deploy-manifest.json
+          key: nextjs-deploy-build-${{ github.sha }}-${{ github.run_id }}-${{ needs.build.outputs.slug }}
+
+      - uses: ./.github/actions/setup
+        with:
+          node-version: "24"
+          # Skip install — the workspace is already fully built in the cache
+          run-install: false
+
+      - name: Enable pnpm shim for Next.js scripts
+        run: corepack enable pnpm
+
+      - name: Ensure Playwright browsers
+        working-directory: next.js
+        run: corepack pnpm playwright install chromium chromium-headless-shell
+
+      - name: Make scripts executable
+        run: chmod +x scripts/e2e-deploy.sh scripts/e2e-logs.sh scripts/e2e-cleanup.sh
+
+      - name: Run deploy shard
+        working-directory: next.js
+        env:
+          CI: true
+          NEXT_TEST_MODE: deploy
+          # Next.js sets this private build variable for its own dev/start
+          # harnesses. The deploy fixture build needs the equivalent so
+          # test-only client request metadata (such as fetch priority) is
+          # compiled into the app under test.
+          __NEXT_TEST_MODE: e2e
+          NEXT_E2E_TEST_TIMEOUT: "240000"
+          NEXT_EXTERNAL_TESTS_FILTERS: ${{ github.workspace }}/nextjs-deploy-manifest.json
+          VINEXT_DIR: ${{ inputs.backfill-date && format('{0}/historical-vinext', github.workspace) || github.workspace }}
+          ADAPTER_DIR: ${{ inputs.backfill-date && format('{0}/historical-vinext', github.workspace) || github.workspace }}
+          VINEXT_HARNESS_DIR: ${{ github.workspace }}
+          VINEXT_DEPLOY_DEBUG_DIR: ${{ github.workspace }}/reports/nextjs-deploy-debug
+          VINEXT_FALLBACK_BUILD_ID: ${{ inputs.backfill-date && inputs.vinext-ref || '' }}
+          # Required by the Next.js deploy test manifest — tests are keyed to
+          # the turbopack variant, so this must be set even though vinext uses Vite.
+          IS_TURBOPACK_TEST: "1"
+          NEXT_TEST_JOB: "1"
+          NEXT_TELEMETRY_DISABLED: "1"
+          NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-deploy.sh
+          NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-logs.sh
+          NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-cleanup.sh
+          # Read by the harness patch from scripts/patch-nextjs-skip-deployment.mjs.
+          VINEXT_RUN_SKIPPED_DEPLOYMENT_TESTS: ${{ inputs.run-skipped-deployment-tests && '1' || '' }}
+          GROUP: ${{ matrix.group }}
+          CONCURRENCY: ${{ inputs.test-concurrency }}
+        run: node run-tests.js --timings --retries 0 -g "$GROUP" -c "$CONCURRENCY" --type e2e
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-${{ needs.build.outputs.slug }}@${{ strategy.job-index }}
+          path: next.js/test/**/*.results.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload deploy debug logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deploy-debug-${{ needs.build.outputs.slug }}@${{ strategy.job-index }}
+          path: reports/nextjs-deploy-debug/
+          # e2e-deploy.sh and e2e-cleanup.sh preserve .vinext-deploy-*.log files.
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  report:
+    name: Test report
+    needs: [build, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # includes up to 10 minutes of ingest retries
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: test-results-${{ needs.build.outputs.slug }}@*
+          path: results
+          merge-multiple: true
+
+      - name: Generate report
+        id: report
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          # Resolve the GitHub Actions expressions to env vars once, instead
+          # of splicing `${{ ... }}` into JS string literals further down.
+          # The latter is fragile — a single quote in an input value would
+          # break the generated JS — and not exploitable in practice but
+          # cleaner this way.
+          VINEXT_REF: ${{ inputs.vinext-ref || github.ref }}
+          VINEXT_SHA: ${{ inputs.vinext-sha }}
+          NEXT_REF: ${{ inputs.next-ref }}
+          SUITE_FILTER: ${{ inputs.suite-filter }}
+          BACKFILL_DATE: ${{ inputs.backfill-date }}
+          STARTED_AT: ${{ inputs.run-created-at }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+
+            function findResultFiles(dir) {
+              const files = [];
+              if (!fs.existsSync(dir)) return files;
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  files.push(...findResultFiles(full));
+                } else if (entry.name.endsWith('.results.json')) {
+                  files.push(full);
+                }
+              }
+              return files;
+            }
+
+            const resultFiles = findResultFiles('results');
+            if (resultFiles.length === 0) {
+              core.summary.addHeading(`Next.js Deploy Suite (${process.env.NEXT_REF})`, 2);
+              core.summary.addRaw('No test result files found. All shards may have been skipped or produced no output.');
+              await core.summary.write();
+              return;
+            }
+
+            const passed = [];
+            const failed = [];
+            const skipped = [];
+            // Per-test-file counts for the /compatibility page ingest. Router
+            // classification is NOT attached here — it's submitted separately
+            // by the build job to /api/compatibility/classify, and the UI
+            // joins it onto each result row at query time. See the
+            // "Submit suite classification" step earlier in this workflow.
+            const fileCounts = new Map();
+            const backfillDate = process.env.BACKFILL_DATE;
+            const backfillCreatedAt = backfillDate
+              ? Date.parse(`${backfillDate}T02:00:00Z`)
+              : undefined;
+            function bumpFile(suite, key) {
+              let cur = fileCounts.get(suite);
+              if (!cur) {
+                cur = { suite, total: 0, passed: 0, failed: 0, skipped: 0 };
+                fileCounts.set(suite, cur);
+              }
+              cur.total++;
+              cur[key]++;
+            }
+
+            // Derive a canonical Next.js test path from the result-file path.
+            //
+            // Next.js's run-tests.js does NOT populate testResults[].testFilePath
+            // in the JSON, so we have to recover it from where the file lives in
+            // the artifact tree. Each shard uploads files at their relative path
+            // inside next.js/test/, e.g. `e2e/app-dir/foo/foo.test.ts.results.json`.
+            //
+            // The report job uses `merge-multiple: true`, which flattens the
+            // contents of every artifact into `results/`. We also defensively
+            // strip a leading `test-results-N/` segment in case that ever
+            // changes and shards get nested under their artifact names.
+            // Result: a canonical path of the form `test/e2e/app-dir/foo/foo.test.ts`.
+            function deriveSuiteName(file) {
+              let rel = path.relative('results', file);
+              // Defensive: strip a leading `test-results-<n>/` shard prefix if
+              // the download layout ever changes.
+              rel = rel.replace(/^test-results-[^/]+\//, '');
+              const stripped = rel.replace(/\.results\.json$/, '');
+              if (stripped && stripped.includes('/')) {
+                return `test/${stripped}`;
+              }
+              // Fallback: file sits at the top level of results/ (shouldn't
+              // happen in practice). Use the basename so we don't break ingest.
+              return path.basename(file, '.results.json');
+            }
+
+            for (const file of resultFiles) {
+              try {
+                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                const suiteName = deriveSuiteName(file);
+
+                for (const suite of data.testResults || []) {
+                  for (const tc of suite.assertionResults || []) {
+                    const testName = tc.ancestorTitles
+                      ? [...tc.ancestorTitles, tc.title].join(' > ')
+                      : tc.fullName || tc.title;
+
+                    if (tc.status === 'passed') {
+                      passed.push({ suite: suiteName, test: testName });
+                      bumpFile(suiteName, 'passed');
+                    } else if (tc.status === 'failed') {
+                      const msg = (tc.failureMessages || []).join('\n').slice(0, 500);
+                      failed.push({ suite: suiteName, test: testName, message: msg });
+                      bumpFile(suiteName, 'failed');
+                    } else {
+                      skipped.push({ suite: suiteName, test: testName });
+                      bumpFile(suiteName, 'skipped');
+                    }
+                  }
+                }
+              } catch (e) {
+                core.warning(`Failed to parse ${file}: ${e.message}`);
+              }
+            }
+
+            // Persist the per-file counts for the next step to submit to D1.
+            fs.mkdirSync('report', { recursive: true });
+            fs.writeFileSync(
+              'report/compat-ingest.json',
+              JSON.stringify(
+                {
+                  kind: 'deploy',
+                  runKey: backfillDate
+                    ? `backfill:${backfillDate}:${process.env.VINEXT_REF}`
+                    : String(context.runId),
+                  vinextRef: process.env.VINEXT_REF,
+                  nextRef: process.env.NEXT_REF,
+                  // A backfill's ref is already a full SHA, and the API checks
+                  // that `commitSha` equals it exactly, so keep its case.
+                  commitSha: backfillDate ? process.env.VINEXT_REF : process.env.VINEXT_SHA,
+                  // A backfill is dated by its date input; a live run by when its
+                  // workflow run was created, so overlapping runs keep their order.
+                  ...(backfillCreatedAt === undefined
+                    ? { startedAt: Number(process.env.STARTED_AT) }
+                    : { createdAt: backfillCreatedAt }),
+                  files: Array.from(fileCounts.values()),
+                },
+                null,
+                2,
+              ) + '\n',
+            );
+
+            const total = passed.length + failed.length + skipped.length;
+            const passRate = total > 0 ? ((passed.length / total) * 100).toFixed(1) : '0.0';
+            const statsLine = `${passed.length} passed, ${failed.length} failed, ${skipped.length} skipped (${total} total, ${passRate}% pass rate)`;
+
+            // Top-level annotation visible on the workflow run page
+            if (failed.length > 0) {
+              core.warning(`Next.js Deploy Suite (${process.env.NEXT_REF}): ${statsLine}`, { title: `Next.js Deploy Suite results (${process.env.NEXT_REF})` });
+            } else {
+              core.notice(`Next.js Deploy Suite (${process.env.NEXT_REF}): ${statsLine}`, { title: `Next.js Deploy Suite results (${process.env.NEXT_REF})` });
+            }
+
+            // Job summary
+            core.summary.addHeading(`Next.js Deploy Suite (${process.env.NEXT_REF})`, 2);
+            core.summary.addRaw(
+              `**${passed.length}** passed, **${failed.length}** failed, **${skipped.length}** skipped (${total} total, ${passRate}% pass rate)\n\n`
+            );
+
+            if (failed.length > 0) {
+              core.summary.addHeading('Failed tests', 3);
+              const rows = [
+                [{data: 'Suite', header: true}, {data: 'Test', header: true}, {data: 'Error', header: true}],
+                ...failed.slice(0, 100).map(f => [
+                  f.suite,
+                  f.test,
+                  f.message ? `<details><summary>Details</summary>\n\n\`\`\`\n${f.message}\n\`\`\`\n</details>` : ''
+                ])
+              ];
+              core.summary.addTable(rows);
+
+              if (failed.length > 100) {
+                core.summary.addRaw(`\n_...and ${failed.length - 100} more failures. Download the test-results artifacts for full details._\n`);
+              }
+            }
+
+            if (passed.length > 0) {
+              const suites = [...new Set(passed.map(p => p.suite))].sort();
+              core.summary.addHeading('Passed suites', 3);
+              core.summary.addDetails(
+                `${suites.length} suites (click to expand)`,
+                suites.map(s => `- \`${s}\``).join('\n')
+              );
+            }
+
+            await core.summary.write();
+
+            // Also write a JSON report as an artifact
+            const report = {
+              timestamp: new Date().toISOString(),
+              vinextRef: process.env.VINEXT_REF,
+              nextRef: process.env.NEXT_REF,
+              suiteFilter: process.env.SUITE_FILTER,
+              summary: { total, passed: passed.length, failed: failed.length, skipped: skipped.length },
+              failed: failed.map(f => ({ suite: f.suite, test: f.test })),
+              passed: passed.map(p => ({ suite: p.suite, test: p.test })),
+            };
+            fs.mkdirSync('report', { recursive: true });
+            fs.writeFileSync('report/deploy-suite-report.json', JSON.stringify(report, null, 2) + '\n');
+
+            if (failed.length > 0) {
+              core.setFailed(`${failed.length} test(s) failed`);
+            }
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deploy-suite-report-${{ needs.build.outputs.slug }}
+          # Include both files: the human-readable report and the
+          # /compatibility ingest payload. Keeping the ingest payload
+          # archived lets us manually re-POST a run if the live ingest
+          # step fails (network blip, bad URL, expired secret, etc.)
+          # without re-running the 40-minute suite.
+          path: |
+            report/deploy-suite-report.json
+            report/compat-ingest.json
+          retention-days: 90
+
+      # Submit per-file results to the /compatibility page's ingest endpoint.
+      # Requires the COMPAT_INGEST_SECRET repo secret (matched against the
+      # worker's COMPAT_INGEST_SECRET set via `wrangler secret put`).
+      # No-op if the secret or ingest URL aren't configured. Gated by the
+      # build job's "Decide publishing" step, which documents the guardrails.
+      - name: Submit results to /compatibility ingest
+        if: |
+          always()
+          && needs.build.outputs.publish-results == 'true'
+          && hashFiles('report/compat-ingest.json') != ''
+        env:
+          COMPAT_INGEST_URL: ${{ vars.COMPAT_INGEST_URL || 'https://vinext-web.vinext.workers.dev/api/compatibility' }}
+          COMPAT_INGEST_SECRET: ${{ secrets.COMPAT_INGEST_SECRET }}
+        run: |
+          if [ -z "${COMPAT_INGEST_SECRET:-}" ]; then
+            echo "COMPAT_INGEST_SECRET not configured; skipping ingest submission."
+            exit 0
+          fi
+          echo "Submitting compat results to ${COMPAT_INGEST_URL}"
+          # --fail-with-body keeps stdout/stderr but exits non-zero on HTTP errors.
+          # We still don't want the report job to fail if ingest hiccups, so trap
+          # the exit and just log.
+          # Retries cover transient 5xx responses, including the few minutes
+          # between a web deploy's D1 migration and its Worker going live.
+          if ! curl --silent --show-error --fail-with-body \
+            --retry 10 --retry-delay 60 \
+            -X POST "${COMPAT_INGEST_URL}" \
+            -H "Content-Type: application/json" \
+            -H "X-Compat-Secret: ${COMPAT_INGEST_SECRET}" \
+            --data-binary @report/compat-ingest.json; then
+            echo "::warning::Compatibility ingest POST failed (non-fatal)."
+          fi

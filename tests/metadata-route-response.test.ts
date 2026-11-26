@@ -10,6 +10,7 @@ import {
   handleMetadataRouteRequest,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+import { routePatternParts } from "../packages/vinext/src/routing/route-pattern.js";
 import { withEnvVar } from "./env-test-helpers.js";
 import {
   DefaultCdnCacheAdapter,
@@ -1615,6 +1616,62 @@ describe("handleMetadataRouteRequest", () => {
     expect(receivedSyncId).toBe("post-small");
     expect(receivedSlug).toBe("post");
     expect(await response?.text()).toBe("image:post-small");
+  });
+
+  // Next.js serves a metadata file below a marker-prefixed dynamic segment at
+  // the URL that keeps the marker, its param the rest of the URL segment.
+  it("serves a dynamic image below a marker-prefixed dynamic segment", async () => {
+    const route = {
+      type: "opengraph-image",
+      isDynamic: true,
+      filePath: "/tmp/app/feed/@modal/(.)[id]/opengraph-image.tsx",
+      routePrefix: "/feed/(.)[id]",
+      routeSegments: ["feed", "@modal", "(.)[id]"],
+      servedUrl: "/feed/(.)[id]/opengraph-image-abc",
+      patternParts: routePatternParts("/feed/(.)[id]/opengraph-image-abc"),
+      contentType: "image/png",
+      module: {
+        default: async ({ params }: { params: Promise<{ id: string }> }) =>
+          new Response(`image:${(await params).id}`, {
+            headers: { "Content-Type": "image/png" },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+    const request = (cleanPathname: string) =>
+      handleMetadataRouteRequest({ metadataRoutes: [route], cleanPathname, makeThenableParams });
+
+    const response = await request("/feed/(.)a%20b/opengraph-image-abc");
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toBe("image:a b");
+    expect(await request("/feed/a%20b/opengraph-image-abc")).toBeNull();
+  });
+
+  it("serves only generated params below a marker-prefixed dynamic segment with dynamicParams = false", async () => {
+    const route = {
+      type: "opengraph-image",
+      isDynamic: true,
+      filePath: "/tmp/app/feed/@modal/(.)[id]/opengraph-image.tsx",
+      routePrefix: "/feed/(.)[id]",
+      routeSegments: ["feed", "@modal", "(.)[id]"],
+      servedUrl: "/feed/(.)[id]/opengraph-image-abc",
+      patternParts: routePatternParts("/feed/(.)[id]/opengraph-image-abc"),
+      contentType: "image/png",
+      module: {
+        dynamicParams: false,
+        generateStaticParams: () => [{ id: "1" }],
+        default: async ({ params }: { params: Promise<{ id: string }> }) =>
+          new Response(`image:${(await params).id}`, {
+            headers: { "Content-Type": "image/png" },
+          }),
+      },
+    } satisfies MetadataFileRoute;
+    const request = (cleanPathname: string) =>
+      handleMetadataRouteRequest({ metadataRoutes: [route], cleanPathname, makeThenableParams });
+
+    const generated = await request("/feed/(.)1/opengraph-image-abc");
+    expect(generated?.status).toBe(200);
+    expect(await generated?.text()).toBe("image:1");
+    expect((await request("/feed/(.)999/opengraph-image-abc"))?.status).toBe(404);
   });
 
   it("uses framework cache control for a raw metadata Response without authored policy", async () => {

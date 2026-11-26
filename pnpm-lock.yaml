@@ -1773,6 +1773,8 @@ importers:
 
   tests/fixtures/cf-pages-cjs-package-scope: {}
 
+  tests/fixtures/cf-pages-font-lazy: {}
+
   tests/fixtures/cf-sentry-app:
     dependencies:
       '@cloudflare/vite-plugin':

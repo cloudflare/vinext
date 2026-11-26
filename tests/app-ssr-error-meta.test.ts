@@ -92,4 +92,16 @@ describe("App SSR error meta tags", () => {
     );
     expect(renderer.flush()).toBe("");
   });
+
+  it("restarts the captures for a render that replaces a discarded one", () => {
+    const renderer = createSsrErrorMetaRenderer({ nodeEnv: "production" });
+    const shellError = digestError("NEXT_HTTP_ERROR_FALLBACK;404");
+
+    renderer.capture(shellError);
+    renderer.capture(shellError);
+    renderer.capture(digestError("NEXT_REDIRECT;replace;/target;307"));
+    renderer.restart([shellError]);
+    expect(renderer.flush()).toBe('<meta name="robots" content="noindex"/>');
+    expect(renderer.flush()).toBe("");
+  });
 });
