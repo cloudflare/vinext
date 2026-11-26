@@ -642,9 +642,8 @@ describe("prerender path manifest", () => {
 
   it("lists the paths of a route whose layout generator gives every param under dynamicParams = false", async () => {
     // app/[lang]/[slug]/page.tsx has no generator, so Next.js prerenders the
-    // route only because its rows have every param. dynamicParams = false at
-    // the page lets vinext's request check store it; set only on the [lang]
-    // layout, vinext never checks the route, so it stays unlisted.
+    // route only because its rows have every param. dynamicParams = false on
+    // the page or any layout lets vinext's request check store it.
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
@@ -690,7 +689,7 @@ describe("prerender path manifest", () => {
     const unlisted = (pathname: string) =>
       manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.unlisted;
     expect(unlisted("/page-false/en/a")).toBeUndefined();
-    expect(unlisted("/layout-false/en/a")).toBe(true);
+    expect(unlisted("/layout-false/en/a")).toBeUndefined();
   });
 
   it("passes a nested dynamic route only its layouts' params as parent params", async () => {

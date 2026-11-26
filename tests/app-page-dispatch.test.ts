@@ -426,7 +426,6 @@ type CreateDispatchOptionsOverrides = {
   hasAnyGenerateStaticParams?: DispatchOptions["hasAnyGenerateStaticParams"];
   hasGenerateStaticParams?: DispatchOptions["hasGenerateStaticParams"];
   isStaticGenerationEdgeRuntime?: DispatchOptions["isStaticGenerationEdgeRuntime"];
-  isStaticParamsOnlyAtLastDynamicSegment?: DispatchOptions["isStaticParamsOnlyAtLastDynamicSegment"];
   formState?: DispatchOptions["formState"];
   getSourceRoute?: DispatchOptions["getSourceRoute"];
   getNavigationContext?: DispatchOptions["getNavigationContext"];
@@ -515,9 +514,6 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
       typeof overrides.generateStaticParams === "function",
     hasGenerateStaticParams:
       overrides.hasGenerateStaticParams ?? typeof overrides.generateStaticParams === "function",
-    // The page sets the route's dynamicParams unless a test says otherwise.
-    isStaticParamsOnlyAtLastDynamicSegment:
-      overrides.isStaticParamsOnlyAtLastDynamicSegment ?? overrides.dynamicParamsConfig === false,
     hasPageDefaultExport: true,
     hasPageModule: true,
     handlerStart: 10,
@@ -1691,7 +1687,6 @@ describe("app page dispatch", () => {
         validateAppPageRouteDynamicParams({
           dynamicParamsConfig: false,
           hasGenerateStaticParams: true,
-          isStaticParamsOnlyAtLastDynamicSegment: true,
           generateStaticParams: [
             {
               chained: true,
@@ -4025,34 +4020,6 @@ describe("app page dispatch", () => {
       }
     });
 
-    // vinext never stores such a route, so learning whether its generators
-    // give every param would run them on each request.
-    it("runs no generator when dynamicParams = false is set only above the last dynamic segment", async () => {
-      const generateStaticParams = vi.fn(async () => [{ id: "1", slug: "acme" }]);
-      const generators = [{ chained: true as const, generateStaticParams, parentParamNames: [] }];
-      for (const isProduction of [true, false]) {
-        const response = await dispatchClub(
-          "2",
-          { isProduction, isStaticParamsOnlyAtLastDynamicSegment: false },
-          generators,
-        );
-        expect(response.status).toBe(200);
-      }
-      expect(generateStaticParams).not.toHaveBeenCalled();
-
-      // A route Next.js always prerenders still checks.
-      const forceStatic = await dispatchClub(
-        "2",
-        {
-          dynamicConfig: "force-static",
-          isProduction: true,
-          isStaticParamsOnlyAtLastDynamicSegment: false,
-        },
-        generators,
-      );
-      expect(forceStatic.status).toBe(404);
-    });
-
     // Next.js prerenders such a route, so vinext stores a production miss
     // once its check shows every parent's rows have every param, and serves
     // the entry without running a generator.
@@ -5489,8 +5456,8 @@ describe("app page dispatch", () => {
       const miss = createClubOptions(sourceRoute, page);
       expect((await dispatchAppPage(miss.options)).status).toBe(404);
 
-      // Set only above the last dynamic segment, it runs no generator.
-      generateStaticParams.mockClear();
+      // Set only on the owner's layout, above the last dynamic segment, it
+      // still applies.
       const ownerOnlyRoute = createClubSource({
         layouts: [
           { default: () => null, dynamicParams: false, generateStaticParams } as Record<
@@ -5500,8 +5467,7 @@ describe("app page dispatch", () => {
         ],
       });
       const ownerOnly = createClubOptions(ownerOnlyRoute, {});
-      expect((await dispatchAppPage(ownerOnly.options)).status).toBe(200);
-      expect(generateStaticParams).not.toHaveBeenCalled();
+      expect((await dispatchAppPage(ownerOnly.options)).status).toBe(404);
     });
 
     it("intercepts any params when the intercepting route sets revalidate = 0 in production", async () => {

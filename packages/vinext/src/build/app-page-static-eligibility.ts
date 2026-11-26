@@ -8,7 +8,6 @@ import {
   isAppPageStaticEligible,
   isEdgeRuntime,
   lastDynamicSegmentHasGenerateStaticParams,
-  lastDynamicSegmentIsStaticParamsOnly,
   resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime,
 } from "../server/app-segment-config.js";
@@ -67,8 +66,8 @@ function createSegmentConfigReader(readMdxEsm: ((source: string) => string) | nu
  * unreadable route's fallback, so it never certifies one.
  *
  * A dynamic route whose last dynamic segment has no `generateStaticParams` is
- * "every-param" when `dynamicParams = false` sits at or below that segment and
- * its config is otherwise static: it is SSG only if its generators give every
+ * "every-param" when it sets `dynamicParams = false` and its config is
+ * otherwise static: it is SSG only if its generators give every
  * row every param, which only running them tells. vinext's runtime check
  * learns that per request and stores such a route only then, and never where a
  * parallel route slot exports `generateStaticParams`.
@@ -124,10 +123,7 @@ export function classifyAppPageRouteStaticEligibility(
       (config) => config?.generateStaticParams !== undefined,
     ),
   );
-  return segmentConfig.dynamicParamsConfig === false &&
-    lastDynamicSegmentIsStaticParamsOnly(walkSegments) &&
-    !hasSlotGenerator &&
-    classify(true)
+  return segmentConfig.dynamicParamsConfig === false && !hasSlotGenerator && classify(true)
     ? "every-param"
     : "ineligible";
 }
