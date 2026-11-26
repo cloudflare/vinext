@@ -330,33 +330,36 @@ describe("renderAppPageCacheArtifacts", () => {
   it("keeps the shell's notFound() status of a regeneration that turned dynamic", async () => {
     const redirectError = { digest: "NEXT_REDIRECT;replace;/target;307;" };
     const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
-    const result = await renderAppPageCacheArtifacts({
-      captureRscData: true,
-      cleanPathname: "/posts/post",
-      element: React.createElement("div", null, "page"),
-      getFontLinks: () => [],
-      getFontPreloads: () => [],
-      getFontStyles: () => [],
-      getNavigationContext: () => null,
-      loadSsrHandler: async () => ({
-        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
-          if (options?.sideStream && options.capturedRscDataRef) {
-            options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
-          }
-          markDynamicUsage();
-          options?.onSsrError?.(redirectError);
-          options?.onSsrError?.(notFoundError);
-          throw notFoundError;
+    // Scoped, so the render's dynamic latch doesn't leak into later tests.
+    const result = await runWithRequestContext(createRequestContext(), () =>
+      renderAppPageCacheArtifacts({
+        captureRscData: true,
+        cleanPathname: "/posts/post",
+        element: React.createElement("div", null, "page"),
+        getFontLinks: () => [],
+        getFontPreloads: () => [],
+        getFontStyles: () => [],
+        getNavigationContext: () => null,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+            if (options?.sideStream && options.capturedRscDataRef) {
+              options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+            }
+            markDynamicUsage();
+            options?.onSsrError?.(redirectError);
+            options?.onSsrError?.(notFoundError);
+            throw notFoundError;
+          },
+        }),
+        navigationParams: {},
+        onError: () => undefined,
+        async renderShellSpecialError(error) {
+          return error === notFoundError ? { html: "<html>not found</html>", status: 404 } : null;
         },
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+        route: { pattern: "/posts/[slug]", routeSegments: [] },
       }),
-      navigationParams: {},
-      onError: () => undefined,
-      async renderShellSpecialError(error) {
-        return error === notFoundError ? { html: "<html>not found</html>", status: 404 } : null;
-      },
-      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
-      route: { pattern: "/posts/[slug]", routeSegments: [] },
-    });
+    );
 
     expect(result.usedDynamicApi).toBe(true);
     expect(result.status).toBe(404);
