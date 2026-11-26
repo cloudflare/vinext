@@ -26,6 +26,7 @@ import {
   isAppSsrRenderResult,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
+import { createAppPageStaticGenerationStatusCapture } from "./app-page-static-generation-status.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
@@ -136,6 +137,15 @@ async function renderAppPageCacheArtifactsImpl(
   const ssrHandler = await options.loadSsrHandler();
   let htmlResult: Awaited<ReturnType<AppPageSsrHandler["handleSsr"]>> | null = null;
   let specialErrorDocument: AppPageCacheSpecialErrorDocument | null = null;
+  // A regeneration is a static render, so the HTTP errors its document's
+  // Suspense boundaries catch set its status, as in Next.js.
+  const staticGenerationStatus = createAppPageStaticGenerationStatusCapture(options.basePath);
+  const reportSsrError = (error: unknown): unknown => {
+    staticGenerationStatus.capture(error);
+    if (!options.onSsrError) return undefined;
+    recordAppPageRenderError(renderSpan, error);
+    return options.onSsrError(error);
+  };
   try {
     htmlResult = await ssrHandler.handleSsr(
       rscCapture.ssrStream,
@@ -160,16 +170,8 @@ async function renderAppPageCacheArtifactsImpl(
         resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
         onSsrError:
           options.onSsrError && options.isCapturedRscError
-            ? createAppPageSsrErrorHandler((error) => {
-                recordAppPageRenderError(renderSpan, error);
-                return options.onSsrError?.(error);
-              }, options.isCapturedRscError)
-            : options.onSsrError
-              ? (error) => {
-                  recordAppPageRenderError(renderSpan, error);
-                  return options.onSsrError?.(error);
-                }
-              : undefined,
+            ? createAppPageSsrErrorHandler(reportSsrError, options.isCapturedRscError)
+            : reportSsrError,
         ...(rscCapture.sideStream
           ? {
               sideStream: rscCapture.sideStream,
@@ -210,6 +212,9 @@ async function renderAppPageCacheArtifactsImpl(
       if (!specialErrorDocument) throw caughtShellError;
       html = specialErrorDocument.html;
       linkHeader = specialErrorDocument.linkHeader;
+    } else {
+      const status = staticGenerationStatus.get();
+      if (status) specialErrorDocument = { ...status, html, linkHeader };
     }
   }
 

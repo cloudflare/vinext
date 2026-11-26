@@ -13,9 +13,10 @@ export type RouteCacheabilityOutcome = {
   /** A transient classification failure that may succeed on another bounded attempt. */
   retryable?: true;
   /**
-   * App page RSC: the status and headers that replace the streamed 200 of a
-   * render whose special error rejected its document's shell, once the
-   * response is complete.
+   * App pages: the status and headers that replace the streamed 200 of a
+   * render that ended in a special error, once the response is complete. An
+   * RSC render's rejected its document's shell. A document's was caught by a
+   * Suspense boundary, which sets a static render's status.
    */
   status?: number;
   headers?: Readonly<Record<string, string>>;

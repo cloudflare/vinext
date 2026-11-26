@@ -1901,12 +1901,44 @@ describe("prerenderApp — default mode (app-basic)", () => {
     },
   );
 
-  // A Suspense boundary caught the special error, so the shell rendered.
-  it("writes a special error caught under loading.tsx as a 200", () => {
-    const r = findRoute(results, "/nextjs-compat/isr-special-error/loading-not-found");
-    expect(r).toMatchObject({ status: "rendered", revalidate: 60 });
-    expect(r).not.toHaveProperty("responseStatus");
-  });
+  // A Suspense boundary caught the special error, so the shell rendered. As in
+  // Next.js's build, the page is written with the error's status and location,
+  // beside the fallback it rendered and the page's RSC payload.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  it.each([
+    {
+      route: "/nextjs-compat/isr-special-error/loading-not-found",
+      responseStatus: 404,
+      location: undefined,
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    },
+    {
+      route: "/nextjs-compat/isr-special-error/loading-redirect",
+      responseStatus: 307,
+      location: "/nextjs-compat/nav-redirect-result",
+      digest: "NEXT_REDIRECT;",
+    },
+    {
+      route: "/nextjs-compat/isr-special-error/rsc-first-suspense-not-found",
+      responseStatus: 404,
+      location: undefined,
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    },
+  ])(
+    "writes $route's special error a Suspense boundary caught with status $responseStatus",
+    ({ route, responseStatus, location, digest }) => {
+      const r = findRoute(results, route);
+      expect(r).toMatchObject({ status: "rendered", revalidate: 60, responseStatus });
+      if (r?.status !== "rendered") throw new Error(`expected ${route} to render`);
+      expect(r.headers?.location).toBe(location);
+      const html = fs.readFileSync(path.join(outDir, `${route.slice(1)}.html`), "utf8");
+      expect(html).toContain("<p>loading</p>");
+      expect(html).toContain(`data-dgst="${digest}`);
+      const rsc = fs.readFileSync(path.join(outDir, `${route.slice(1)}.rsc`), "utf8");
+      expect(rsc).toContain(digest);
+    },
+  );
 
   // ── API routes — always skipped ────────────────────────────────────────────
 

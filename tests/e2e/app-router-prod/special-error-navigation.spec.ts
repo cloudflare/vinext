@@ -167,8 +167,9 @@ test.describe("client navigation to a stored notFound() page", () => {
 });
 
 // Next.js renders an ISR page's document beside its RSC payload, so an RSC
-// request that renders the page first stores the status the document's shell
-// gives it. A redirect's RSC response is a 200 carrying its location.
+// request that renders the page first stores the status the document's render
+// gives it, including a special error a Suspense boundary caught. A
+// redirect's RSC response is a 200 carrying its location.
 test("stores the status of an ISR page's special error from the RSC request that renders it first", async ({
   request,
 }) => {
@@ -186,9 +187,10 @@ test("stores the status of an ISR page's special error from the RSC request that
       digest: "NEXT_REDIRECT;",
     },
     {
-      // A Suspense boundary caught it, so the shell rendered.
+      // A Suspense boundary caught it, so the shell rendered, and the static
+      // render takes its status.
       pathname: "/nextjs-compat/isr-special-error/rsc-first-suspense-not-found",
-      rscStatus: 200,
+      rscStatus: 404,
       location: undefined,
       digest: "NEXT_HTTP_ERROR_FALLBACK;404",
     },
@@ -230,8 +232,8 @@ test("stores the 404 document of an ISR page without the query of the request th
 
 // An html-limited bot blocks on metadata, so generateMetadata()'s notFound()
 // rejects the document's shell. Other user agents stream metadata, so it
-// doesn't. As in Next.js, the render is stored with the status the request
-// that rendered it gets, and served to everyone.
+// doesn't, and a miss streams its 200. As in Next.js's static generation, the
+// render is stored as a 404 either way, and served to everyone.
 const HTML_LIMITED_BOT = { "User-Agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" };
 
 test("stores the 404 document of an ISR page whose generateMetadata() calls notFound() for an html-limited bot", async ({
@@ -259,9 +261,8 @@ test("stores the 404 document of an ISR page whose generateMetadata() calls notF
 });
 
 // Next.js stores the 404 document beside the payload of an html-limited bot's
-// RSC request too. An RSC miss writes no document, so a document request that
-// streams metadata would store a 200 beside that payload. The RSC miss stores
-// nothing instead, and the document request stores both entries.
+// RSC request too. An RSC miss writes no document, so the RSC miss stores
+// nothing, and the document request stores both entries.
 test("stores nothing from an html-limited bot's RSC request to an ISR page whose generateMetadata() calls notFound()", async ({
   request,
 }) => {
@@ -287,18 +288,18 @@ test("stores nothing from an html-limited bot's RSC request to an ISR page whose
       const response = await request.get(pathname);
       return [response.headers()["x-vinext-cache"], response.status()];
     })
-    .toEqual(["HIT", 200]);
+    .toEqual(["HIT", 404]);
   const rsc = await request.get(`${pathname}?_rsc`, { headers: RSC_HEADERS });
-  expect(rsc.status()).toBe(200);
+  expect(rsc.status()).toBe(404);
   expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
 });
 
-test("stores the 200 document of an ISR page whose generateMetadata() calls notFound()", async ({
+test("stores the streamed document of an ISR page whose generateMetadata() calls notFound() as a 404", async ({
   request,
 }) => {
   const pathname = "/nextjs-compat/isr-special-error/metadata-not-found-streaming";
   const miss = await request.get(pathname);
-  expect(miss.status()).toBe(200);
+  expect(miss.status()).toBe(miss.headers()["x-vinext-cache"] === "HIT" ? 404 : 200);
   await miss.text();
 
   await expect
@@ -306,21 +307,22 @@ test("stores the 200 document of an ISR page whose generateMetadata() calls notF
       const response = await request.get(pathname);
       return [response.headers()["x-vinext-cache"], response.status()];
     })
-    .toEqual(["HIT", 200]);
+    .toEqual(["HIT", 404]);
   const hit = await request.get(pathname);
   const html = await hit.text();
   expect(html).toContain("metadata not-found streaming page");
   expect(html).toContain('<template data-dgst="NEXT_HTTP_ERROR_FALLBACK;404"');
   expect(html).toContain('<meta name="robots" content="noindex"/>');
   const rsc = await request.get(`${pathname}?_rsc`, { headers: RSC_HEADERS });
-  expect(rsc.status()).toBe(200);
+  expect(rsc.status()).toBe(404);
   expect(rsc.headers()["x-vinext-cache"]).toBe("HIT");
   expect(await rsc.text()).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
 });
 
 // As in Next.js, a regeneration streams metadata as the request that
-// triggered it does, and replaces the entry with what it rendered.
-test("regenerates an ISR page whose generateMetadata() starts calling notFound() with the triggering request's status", async ({
+// triggered it does, replaces the entry with what it rendered, and, being a
+// static render, takes its HTTP error's status either way.
+test("regenerates an ISR page whose generateMetadata() starts calling notFound() as a 404", async ({
   request,
 }) => {
   const pathname = "/nextjs-compat/isr-special-error/metadata-not-found-regen";
@@ -341,16 +343,16 @@ test("regenerates an ISR page whose generateMetadata() starts calling notFound()
   expect(botStale.headers()["x-vinext-cache"]).toBe("STALE");
   await botStale.text();
 
-  // A regeneration that a normal user agent triggered stores the 200 document
-  // with the digest.
+  // A regeneration that a normal user agent triggered stores the streamed
+  // document, with the digest, as a 404.
   await expect
     .poll(async () => {
       const response = await request.get(pathname);
       const html = await response.text();
       return [response.status(), html.includes('data-dgst="NEXT_HTTP_ERROR_FALLBACK;404"')];
     })
-    .toEqual([200, true]);
-  // One that an html-limited bot triggered stores the 404.
+    .toEqual([404, true]);
+  // One that an html-limited bot triggered stores the 404 too.
   await expect
     .poll(async () => (await request.get(botPathname, { headers: HTML_LIMITED_BOT })).status())
     .toBe(404);
@@ -371,28 +373,39 @@ test("sends an unmatched route's 404 with the never-cache policy", async ({ requ
 });
 
 // A special error that a Suspense boundary, here a loading.tsx, catches
-// doesn't reject the shell. As in Next.js, the document streams as a 200 with
-// the digest, and the ISR cache stores it, and its RSC payload, as a 200.
+// doesn't reject the shell, so the document streams with the digest. As in
+// Next.js's static generation, the ISR cache stores it, and its RSC payload,
+// with the error's status and location. A miss that streamed has sent its 200.
+// Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+// https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
 test.describe("an ISR page whose special error its loading.tsx catches", () => {
   const cases = [
     {
       pathname: "/nextjs-compat/isr-special-error/loading-not-found",
       digest: "NEXT_HTTP_ERROR_FALLBACK;404",
       head: '<meta name="robots" content="noindex"/>',
+      status: 404,
+      rscStatus: 404,
+      location: undefined,
     },
     {
       pathname: "/nextjs-compat/isr-special-error/loading-redirect",
       digest: "NEXT_REDIRECT;",
       head: '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/nextjs-compat/nav-redirect-result"/>',
+      status: 307,
+      rscStatus: 200,
+      location: "/nextjs-compat/nav-redirect-result",
     },
   ];
 
-  test("streams and stores the document as a 200 with the digest", async ({ request }) => {
-    for (const { pathname, digest, head } of cases) {
+  test("streams the document with the digest and stores it with the error's status", async ({
+    request,
+  }) => {
+    for (const { pathname, digest, head, status, rscStatus, location } of cases) {
       // The first request may already hit an entry stored by an earlier run.
       const first = await request.get(pathname, { maxRedirects: 0 });
-      expect(first.status(), pathname).toBe(200);
-      expect(first.headers()["location"], pathname).toBeUndefined();
+      const firstIsHit = first.headers()["x-vinext-cache"] === "HIT";
+      expect(first.status(), pathname).toBe(firstIsHit ? status : 200);
       const firstHtml = await first.text();
       expect(firstHtml, pathname).toContain(`<template data-dgst="${digest}`);
       expect(firstHtml, pathname).toContain(head);
@@ -402,17 +415,18 @@ test.describe("an ISR page whose special error its loading.tsx catches", () => {
           const response = await request.get(pathname, { maxRedirects: 0 });
           return [response.headers()["x-vinext-cache"], response.status()];
         })
-        .toEqual(["HIT", 200]);
+        .toEqual(["HIT", status]);
       const hit = await request.get(pathname, { maxRedirects: 0 });
       expect(hit.headers()["cache-control"], pathname).toContain("s-maxage=60");
+      expect(hit.headers()["location"], pathname).toBe(location);
       const hitHtml = await hit.text();
       expect(hitHtml, pathname).toContain(`<template data-dgst="${digest}`);
       expect(hitHtml, pathname).toContain(head);
 
       const rsc = await request.get(`${pathname}?_rsc`, { headers: RSC_HEADERS, maxRedirects: 0 });
-      expect(rsc.status(), pathname).toBe(200);
+      expect(rsc.status(), pathname).toBe(rscStatus);
       expect(rsc.headers()["x-vinext-cache"], pathname).toBe("HIT");
-      expect(rsc.headers()["location"], pathname).toBeUndefined();
+      expect(rsc.headers()["location"], pathname).toBe(location);
       expect(await rsc.text(), pathname).toContain(digest);
     }
   });
