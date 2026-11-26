@@ -631,6 +631,15 @@ describe("App Router route graph builder", () => {
       expect(members.parallelSlots.find((slot) => slot.name === "team")?.pagePath).toBe(
         canonical(appDir, "children-slot-override/@team/members/@children/page.tsx"),
       );
+
+      // Same when /members is a real page (and the owner has no default.tsx).
+      const realMembers = findRoute(graph.routes, "/children-slot-override-page/members");
+      expect(realMembers.pagePath).toBe(
+        canonical(appDir, "children-slot-override-page/members/page.tsx"),
+      );
+      expect(realMembers.parallelSlots.find((slot) => slot.name === "team")?.pagePath).toBe(
+        canonical(appDir, "children-slot-override-page/@team/members/@children/page.tsx"),
+      );
     });
   });
 
