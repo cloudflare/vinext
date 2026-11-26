@@ -46,6 +46,17 @@ function matchManifestRoute(
   );
 }
 
+/** A route id's manifest route: by id, or else its concrete URL matched. */
+function resolveManifestRoute(
+  routeId: string,
+  routeManifest: BrowserRouteManifest | null,
+): { id: string; patternParts: readonly string[] } | null {
+  const direct = routeManifest?.segmentGraph.routes.get(routeId);
+  if (direct) return direct;
+  const routePath = routePathFromId(routeId);
+  return routePath === null ? null : matchManifestRoute(routePath, routeManifest);
+}
+
 function resolveInterceptionSourcePagePath(
   binding: AppElementsSlotBinding,
   interception: AppElementsInterception | null,
@@ -88,13 +99,9 @@ function resolveSlotSourcePath(
   if (binding.state !== "active" || binding.activeRouteId == null) {
     return joinSourcePath([...slotBase, "default"]);
   }
-  // An ordinary slot's active route id is the manifest route id (`route:`
-  // plus its pattern). Only an id that isn't one, such as a concrete
-  // interception target, is matched as a URL.
-  const activeRoutePath = routePathFromId(binding.activeRouteId);
-  const activeRoute =
-    routeManifest?.segmentGraph.routes.get(binding.activeRouteId) ??
-    (activeRoutePath === null ? null : matchManifestRoute(activeRoutePath, routeManifest));
+  // The active route id names the render's URL, which is the manifest id for
+  // a static route; a dynamic route's concrete URL is matched instead.
+  const activeRoute = resolveManifestRoute(binding.activeRouteId, routeManifest);
   const manifestBinding =
     activeRoute === null
       ? undefined
@@ -204,15 +211,16 @@ export function resolveRouterTransitionFromRoutes(
     // route reports only its slots (Next.js explicitParallelRouteChildren).
     // A slot-only navigation keeps the children branch that was showing, so
     // its binding, not the latest payload's source page, names that route.
-    const childrenRoutePath =
+    // The id is the render's concrete URL, so the manifest gives its pattern.
+    const keptChildrenRoute =
       children?.binding.state === "active" &&
       children.binding.activeRouteId != null &&
       children.binding.activeRouteId !== metadata.routeId
-        ? routePathFromId(children.binding.activeRouteId)
+        ? resolveManifestRoute(children.binding.activeRouteId, routeManifest)
         : null;
     primary =
-      childrenRoutePath !== null
-        ? patternToNextFormat(childrenRoutePath)
+      keptChildrenRoute !== null
+        ? patternToNextFormat(`/${keptChildrenRoute.patternParts.join("/")}`)
         : children === null || children.binding.state === "active"
           ? joinSourcePath(sourceSegments)
           : children.binding.state === "unmatched"

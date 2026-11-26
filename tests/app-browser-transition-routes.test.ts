@@ -163,7 +163,8 @@ describe("resolveRouterTransitionFromRoutes", () => {
           routeId: "route:/some-page",
           slotBindings: [
             {
-              activeRouteId: "route:/blog/:slug",
+              // A render's route id names its concrete URL.
+              activeRouteId: "route:/blog/hello",
               ownerLayoutId: "layout:/",
               slotId: "slot:children:/",
               state: "active",
