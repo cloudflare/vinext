@@ -1573,6 +1573,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isProduction: process.env.NODE_ENV === "production",
       params,
       pathname,
+      rootParamNames: route.rootParamNames ?? [],
       routePattern: route.pattern,
       routeSegments: route.routeSegments,
     })) !== null;

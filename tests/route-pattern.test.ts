@@ -6,6 +6,7 @@ import {
   normalizeStaticPathsEntry,
   routePattern,
   routePatternParts,
+  withoutInterceptionMarker,
 } from "../packages/vinext/src/routing/route-pattern.js";
 
 describe("route pattern helpers", () => {
@@ -222,5 +223,21 @@ describe("normalizeStaticPathsEntry", () => {
     expect(normalizeStaticPathsEntry("/files/a%2Fb", "/files/:name")).toEqual({
       params: { name: "a/b" },
     });
+  });
+});
+
+describe("withoutInterceptionMarker", () => {
+  it("reads a marker-prefixed dynamic segment as that segment", () => {
+    expect(withoutInterceptionMarker("(.)[id]")).toBe("[id]");
+    expect(withoutInterceptionMarker("(..)[...slug]")).toBe("[...slug]");
+    expect(withoutInterceptionMarker("(..)(..)[[...rest]]")).toBe("[[...rest]]");
+    expect(withoutInterceptionMarker("(...)[id]")).toBe("[id]");
+  });
+
+  it("keeps any other segment", () => {
+    expect(withoutInterceptionMarker("(.)photo")).toBe("(.)photo");
+    expect(withoutInterceptionMarker("[id]")).toBe("[id]");
+    expect(withoutInterceptionMarker("(group)")).toBe("(group)");
+    expect(withoutInterceptionMarker("photo")).toBe("photo");
   });
 });

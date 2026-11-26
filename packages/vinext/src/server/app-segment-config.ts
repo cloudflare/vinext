@@ -71,7 +71,7 @@ function isRouteSegmentDynamic(value: unknown): value is AppRouteSegmentDynamic 
   return DYNAMIC_VALUES.has(value);
 }
 
-function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
+export function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
   return FETCH_CACHE_VALUES.has(value);
 }
 
@@ -169,7 +169,12 @@ export function resolveAppPageDynamicConfig(
   return dynamicConfig;
 }
 
-function resolveDynamicParamsConfig(
+/**
+ * A route's `dynamicParams = false`, which enforces its generated params only
+ * where its last dynamic segment generates them or is static-only, as Next.js
+ * gives such a route a `fallback: false` entry.
+ */
+export function resolveAppPageDynamicParamsConfig(
   options: ResolveAppPageSegmentConfigOptions,
 ): boolean | undefined {
   const parallelSegments = getParallelSegments(options);
@@ -225,9 +230,9 @@ function resolveDynamicParamsConfig(
     const branchStartPosition = routeSegments.length - (branch.routeSegments?.length ?? 0);
     const checkSegment = (
       segment: AppRouteSegmentConfigModule | null | undefined,
-      ownerPosition: number,
+      ownerPosition: number | boolean,
     ) => {
-      if (ownerPosition !== lastDynamicPosition) return;
+      if (ownerPosition !== true && ownerPosition !== lastDynamicPosition) return;
       if (segment?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
       if (typeof segment?.generateStaticParams === "function") {
         lastDynamicSegmentHasStaticParams = true;
@@ -241,7 +246,14 @@ function resolveDynamicParamsConfig(
         branchStartPosition + (branch.configLayoutTreePositions?.[index] ?? 0) - 1,
       );
     });
-    checkSegment(branch.page, branchStartPosition + (branch.routeSegments?.length ?? 0) - 1);
+    // The loader tree's `__DEFAULT__` segment follows the owner's child
+    // segment, beside it, so only a deeper dynamic segment comes after it.
+    checkSegment(
+      branch.page,
+      branch.isDefault
+        ? lastDynamicPosition <= (branch.ownerTreePosition ?? routeSegments.length)
+        : branchStartPosition + (branch.routeSegments?.length ?? 0) - 1,
+    );
   }
 
   if (!options.parallelBranches) {
@@ -287,7 +299,7 @@ export function resolveAppPageSegmentConfig(
     ...(dynamicConfig === undefined ? {} : { dynamicConfig }),
     revalidateSeconds: null,
   };
-  config.dynamicParamsConfig = resolveDynamicParamsConfig(options);
+  config.dynamicParamsConfig = resolveAppPageDynamicParamsConfig(options);
   let hasForceCache = false;
   let hasForceNoStore = false;
   let hasOnlyCache = false;

@@ -72,6 +72,7 @@ import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-p
 import {
   type AppPageInterceptState,
   buildAppPageElement,
+  markInterceptionSourceRender,
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptState,
@@ -492,6 +493,11 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   resumeRoutingAfterMiss?: () => boolean;
   skipStaticParamsValidation?: boolean;
   staticParamsValidationParams?: AppPageParams;
+  /**
+   * An interception's own `dynamicParams` check, which replaces the matched
+   * route's (see withResolvedIntercept).
+   */
+  interceptStaticParams?: AppPageInterceptStaticParams;
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number) => unknown;
   expireSeconds?: number;
@@ -767,6 +773,17 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   return options.isRscRequest ? response : traceResponseStart(response);
 }
 
+type AppPageInterceptStaticParams = {
+  dynamicConfig: string | undefined;
+  dynamicParamsConfig: boolean | undefined;
+  fetchCache: FetchCacheMode | null;
+  generateStaticParams: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
+  isDynamicRoute: boolean;
+  params: AppPageParams;
+  rootParamNames: readonly string[];
+  routeSegments: readonly string[];
+};
+
 /**
  * Resolves the request's intercept once, for the render and its cache reads.
  *
@@ -775,6 +792,12 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
  * `/shots/1` to `/shots/2`). vinext renders that through the matched route's
  * own page render, so the interception's segment config replaces the route's
  * before that render reads it.
+ *
+ * Its `dynamicParams` and `generateStaticParams` come from that route too,
+ * whichever route renders it: the owner's layouts, the intercepting route's
+ * layouts and page, with the params it renders with. The target page's never
+ * apply, so a param the interception doesn't generate answers 404 as Next.js
+ * does, and one only the target rejects still intercepts.
  */
 async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
@@ -787,14 +810,42 @@ async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
     interceptState: options.interceptState,
     isRscRequest: options.isRscRequest,
   });
-  if (interceptState.kind !== "current-route") return { ...options, interceptState };
-  const config = resolveAppPageInterceptSegmentConfig(
-    options.route,
-    toInterceptOptions(options.interceptionContext, interceptState.intercept),
-  );
+  if (interceptState.kind === "none") return { ...options, interceptState };
+  const interceptOpts = toInterceptOptions(options.interceptionContext, interceptState.intercept);
+  let configRoute = options.route;
+  if (interceptState.kind === "source-route") {
+    // The matched route is already loaded. Another source loads here, as its
+    // render will load it, before its layouts' config is read.
+    configRoute = interceptState.sourceRoute;
+    await options.ensureRouteLoaded?.(
+      configRoute,
+      markInterceptionSourceRender(interceptOpts, interceptState.intercept),
+    );
+  }
+  const config = resolveAppPageInterceptSegmentConfig(configRoute, {
+    ...interceptOpts,
+    interceptOwnerDefaultForStaticParams: interceptState.intercept.ownerDefault,
+  });
+  const interceptStaticParams: AppPageInterceptStaticParams = {
+    dynamicConfig: config.staticParamsDynamicConfig,
+    dynamicParamsConfig: config.dynamicParamsConfig,
+    // Next.js starts the generators without a fetchCache; each source of the
+    // interception's breadth-first chain sets its own segment's.
+    fetchCache: null,
+    generateStaticParams: config.generateStaticParams,
+    isDynamicRoute: config.isDynamicRoute,
+    params: interceptState.intercept.matchedParams,
+    // The interception renders below the source's root layout.
+    rootParamNames: configRoute.rootParamNames ?? [],
+    routeSegments: config.routeSegments,
+  };
+  if (interceptState.kind === "source-route") {
+    return { ...options, interceptState, interceptStaticParams };
+  }
   return {
     ...options,
     interceptState,
+    interceptStaticParams,
     dynamicConfig: config.dynamicConfig,
     dynamicStaleTimeSeconds: config.dynamicStaleTimeSeconds,
     fetchCache: config.fetchCacheMode,
@@ -1341,19 +1392,30 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Next.js renders an unlisted param on demand in draft mode.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
   if (options.skipStaticParamsValidation !== true && !isDraftMode) {
+    const interceptStaticParams = options.interceptStaticParams;
     const dynamicParamsResponse = await runStaticParamsCheckDetached(() =>
-      validateAppPageRouteDynamicParams({
-        dynamicConfig,
-        dynamicParamsConfig: options.dynamicParamsConfig,
-        fetchCache: options.fetchCache,
-        routeSegments: route.routeSegments,
-        generateStaticParams: options.generateStaticParams,
-        isDynamicRoute: route.isDynamic,
-        isProduction: options.isProduction,
-        params: options.staticParamsValidationParams ?? options.params,
-        pathname: options.cleanPathname,
-        routePattern: route.pattern,
-      }),
+      validateAppPageRouteDynamicParams(
+        interceptStaticParams
+          ? {
+              ...interceptStaticParams,
+              isProduction: options.isProduction,
+              pathname: options.cleanPathname,
+              routePattern: route.pattern,
+            }
+          : {
+              dynamicConfig,
+              dynamicParamsConfig: options.dynamicParamsConfig,
+              fetchCache: options.fetchCache,
+              routeSegments: route.routeSegments,
+              generateStaticParams: options.generateStaticParams,
+              isDynamicRoute: route.isDynamic,
+              isProduction: options.isProduction,
+              params: options.staticParamsValidationParams ?? options.params,
+              pathname: options.cleanPathname,
+              rootParamNames: route.rootParamNames ?? [],
+              routePattern: route.pattern,
+            },
+      ),
     );
     if (dynamicParamsResponse) {
       // Next.js rejects a generated-param miss while routing, so it renders

@@ -28,6 +28,16 @@ export function interceptionMarkerPatternParam(
   return marker && name ? { marker, name } : null;
 }
 
+/**
+ * The dynamic segment an interception marker prefixes, `[id]` for `(.)[id]`,
+ * which Next.js reads as that segment; any other segment as it is.
+ */
+export function withoutInterceptionMarker(segment: string): string {
+  const marker = INTERCEPTION_MARKERS.find((prefix) => segment.startsWith(prefix));
+  const rest = marker ? segment.slice(marker.length) : segment;
+  return rest.startsWith("[") && rest.endsWith("]") ? rest : segment;
+}
+
 function routePatternPart(segment: string): string {
   const markerParam = interceptionMarkerSegmentParam(segment);
   if (markerParam) {
