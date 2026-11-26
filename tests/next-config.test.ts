@@ -1336,7 +1336,7 @@ describe("resolveNextConfig images.loaderFile", () => {
   const fixtureDir = path.resolve(import.meta.dirname, "fixtures/image-loader-file");
 
   it("resolves the loader file against the project root", async () => {
-    for (const loader of [undefined, "default", "custom"]) {
+    for (const loader of [undefined, "default", "custom"] as const) {
       const config = await resolveNextConfig(
         { images: { loader, loaderFile: "./image-loader.js" } },
         fixtureDir,
@@ -1356,6 +1356,12 @@ describe("resolveNextConfig images.loaderFile", () => {
     ).rejects.toThrow(
       'Specified images.loader property (imgix) cannot be used with images.loaderFile property. Please set images.loader to "custom".',
     );
+  });
+
+  it("rejects an unknown images.loader", async () => {
+    await expect(
+      resolveNextConfig({ images: { loader: "custon" as never } }, fixtureDir),
+    ).rejects.toThrow('Specified images.loader should be one of "default"');
   });
 
   it("should error when images.loaderFile does not exist", async () => {

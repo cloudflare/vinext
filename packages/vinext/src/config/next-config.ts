@@ -375,7 +375,7 @@ export type NextConfig = {
      * `"custom"` requires every image to get a loader, from `loaderFile` or the
      * `loader` prop. Other values build URLs with the default loader.
      */
-    loader?: string;
+    loader?: "default" | "imgix" | "cloudinary" | "akamai" | "custom";
     /**
      * Module, relative to the project root, whose default export replaces the
      * default image loader. Resolved to an absolute path.
@@ -1391,10 +1391,20 @@ async function resolveBuildId(
  * (packages/next/src/server/config.ts): it needs the default or custom loader
  * and an existing file, and resolves to an absolute path.
  */
+const VALID_IMAGE_LOADERS = new Set(["default", "imgix", "cloudinary", "akamai", "custom"]);
+
 function resolveImageLoaderFile(
   images: { loader?: string; loaderFile?: string },
   root: string,
 ): string | undefined {
+  // Next.js's config schema accepts only these (VALID_LOADERS), and any
+  // `images` schema error is fatal.
+  if (images.loader !== undefined && !VALID_IMAGE_LOADERS.has(images.loader)) {
+    throw new Error(
+      `Specified images.loader should be one of "default", "imgix", "cloudinary", "akamai" or "custom", received ${JSON.stringify(images.loader)}.\n` +
+        "See more info here: https://nextjs.org/docs/messages/invalid-images-config",
+    );
+  }
   if (!images.loaderFile) return undefined;
   const loader = images.loader || "default";
   if (loader !== "default" && loader !== "custom") {

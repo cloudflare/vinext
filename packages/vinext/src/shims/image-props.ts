@@ -407,8 +407,13 @@ export function generateImageAttributes(
   quality?: number,
   sizes?: string,
   buildUrl: ImageUrlBuilder = imageOptimizationUrl,
+  // next/legacy/image's `layout`. Its getWidths (client/legacy/image.tsx) lets
+  // `sizes` pick widths only for fill and responsive layouts, and offers every
+  // device width to a responsive image.
+  legacyLayout?: string,
 ): { src: string; srcSet: string } {
-  if (sizes) {
+  const legacyFullWidth = legacyLayout === "fill" || legacyLayout === "responsive";
+  if (sizes && (legacyLayout === undefined || legacyFullWidth)) {
     const viewportWidthPattern = /(^|\s)(1?\d?\d)vw/g;
     const viewportPercentages = Array.from(sizes.matchAll(viewportWidthPattern), (match) =>
       Number.parseInt(match[2], 10),
@@ -426,9 +431,10 @@ export function generateImageAttributes(
     };
   }
 
-  // Next.js getWidths(): an image with no width (`fill`) offers every
-  // images.deviceSizes entry as a `w` descriptor, and `src` is the largest.
-  if (width === undefined) {
+  // Next.js getWidths(): an image with no width (`fill`), or a legacy fill or
+  // responsive image, offers every images.deviceSizes entry as a `w`
+  // descriptor, and `src` is the largest.
+  if (width === undefined || legacyFullWidth) {
     return {
       src: buildUrl(src, RESPONSIVE_WIDTHS[RESPONSIVE_WIDTHS.length - 1], quality),
       srcSet: RESPONSIVE_WIDTHS.map(
@@ -579,18 +585,21 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
         }
       : undefined;
 
+  // As in Next.js's generateImgAttrs, `src` follows `sizes` and `srcSet`, so
+  // spreading these props onto an <img> sets it last (Safari fetches `src` as
+  // soon as it is set).
   const imageProps: ImgProps = {
-    src: optimizedSrc,
     alt,
     width: fill ? undefined : imgWidth,
     height: fill ? undefined : imgHeight,
     loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
     fetchPriority: priority ? ("high" as const) : undefined,
     decoding: "async" as const,
-    srcSet,
-    sizes: sizes ?? (fill ? "100vw" : undefined),
     className,
     style: getImageStyle(fill, style, blurStyle, { objectFit, objectPosition }),
+    sizes: sizes ?? (fill ? "100vw" : undefined),
+    srcSet,
+    src: optimizedSrc,
     ...rest,
   };
   return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };

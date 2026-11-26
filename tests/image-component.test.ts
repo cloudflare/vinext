@@ -551,6 +551,9 @@ describe("getImageProps", () => {
       "https://cdn.example.com/photo.jpg?w=384 1x, https://cdn.example.com/photo.jpg?w=640 2x",
     );
     expect(new Set(qualities)).toEqual(new Set([undefined]));
+    // Next.js generateImgAttrs keeps `src` after `sizes` and `srcSet`.
+    const keys = Object.keys(props);
+    expect(keys.indexOf("src")).toBeGreaterThan(keys.indexOf("srcSet"));
   });
 
   it("returns blur placeholder styles", () => {

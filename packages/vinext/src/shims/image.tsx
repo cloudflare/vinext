@@ -144,6 +144,9 @@ function preloadImageResource(input: {
   });
 }
 
+/** `layout` of a next/legacy/image, which picks its srcSet widths. */
+export type LegacyImageLayout = "fill" | "fixed" | "intrinsic" | "responsive" | "raw";
+
 function ImageRender(
   {
     src: srcProp,
@@ -172,8 +175,10 @@ function ImageRender(
     ...rest
   }: ImageProps,
   ref: React.ForwardedRef<HTMLImageElement>,
-  ignoreLoaderFile: boolean,
+  // Set for next/legacy/image, which never uses images.loaderFile.
+  legacyLayout: LegacyImageLayout | undefined,
 ) {
+  const ignoreLoaderFile = legacyLayout !== undefined;
   // Dedup refs: ensure onLoad and onError fire at most once per src per mount.
   // Matches Next.js behavior — prevents double-firing from React re-renders,
   // strict-mode double-invocation, or state updates inside the handler itself.
@@ -498,6 +503,7 @@ function ImageRender(
           imgQuality,
           sizes,
           customLoader ? customLoaderUrlBuilder(customLoader) : undefined,
+          legacyLayout,
         )
       : undefined;
   const srcSet = optimizedAttributes
@@ -529,7 +535,7 @@ function ImageRender(
         }
       : undefined;
 
-  const imageSizes = sizes ?? (fill ? "100vw" : undefined);
+  const imageSizes = sizes ?? (fill || legacyLayout === "responsive" ? "100vw" : undefined);
   preloadImageResource({
     shouldPreload,
     src: optimizedSrc,
@@ -539,23 +545,25 @@ function ImageRender(
   });
 
   // For local images, render a standard <img> tag with srcSet and blur support.
-  // The src and srcSet point to the /_next/image optimization endpoint.
+  // The src and srcSet point to the /_next/image optimization endpoint. As in
+  // Next.js's generateImgAttrs, `src` follows `sizes` and `srcSet`: React sets
+  // attributes in order, and Safari fetches `src` as soon as it is set.
   return (
     <img
       ref={mergedRef}
-      src={optimizedSrc}
       alt={alt}
       width={fill ? undefined : imgWidth}
       height={fill ? undefined : imgHeight}
       loading={imageLoading}
       fetchPriority={priorityFetchPriority}
       decoding="async"
-      srcSet={srcSet}
-      sizes={imageSizes}
       className={className}
       onLoad={handleLoad}
       onError={handleError}
       style={getImageStyle(fill, style, blurStyle, legacyFill, showAltText)}
+      sizes={imageSizes}
+      srcSet={srcSet}
+      src={optimizedSrc}
       {...rest}
       data-nimg={fill ? "fill" : "1"}
     />
@@ -563,16 +571,19 @@ function ImageRender(
 }
 
 const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(props, ref) {
-  return ImageRender(props, ref, false);
+  return ImageRender(props, ref, undefined);
 });
 
 /**
- * The Image that next/legacy/image renders. Next.js's legacy Image picks its
- * loader from `images.loader` and never loads `images.loaderFile`
- * (client/legacy/image.tsx), so this one ignores the loader file.
+ * The Image that next/legacy/image renders. Next.js's legacy Image
+ * (client/legacy/image.tsx) picks its loader from `images.loader`, never
+ * loading `images.loaderFile`, and its `layout` decides the srcSet widths.
  */
-export const LegacyBaseImage = forwardRef<HTMLImageElement, ImageProps>(function Image(props, ref) {
-  return ImageRender(props, ref, true);
+export const LegacyBaseImage = forwardRef<
+  HTMLImageElement,
+  ImageProps & { legacyLayout: LegacyImageLayout }
+>(function Image({ legacyLayout, ...props }, ref) {
+  return ImageRender(props, ref, legacyLayout);
 });
 
 // Annotated so declaration emit references ImageProps by name and keeps its
