@@ -2329,6 +2329,11 @@ describe("App Router integration", () => {
     expect(ssrEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
     expect(clientEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
     expect(rscEntries).not.toContain("pages/**/*.{tsx,ts,jsx,js}");
+    // TypeScript declaration files are never route modules (Next.js
+    // build/route-discovery.ts), and the scan can't parse every one of them.
+    expect(rscEntries).toContain("!**/*.d.ts");
+    expect(ssrEntries).toContain("!**/*.d.ts");
+    expect(clientEntries).toContain("!**/*.d.ts");
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {

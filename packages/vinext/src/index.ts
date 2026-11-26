@@ -1059,6 +1059,11 @@ function createDevPagesModuleDependencyReader(
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
 
+// TypeScript declaration files are never route modules (see
+// `scanWithExtensions`), and the dependency scan can't parse every one of them
+// as a module. Negated optimizeDeps.entries patterns are glob ignores.
+const OPTIMIZE_ENTRIES_DECLARATION_FILES_EXCLUDE = "!**/*.d.ts";
+
 function resolveTsconfigPathCandidate(candidate: string): string | null {
   const candidates = candidate.endsWith(".json")
     ? [candidate]
@@ -4458,7 +4463,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         pagesOptimizeEntries = !hasAppDir
           ? [
               ...(hasPagesDir
-                ? [toRelativeFileEntry(root, pagesDir) + "/**/*.{tsx,ts,jsx,js}"]
+                ? [
+                    toRelativeFileEntry(root, pagesDir) + "/**/*.{tsx,ts,jsx,js}",
+                    OPTIMIZE_ENTRIES_DECLARATION_FILES_EXCLUDE,
+                  ]
                 : []),
               ...[instrumentationPath, instrumentationClientPath].flatMap((entry) =>
                 entry ? [toRelativeFileEntry(root, entry)] : [],
@@ -4486,7 +4494,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // "Invalid hook call" from duplicate React instances).
           // The entries must be relative to the project root.
           const relAppDir = path.relative(root, appDir);
-          const appEntries = [`${relAppDir}/**/*.{tsx,ts,jsx,js}`];
+          const appEntries = [
+            `${relAppDir}/**/*.{tsx,ts,jsx,js}`,
+            OPTIMIZE_ENTRIES_DECLARATION_FILES_EXCLUDE,
+          ];
           const explicitInstrumentationEntries = [
             instrumentationPath,
             instrumentationClientPath,
