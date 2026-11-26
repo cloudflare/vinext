@@ -3438,6 +3438,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_GESTURE_TRANSITION"] = JSON.stringify(
           nextConfig.gestureTransition,
         );
+        // Raw boolean for the same reason: offline retry tree-shakes away
+        // when `experimental.useOffline` is off. Matches Next.js define-env.ts.
+        defines["process.env.__NEXT_USE_OFFLINE"] = JSON.stringify(nextConfig.useOffline);
         defines["process.env.__NEXT_APP_NAV_FAIL_HANDLING"] = JSON.stringify(
           nextConfig.appNavFailHandling,
         );

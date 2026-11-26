@@ -125,8 +125,9 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "next/amp": { status: "unsupported", detail: "AMP is not supported" },
   "next/offline": {
-    status: "partial",
-    detail: "useOffline() hook available; offline retry behavior deferred",
+    status: "supported",
+    detail:
+      "useOffline() and offline retry of navigations, Server Actions and prefetches (with experimental.useOffline)",
   },
   "next/document": { status: "supported", detail: "custom _document.tsx" },
   "next/app": { status: "supported", detail: "custom _app.tsx" },
@@ -309,6 +310,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "experimental.lightningCssFeatures": { status: "supported" },
   "experimental.disableOptimizedLoading": { status: "supported" },
   "experimental.gestureTransition": { status: "supported" },
+  "experimental.useOffline": { status: "supported" },
   "experimental.appNavFailHandling": { status: "supported" },
   "experimental.rootParams": {
     status: "supported",

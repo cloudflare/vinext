@@ -327,6 +327,95 @@ describe("app browser server action client", () => {
     expect(clearClientNavigationCaches).not.toHaveBeenCalled();
   });
 
+  // Next.js: reducers/server-action-reducer.ts replays an action whose fetch
+  // rejected once the connection returns (experimental.useOffline).
+  it("replays an action whose fetch lost the network once the connection returns", async () => {
+    vi.stubEnv("__NEXT_USE_OFFLINE", "true");
+    vi.useFakeTimers();
+    const offline = await import("../packages/vinext/src/shims/internal/offline.js");
+    try {
+      const routerState = createActionTestRouterState();
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source",
+        navigationId: 1,
+        routerState,
+      });
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal("location", { href: "https://example.com/source" });
+      const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+        if (init?.method === "HEAD") return Promise.resolve(new Response(null));
+        return fetchMock.mock.calls.filter(([, i]) => i?.method === "POST").length === 1
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : Promise.resolve(
+              new Response("flight", {
+                status: 200,
+                headers: { "content-type": "text/x-component" },
+              }),
+            );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: true, data: "saved" },
+      });
+
+      const result = invokeClientServerAction("action-id", [], actionInitiation, {
+        basePath: "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(result).resolves.toBe("saved");
+      const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
+      expect(posts).toHaveLength(2);
+      expect(posts[1][1]?.body).toBe("encoded-action-args");
+      expect(offline.getOffline()).toBeNull();
+    } finally {
+      offline._resetOfflineStateForTests();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("rejects an action whose fetch lost the network when useOffline is off", async () => {
+    const routerState = createActionTestRouterState();
+    const actionInitiation = createServerActionInitiationSnapshot({
+      href: "https://example.com/source",
+      navigationId: 1,
+      routerState,
+    });
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    const error = new TypeError("Failed to fetch");
+    const fetchMock = vi.fn().mockRejectedValue(error);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      invokeClientServerAction("action-id", [], actionInitiation, {
+        basePath: "",
+        clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      }),
+    ).rejects.toBe(error);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("throws the action error without committing when the action failed", async () => {
     const routerState = createActionTestRouterState();
     const actionInitiation = createServerActionInitiationSnapshot({

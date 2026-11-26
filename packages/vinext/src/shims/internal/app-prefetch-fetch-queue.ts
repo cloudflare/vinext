@@ -1,5 +1,7 @@
 "use client";
 
+import { checkOfflineError, getOffline, subscribeToOnline } from "./offline.js";
+
 const APP_PREFETCH_FETCH_SLOT_RELEASE_KEY = Symbol.for("vinext.appPrefetchFetchSlotRelease");
 
 const MAX_DEFAULT_APP_PREFETCH_REQUESTS = 4;
@@ -20,8 +22,20 @@ let appPrefetchFetchClaimSequence = 0;
 let activeDefaultAppPrefetchRequests = 0;
 let defaultAppPrefetchDrainScheduled = false;
 
+let resumesWhenOnline = false;
+
 function drainDefaultAppPrefetchQueue(): void {
   defaultAppPrefetchDrainScheduled = false;
+  // While offline, no prefetch is sent; the queue resumes when the connection
+  // returns (Next.js's scheduler `hasNetworkBandwidth`). A navigation that
+  // promotes a queued prefetch still sends it, and waits like any navigation.
+  if (process.env.__NEXT_USE_OFFLINE && getOffline() !== null) {
+    if (!resumesWhenOnline) {
+      resumesWhenOnline = true;
+      subscribeToOnline(scheduleDefaultAppPrefetchDrain);
+    }
+    return;
+  }
   while (activeDefaultAppPrefetchRequests < MAX_DEFAULT_APP_PREFETCH_REQUESTS) {
     const run = defaultAppPrefetchQueue.shift();
     if (!run) return;
@@ -76,7 +90,14 @@ export function scheduleAppPrefetchFetch(
           APP_PREFETCH_FETCH_SLOT_RELEASE_KEY
         ] = () => appPrefetchFetchControls.delete(promise);
       },
-      () => appPrefetchFetchControls.delete(promise),
+      (error: unknown) => {
+        appPrefetchFetchControls.delete(promise);
+        // A network error enters the offline state, as every failed prefetch
+        // does in Next.js; the rejection still drops this one's cache entry.
+        if (process.env.__NEXT_USE_OFFLINE && !controller.signal.aborted) {
+          checkOfflineError(error);
+        }
+      },
     );
     return promise;
   }
@@ -113,6 +134,25 @@ export function scheduleAppPrefetchFetch(
             resolve(response);
           },
           (error: unknown) => {
+            // A prefetch that lost the network goes back to the head of the
+            // queue, still pending, and is sent again when the connection
+            // returns, unless it is no longer wanted by then. In Next.js the
+            // failed entry is stale at once, so its task fetches it again once
+            // the scheduler is pinged on reconnect.
+            if (
+              process.env.__NEXT_USE_OFFLINE &&
+              !controller.signal.aborted &&
+              checkOfflineError(error)
+            ) {
+              started = false;
+              if (!didRelease) {
+                didRelease = true;
+                activeDefaultAppPrefetchRequests -= 1;
+              }
+              defaultAppPrefetchQueue.unshift(runner);
+              scheduleDefaultAppPrefetchDrain();
+              return;
+            }
             appPrefetchFetchControls.delete(promise);
             release();
             reject(error);

@@ -2436,6 +2436,20 @@ describe("resolveNextConfig gestureTransition", () => {
   });
 });
 
+describe("resolveNextConfig useOffline", () => {
+  it("defaults experimental.useOffline to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.useOffline).toBe(false);
+  });
+
+  it("reads experimental.useOffline from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { useOffline: true },
+    });
+    expect(resolved.useOffline).toBe(true);
+  });
+});
+
 describe("resolveNextConfig cachedNavigations", () => {
   it("defaults experimental.cachedNavigations to false", async () => {
     const resolved = await resolveNextConfig({ cacheComponents: true });
@@ -2843,6 +2857,7 @@ describe("detectNextIntlConfig", () => {
       cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
+      useOffline: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },

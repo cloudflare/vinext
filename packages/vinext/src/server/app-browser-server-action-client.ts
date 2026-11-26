@@ -5,6 +5,7 @@ import {
 } from "@vitejs/plugin-rsc/browser";
 import { parseRenderedPathAndSearchHeader } from "vinext/shims/app-router-navigation";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
+import { fetchRetryingWhenOffline } from "vinext/shims/internal/offline";
 import {
   createServerActionResultFacts,
   isServerActionResult,
@@ -183,11 +184,19 @@ export async function invokeClientServerAction(
         : null,
     previousNextUrl: actionInitiation.routerState.previousNextUrl,
   }).headers;
-  const fetchResponse = await fetch(createServerActionRequestUrl(actionInitiation.path), {
-    method: "POST",
-    headers,
-    body,
-  });
+  const fetchAction = () =>
+    fetch(createServerActionRequestUrl(actionInitiation.path), {
+      method: "POST",
+      headers,
+      body,
+    });
+  // With experimental.useOffline, an action whose fetch lost the network is
+  // replayed once the network returns, as in Next.js's server-action-reducer.
+  // That is safe because a rejected fetch never reached the server, so the
+  // action has not run.
+  const fetchResponse = process.env.__NEXT_USE_OFFLINE
+    ? await fetchRetryingWhenOffline(fetchAction)
+    : await fetchAction();
 
   throwOnServerActionNotFound(fetchResponse, id);
 
