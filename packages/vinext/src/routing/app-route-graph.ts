@@ -1076,11 +1076,14 @@ export async function buildAppRouteGraph(
   // contribute synthetic sub-routes (e.g. @parallel/[...catcher]/page.tsx →
   // /:catcher+), but the ghost itself is not added to the routes table.
   const ghostParentRoutes: AppRouteGraphRoute[] = [];
+  // Layouts resolve through `findFileWithExts` everywhere else (see
+  // `discoverLayouts`), so declaration files stay layout candidates here too.
   for await (const file of scanWithExtensions(
     "**/layout",
     appDir,
     scanMatcher.extensions,
     excludeDir,
+    { keepDeclarationFiles: true },
   )) {
     const dir = path.dirname(file);
     const routeDir = dir === "." ? appDir : path.join(appDir, dir);

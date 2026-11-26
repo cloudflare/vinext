@@ -2379,9 +2379,10 @@ describe("formatReport", () => {
 
 // ── Integration: running against fixtures ──────────────────────────────────
 
-// With `ts` as a page extension the route scanners skip declaration files
-// (Next.js createPagesMapping), but boundary files like loading.d.ts still
-// resolve through the explicit `d.ts` extension.
+// With `ts` as a page extension the route scanners skip declaration pages
+// (Next.js createPagesMapping), but layouts and boundary files like
+// layout.d.ts / loading.d.ts still resolve through the explicit `d.ts`
+// extension.
 describe("integration: declaration files with a d.ts page extension", () => {
   const fixtureDir = path.resolve(
     import.meta.dirname,
@@ -2392,9 +2393,11 @@ describe("integration: declaration files with a d.ts page extension", () => {
     const routes = await appRouter(path.join(fixtureDir, "app"), ["ts", "d.ts"]);
     expect(routes.map((route) => route.pattern)).toEqual(["/"]);
     expect(routes[0]!.loadingPath).toMatch(/loading\.d\.ts$/);
+    expect(routes[0]!.layouts).toEqual([expect.stringMatching(/layout\.d\.ts$/)]);
 
     const names = checkConventions(fixtureDir).map((item) => item.name);
     expect(names).toContain("1 page(s)");
+    expect(names).toContain("1 layout(s)");
     expect(names).toContain("1 loading boundary(ies)");
   });
 });

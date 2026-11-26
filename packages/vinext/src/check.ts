@@ -58,14 +58,10 @@ function isSkippedDeclarationFile(file: string, dottedExts: string[]): boolean {
   return file.endsWith(".d.ts") && dottedExts.includes(".ts");
 }
 
-// The conventions the route scanners discover (`scanWithExtensions`), which
-// skip declaration files. Boundary files (loading, error, not-found) resolve
-// through `findFileWithExts`, which doesn't.
-const SCANNED_APP_ROUTER_FILE_TYPES: ReadonlySet<AppRouterFileType> = new Set([
-  "page",
-  "layout",
-  "route",
-]);
+// The conventions whose declaration files the route scanners skip
+// (`scanWithExtensions`). Layouts and boundary files (loading, error,
+// not-found) resolve through `findFileWithExts`, which keeps them.
+const SCANNED_APP_ROUTER_FILE_TYPES: ReadonlySet<AppRouterFileType> = new Set(["page", "route"]);
 
 /**
  * True if `relFile` (relative to the app directory) is an App Router file of

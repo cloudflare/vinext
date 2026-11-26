@@ -188,17 +188,20 @@ export function skipsDeclarationFiles(extensions: readonly string[]): boolean {
  * separators on Windows, so each match goes through `toSlash` — this is the
  * boundary where external fs output enters the canonical forward-slash space.
  *
- * TypeScript declaration files are not route files when `ts` is a page
- * extension (see `skipsDeclarationFiles`).
+ * TypeScript declaration files are not page or route files when `ts` is a page
+ * extension (see `skipsDeclarationFiles`). Layout scans keep them
+ * (`keepDeclarationFiles`): webpack's app loader resolves `layout.d.ts`
+ * through `pageExtensions`, so only Turbopack skips it.
  */
 export async function* scanWithExtensions(
   stem: string,
   cwd: string,
   extensions: readonly string[],
   exclude?: (name: string) => boolean,
+  options: { keepDeclarationFiles?: boolean } = {},
 ): AsyncGenerator<string> {
   const pattern = includeDotDirectoryMatches(buildExtensionGlob(stem, extensions));
-  const skipDeclarations = skipsDeclarationFiles(extensions);
+  const skipDeclarations = !options.keepDeclarationFiles && skipsDeclarationFiles(extensions);
   for await (const file of glob(pattern, {
     cwd,
     ...(exclude ? { exclude } : {}),

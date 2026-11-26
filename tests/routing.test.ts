@@ -18,6 +18,7 @@ import {
   type AppRoute,
 } from "../packages/vinext/src/routing/app-router.js";
 import { toSlash } from "pathslash";
+import { scanWithExtensions } from "../packages/vinext/src/routing/file-matcher.js";
 
 /** Expected canonical (forward-slash) path for router-output assertions. */
 function canonical(base: string, relativePath = ""): string {
@@ -129,6 +130,31 @@ describe("pagesRouter - route discovery", () => {
     const routes = await pagesRouter(FIXTURE_DIR, ["d.ts"]);
 
     expect(routes.map((r) => r.pattern)).toContain("/declaration-file");
+  });
+
+  // Webpack's app loader resolves layout.d.ts through pageExtensions, so only
+  // page and route scans skip declaration files.
+  it("keeps declaration files in layout scans", async () => {
+    const appDir = path.resolve(
+      import.meta.dirname,
+      "fixtures/check-declaration-page-extensions/app",
+    );
+    const scan = async (stem: string, options?: { keepDeclarationFiles?: boolean }) => {
+      const files: string[] = [];
+      for await (const file of scanWithExtensions(
+        stem,
+        appDir,
+        ["ts", "d.ts"],
+        undefined,
+        options,
+      )) {
+        files.push(file);
+      }
+      return files.sort();
+    };
+
+    expect(await scan("**/page")).toEqual(["page.ts"]);
+    expect(await scan("**/layout", { keepDeclarationFiles: true })).toEqual(["layout.d.ts"]);
   });
 
   it("ignores _app.tsx and _document.tsx", async () => {
