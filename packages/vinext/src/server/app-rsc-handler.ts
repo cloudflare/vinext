@@ -2618,6 +2618,28 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     routeModulePrepared = true;
     return tracePrepareRouteModule(callback);
   };
+  // The route whose modules this request already resolved, so the page render
+  // that follows a form-state action doesn't resolve them again.
+  let loadedRoute: TRoute | null = null;
+  const loadRouteModule = async (route: TRoute) => {
+    if (!options.ensureRouteLoaded) return;
+    if (loadedRoute === route) {
+      await options.ensureRouteLoaded(route);
+      return;
+    }
+    loadedRoute = route;
+    await traceRouteModuleLoad(route.pattern, () => options.ensureRouteLoaded!(route));
+  };
+  // Like Next.js, load and prepare the action's page before handling the
+  // action, which may forward it to the route that owns it. The action and the
+  // page it renders see the route's root params.
+  const prepareActionRoute = async (routeMatch: AppRscRouteMatch<TRoute> | null) => {
+    if (!routeMatch) return;
+    await loadRouteModule(routeMatch.route);
+    prepareRouteModule(() =>
+      setRootParams(pickRootParams(routeMatch.params, routeMatch.route.rootParamNames)),
+    );
+  };
   let serverActionHandled = false;
   const handleServerAction = async (
     routeMatch: AppRscRouteMatch<TRoute> | null,
@@ -2630,20 +2652,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         respondServerActionNotFound(actionId, options.clearRequestContext),
       );
     }
-    if (routeMatch) {
-      // Like Next.js, load the action's page before handling the action,
-      // which may forward it to the route that owns it.
-      const actionRoute = routeMatch.route;
-      if (options.ensureRouteLoaded) {
-        await traceRouteModuleLoad(actionRoute.pattern, () =>
-          options.ensureRouteLoaded!(actionRoute),
-        );
-      }
-      // The action and the page it renders see the route's root params.
-      prepareRouteModule(() =>
-        setRootParams(pickRootParams(routeMatch.params, actionRoute.rootParamNames)),
-      );
-    }
+    await prepareActionRoute(routeMatch);
     const sourceConfigHeaders = new Headers();
     await applyAppRscConfigHeaders(sourceConfigHeaders, request, {
       basePath: options.basePath,
@@ -2686,6 +2695,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         ? markServerActionResponse(respondServerActionNotFound(null, options.clearRequestContext))
         : null;
     }
+    await prepareActionRoute(routeMatch);
     const progressiveActionResult = await options.handleProgressiveActionRequest({
       actionId,
       cleanPathname,
@@ -3266,11 +3276,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : rewriteCachePathname(canonicalPathname, cleanPathname);
     // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
     // branch and any downstream synchronous module reads.
-    if (options.ensureRouteLoaded) {
-      await traceRouteModuleLoad(route.pattern, () => options.ensureRouteLoaded!(route));
-    }
-    const resolvedSearchParams = getResolvedSearchParams();
+    await loadRouteModule(route);
     const isRouteTreePrefetch = isRouteTreePrefetchRequest(request) && !route.routeHandler;
+    // A tree prefetch answers from the matched route alone, so reading its
+    // query is all it prepares, before its params are admitted.
+    const resolvedSearchParams = isRouteTreePrefetch
+      ? prepareRouteModule(getResolvedSearchParams)
+      : getResolvedSearchParams();
     // Next.js rejects a dynamicParams = false miss while routing, outside draft
     // mode, so a fallback rewrite can claim the URL's route tree. Without one
     // that could, vinext doesn't run the route's generators for each prefetched
@@ -3293,13 +3305,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       resumeRoutingAfterMiss();
       return new Response(null, { status: 404 });
     }
-    const setRequestRoute = () =>
-      setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
+    setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
     const matchedResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     if (isRouteTreePrefetch) {
-      // The tree prefetch answers from the matched route alone, so naming it
-      // on the request span is all this request prepares.
-      prepareRouteModule(setRequestRoute);
       const response = await createRouteTreePrefetchResponse(route, {
         buildId: options.buildId,
         prefetchInlining: options.prefetchInlining,
@@ -3307,7 +3315,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       options.clearRequestContext();
       return applyMiddlewareContextToResponse(response, middlewareContext);
     }
-    setRequestRoute();
     const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
     const prerenderRouteParamsMatch = matchPrerenderRouteParamsPayload(
       prerenderRouteParamsPayload,

@@ -817,6 +817,52 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
+  it.each([
+    ["answers", async () => new Response("progressive-action")],
+    [
+      "returns form state",
+      async () => ({
+        draftCookie: null,
+        formState: null,
+        kind: "form-state" as const,
+        pendingCookies: [],
+        revalidationKind: 0,
+      }),
+    ],
+  ])(
+    "loads and prepares a progressive Server Action's route module once when it %s",
+    async (_outcome, handleProgressiveActionRequest) => {
+      const order: string[] = [];
+      const handler = createHandler({
+        ensureRouteLoaded: vi.fn(() => {
+          order.push("load");
+        }),
+        handleProgressiveActionRequest: async () => {
+          order.push("action");
+          return handleProgressiveActionRequest();
+        },
+      });
+      const spans = await captureRouteModuleSpans(async () => {
+        const response = await handler(
+          new Request("https://example.test/docs/about", {
+            method: "POST",
+            headers: { "content-type": "multipart/form-data; boundary=vinext" },
+          }),
+          null,
+          false,
+        );
+        await response.text();
+      });
+
+      expect(order.slice(0, 2)).toEqual(["load", "action"]);
+      expect(spans).toEqual([
+        ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+        ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+        ["RouteModule.prepare", "BaseServer.handleRequest"],
+      ]);
+    },
+  );
+
   it("leaves preparing the route module to the response stage it dispatches", async () => {
     const responseHandler = createHandler({ ensureRouteLoaded: vi.fn() });
     // The request stage holds no route modules.
@@ -5574,6 +5620,36 @@ describe("createAppRscHandler", () => {
       expect(await allowed.text()).toContain('"tree"');
       expect(renderNotFound).toHaveBeenCalledOnce();
       expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    it("prepares a rejected route-tree prefetch's route module before admitting its params", async () => {
+      const handler = createHandler({
+        configHeaders,
+        configRewrites: unclaimedFallbackRewrites,
+        ensureRouteLoaded: vi.fn(),
+        isDynamicParamsMiss: async () => true,
+        matchRoute,
+        renderNotFound: async () => new Response("not found", { status: 404 }),
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+
+      const spans = await captureRouteModuleSpans(async () => {
+        const response = await handler(
+          new Request(`https://example.test${url}`, { headers }),
+          null,
+        );
+        expect(response.status).toBe(404);
+        await response.text();
+      });
+
+      expect(spans.map(([type]) => type)).toEqual([
+        "NextNodeServer.findPageComponents",
+        "LoadComponents.loadRouteModule",
+        "RouteModule.prepare",
+      ]);
     });
 
     it("keeps a rejected route-tree prefetch's generator cacheForRequest values out of its 404", async () => {
