@@ -681,7 +681,10 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
-  it("does not recreate the lock when a resolved-port update runs after close", async () => {
+  it("does not recreate the lock when a resolved-port update runs after close", async ({
+    skip,
+  }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     server = await createServer({
@@ -1034,7 +1037,8 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
-  it("keeps middleware servers lock-free", async () => {
+  it("keeps middleware servers lock-free", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     server = await createServer({
