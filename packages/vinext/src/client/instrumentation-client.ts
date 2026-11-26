@@ -5,7 +5,11 @@ import {
 } from "./instrumentation-client-state.js";
 
 export type ClientInstrumentationHooks = {
-  onRouterTransitionStart?: (href: string, navigationType: "push" | "replace" | "traverse") => void;
+  onRouterTransitionStart?: (
+    href: string,
+    navigationType: "push" | "replace" | "traverse",
+    event: null,
+  ) => void;
 };
 
 export const clientInstrumentationHooks = setClientInstrumentationHooks(

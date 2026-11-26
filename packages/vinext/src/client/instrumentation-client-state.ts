@@ -27,9 +27,23 @@ export function getClientInstrumentationHooks(): ClientInstrumentationHooks | nu
   );
 }
 
+/** Logged when one instrumentation-client module's router transition hook throws. */
+export const INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE =
+  "An instrumentation-client router transition hook failed";
+
+/**
+ * Mirrors Next.js' `startRouterTransition` without
+ * `experimental.instrumentationClientRouterTransitionEvents`: the third
+ * argument is `null`, and a throwing hook is logged instead of breaking the
+ * navigation (client/components/router-transition.ts).
+ */
 export function notifyAppRouterTransitionStart(
   href: string,
   navigationType: "push" | "replace" | "traverse",
 ): void {
-  getClientInstrumentationHooks()?.onRouterTransitionStart?.(href, navigationType);
+  try {
+    getClientInstrumentationHooks()?.onRouterTransitionStart?.(href, navigationType, null);
+  } catch (error) {
+    console.error(INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE, error);
+  }
 }

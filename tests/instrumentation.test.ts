@@ -11,7 +11,10 @@ import {
   findInstrumentationFile,
 } from "../packages/vinext/src/server/instrumentation.js";
 import { toSlash } from "pathslash";
-import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
+import {
+  generateInstrumentationClientInjectModule,
+  isCommonJsInstrumentationClientInject,
+} from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import {
   createInstrumentationClientTransformPlugin,
@@ -816,7 +819,7 @@ describe("instrumentationClientInject plugin pipeline", () => {
         expect(code.indexOf("import * as __vinj_2 from")).toBeGreaterThan(
           code.lastIndexOf("inject-b.js"),
         );
-        expect(code).toContain("export function onRouterTransitionStart(url, type)");
+        expect(code).toContain("export function onRouterTransitionStart(url, type, event)");
 
         const entryPath = path.join(tmpDir, ".vinext-composed-instrumentation-client.mjs");
         fs.writeFileSync(entryPath, code);
@@ -867,6 +870,8 @@ describe("instrumentationClientInject plugin pipeline", () => {
 });
 
 describe("generateInstrumentationClientInjectModule", () => {
+  const esm = (specifier: string) => ({ specifier, commonjs: false });
+
   it("returns passthrough when injects is empty (userPath ignored)", () => {
     expect(generateInstrumentationClientInjectModule([], null)).toBe("export {};");
     expect(
@@ -875,45 +880,63 @@ describe("generateInstrumentationClientInjectModule", () => {
   });
 
   it("generates a single import for one inject entry", () => {
-    const code = generateInstrumentationClientInjectModule(["./inject-a.js"], null);
+    const code = generateInstrumentationClientInjectModule([esm("./inject-a.js")], null);
     expect(code).toContain('import * as __vinj_0 from "./inject-a.js"');
-    expect(code).toContain("export function onRouterTransitionStart(url, type)");
-    expect(code).toContain('typeof __vinj_0.onRouterTransitionStart === "function"');
-    expect(code).toContain("\n    __vinj_0.onRouterTransitionStart(url, type);\n");
+    expect(code).toContain("export function onRouterTransitionStart(url, type, event)");
+    expect(code).toContain("hooks.onRouterTransitionStart?.(url, type, event);");
   });
 
   it("generates imports in config order with user file last", () => {
     const code = generateInstrumentationClientInjectModule(
-      ["./inject-a.js", "some-npm-pkg"],
+      [esm("./inject-a.js"), esm("some-npm-pkg")],
       "/project/instrumentation-client.ts",
     );
     expect(code).toContain('import * as __vinj_0 from "./inject-a.js"');
     expect(code).toContain('import * as __vinj_1 from "some-npm-pkg"');
     expect(code).toContain('import * as __vinj_2 from "/project/instrumentation-client.ts"');
+    expect(code).toContain(
+      "const __vinext_instrumentation_modules = [__vinj_0, __vinj_1, __vinj_2];",
+    );
+  });
+
+  // Next.js require()s each inject, which returns a CommonJS module's live
+  // module.exports (next-instrumentation-client-loader.ts).
+  it("imports a CommonJS inject's module.exports through its default import", () => {
+    const code = generateInstrumentationClientInjectModule(
+      [{ specifier: "./late.cjs", commonjs: true }],
+      null,
+    );
+    expect(code).toContain('import __vinj_0 from "./late.cjs"');
   });
 
   it("falls back to empty-module when user file is absent", () => {
-    const code = generateInstrumentationClientInjectModule(["./inject-a.js"], null);
+    const code = generateInstrumentationClientInjectModule([esm("./inject-a.js")], null);
     expect(code).toContain("import * as __vinj_1 from");
     expect(code).toContain("empty-module");
   });
 
-  it("composes hook calls for every module in array order", () => {
-    const code = generateInstrumentationClientInjectModule(
-      ["./inject-a.js", "./inject-b.js"],
-      "/project/instrumentation-client.ts",
-    );
-    expect(code).toContain('typeof __vinj_0.onRouterTransitionStart === "function"');
-    expect(code).toContain("__vinj_0.onRouterTransitionStart(url, type)");
-    expect(code).toContain('typeof __vinj_1.onRouterTransitionStart === "function"');
-    expect(code).toContain("__vinj_1.onRouterTransitionStart(url, type)");
-    expect(code).toContain('typeof __vinj_2.onRouterTransitionStart === "function"');
-    expect(code).toContain("__vinj_2.onRouterTransitionStart(url, type)");
+  it("escapes special characters in specifier paths", () => {
+    const code = generateInstrumentationClientInjectModule([esm('./path/with"quote.js')], null);
+    expect(code).toContain('from "./path/with\\"quote.js"');
+  });
+});
+
+// Ported from Next.js: test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+// https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+describe("isCommonJsInstrumentationClientInject", () => {
+  it("treats modules without ESM syntax that assign exports as CommonJS", () => {
+    expect(isCommonJsInstrumentationClientInject("module.exports = null\n", "/a.cjs")).toBe(true);
+    expect(isCommonJsInstrumentationClientInject("exports.x = 1\n", "/a.js")).toBe(true);
   });
 
-  it("escapes special characters in specifier paths", () => {
-    const code = generateInstrumentationClientInjectModule(['./path/with"quote.js'], null);
-    expect(code).toContain('from "./path/with\\"quote.js"');
+  it("treats ESM modules and plain scripts as namespaces", () => {
+    expect(
+      isCommonJsInstrumentationClientInject(
+        "export function onRouterTransitionStart() {}\nmodule.exports = {}\n",
+        "/a.js",
+      ),
+    ).toBe(false);
+    expect(isCommonJsInstrumentationClientInject("window.x = 1\n", "/a.js")).toBe(false);
   });
 });
 
@@ -936,6 +959,28 @@ describe("client instrumentation hook state", () => {
     registering.setClientInstrumentationHooks({ onRouterTransitionStart });
     notifying.notifyAppRouterTransitionStart("/about", "push");
 
-    expect(onRouterTransitionStart).toHaveBeenCalledWith("/about", "push");
+    expect(onRouterTransitionStart).toHaveBeenCalledWith("/about", "push", null);
+  });
+
+  // Next.js logs a throwing hook instead of failing the navigation
+  // (client/components/router-transition.ts callHooks).
+  it("logs a throwing hook instead of rethrowing", async () => {
+    const state = await import(statePath);
+    const error = new Error("hook failed");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      state.setClientInstrumentationHooks({
+        onRouterTransitionStart: () => {
+          throw error;
+        },
+      });
+      expect(() => state.notifyAppRouterTransitionStart("/about", "push")).not.toThrow();
+      expect(consoleError).toHaveBeenCalledWith(
+        "An instrumentation-client router transition hook failed",
+        error,
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

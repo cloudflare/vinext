@@ -125,6 +125,7 @@ const projectServers = {
       "app-router/external-rewrite-host-capture.spec.ts",
       "app-router/tsconfig-exact-path.spec.ts",
       "app-router/nextjs-compat/segment-cache-dynamic-params.spec.ts",
+      "app-router/instrumentation-client-inject.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {

@@ -283,6 +283,7 @@ import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+  isCommonJsInstrumentationClientInject,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
@@ -2010,7 +2011,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let canonicalMiddlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let instrumentationClientPath: string | null = null;
-  let clientInjectModule: string | null = null;
+  // `instrumentationClientInject` specifiers, with `./` and `../` resolved
+  // against the root; null when none are configured.
+  let clientInjectSpecifiers: string[] | null = null;
   let globalNotFoundCssIsolationPath: string | null = null;
   // Resolved in the `config` hook from the user's `build.assetsInlineLimit`
   // (default 0 = always emit files, matching Next's `asset/resource`). Read by
@@ -3366,12 +3369,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const instrumentationClientInjects = nextConfig.instrumentationClientInject.map((spec) =>
           spec.startsWith("./") || spec.startsWith("../") ? path.resolve(root, spec) : spec,
         );
-        clientInjectModule = instrumentationClientInjects.length
-          ? generateInstrumentationClientInjectModule(
-              instrumentationClientInjects,
-              instrumentationClientPath,
-              INSTRUMENTATION_CLIENT_EMPTY_MODULE,
-            )
+        clientInjectSpecifiers = instrumentationClientInjects.length
+          ? instrumentationClientInjects
           : null;
         if (env?.command === "build") {
           await writeRouteTypes();
@@ -3720,7 +3719,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/dev-error-overlay": path.resolve(__dirname, "client", "dev-error-overlay"),
             "vinext/route-announcer": path.resolve(__dirname, "client", "route-announcer"),
             "vinext/html": path.resolve(__dirname, "server", "html"),
-            ...(clientInjectModule === null
+            ...(clientInjectSpecifiers === null
               ? {
                   "private-next-instrumentation-client":
                     instrumentationClientPath ?? INSTRUMENTATION_CLIENT_EMPTY_MODULE,
@@ -6438,15 +6437,38 @@ export const loadServerActionClient = ${
         filter: { id: /^private-next-instrumentation-client$/ },
         handler(id) {
           if (id !== VIRTUAL_INSTRUMENTATION_CLIENT) return null;
-          return clientInjectModule !== null ? RESOLVED_INSTRUMENTATION_CLIENT : null;
+          return clientInjectSpecifiers !== null ? RESOLVED_INSTRUMENTATION_CLIENT : null;
         },
       },
 
       load: {
         filter: { id: /private-next-instrumentation-client\.mjs$/ },
-        handler(id) {
-          if (id !== RESOLVED_INSTRUMENTATION_CLIENT) return null;
-          return clientInjectModule;
+        async handler(id) {
+          if (id !== RESOLVED_INSTRUMENTATION_CLIENT || clientInjectSpecifiers === null)
+            return null;
+          const importer = path.join(root, "package.json");
+          const injects = await Promise.all(
+            clientInjectSpecifiers.map(async (specifier) => {
+              const resolved = await this.resolve(specifier, importer);
+              const file =
+                resolved && !resolved.external ? stripViteModuleQuery(resolved.id) : null;
+              let code: string | null = null;
+              if (file && path.isAbsolute(file)) {
+                this.addWatchFile(file);
+                code = await fs.promises.readFile(file, "utf8").catch(() => null);
+              }
+              return {
+                specifier,
+                commonjs:
+                  code !== null && isCommonJsInstrumentationClientInject(code, file ?? specifier),
+              };
+            }),
+          );
+          return generateInstrumentationClientInjectModule(
+            injects,
+            instrumentationClientPath,
+            INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+          );
         },
       },
     },

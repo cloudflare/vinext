@@ -31,3 +31,11 @@ export function mayContainCommonJsSyntax(code: string): boolean {
     typeof pattern === "string" ? code.includes(pattern) : pattern.test(code),
   );
 }
+
+/**
+ * Whether `code` may assign CommonJS exports (`module.exports` / `exports.x`).
+ * Same false-positive profile as {@link COMMONJS_SYNTAX_CODE_FILTER}.
+ */
+export function mayAssignCommonJsExports(code: string): boolean {
+  return COMMONJS_MEMBER_BASE_RE.test(code);
+}
