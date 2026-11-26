@@ -147,6 +147,7 @@ function defaultLoader({ config, src, width, quality }: ImageLoaderPropsWithConf
       // nor images.domains is configured (see validateRemoteUrl), so only
       // reject an unmatched host once one of them is.
       if (
+        process.env.NODE_ENV !== "test" &&
         (__imageDomains.length > 0 || __imageRemotePatterns.length > 0) &&
         !hasRemoteMatch(__imageDomains, __imageRemotePatterns, parsedSrc)
       ) {

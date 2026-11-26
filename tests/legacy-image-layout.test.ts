@@ -334,6 +334,12 @@ describe("legacy image remote sources", () => {
     );
   });
 
+  // Next.js skips the configured-host check under NODE_ENV=test.
+  it("does not check remote hosts under NODE_ENV=test", async () => {
+    const Image = await importWithRemotePatterns("test");
+    expect(() => renderWith(Image, "https://other.example.com/a.jpg")).not.toThrow();
+  });
+
   // Ported from Next.js's legacy defaultLoader development checks.
   it("throws for an unconfigured host in development", async () => {
     const Image = await importWithRemotePatterns("development");
