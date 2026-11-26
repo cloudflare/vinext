@@ -361,7 +361,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
         }
         const searchParams = new URL(props.resolvedUrl, request.url).searchParams;
         const renderParams = props.params;
-        const rootParams = tracePrepareRouteModule(() => {
+        const setMatchedRouteContext = () => {
           options.setNavigationContext({
             pathname: props.canonicalPathname,
             searchParams,
@@ -370,7 +370,12 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           const matchedRootParams = pickRootParams(renderParams, route.rootParamNames);
           setRootParams(matchedRootParams);
           return matchedRootParams;
-        });
+        };
+        // Next.js's edge route handler template doesn't prepare its route module.
+        const rootParams =
+          props.kind === "app-route-handler" && isEdgeRouteHandler(route.routeHandler)
+            ? setMatchedRouteContext()
+            : tracePrepareRouteModule(setMatchedRouteContext);
 
         if (props.kind === "app-route-handler") {
           setCurrentFetchSoftTags(

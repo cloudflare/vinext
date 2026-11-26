@@ -21,12 +21,14 @@ import type {
 const recordedApiHandlerErrors: unknown[] = [];
 let recordedApiHandlerErrorStatus = false;
 let captureApiHandlerErrors = false;
+let capturedApiSpanTypes: string[] | null = null;
 registerFrameworkTracingIntegration({
   id: "pages-api-route-error-status-test",
   enterSpan<T>(
     descriptor: ResolvedFrameworkSpanDescriptor,
     callback: (span: FrameworkTracingBackendSpan) => T,
   ): T {
+    capturedApiSpanTypes?.push(descriptor.type);
     if (!captureApiHandlerErrors || descriptor.type !== "Node.runHandler") {
       return callback({ setAttribute() {} });
     }
@@ -229,6 +231,39 @@ describe("pages api route", () => {
     expect(response.headers.get("content-length")).toBe("3");
     expect(Buffer.from(await response.arrayBuffer()).equals(Buffer.from([1, 2, 3]))).toBe(true);
   });
+
+  // Next.js's Node API template (build/templates/pages-api.ts) prepares the
+  // route module before each handler call; its edge API template doesn't.
+  it.each([
+    { name: "Node", runtime: undefined, expected: ["RouteModule.prepare", "Node.runHandler"] },
+    { name: "edge", runtime: "edge", expected: ["Node.runHandler"] },
+  ])(
+    "prepares the route module of a $name API route like Next.js",
+    async ({ runtime, expected }) => {
+      const match = createMatch((_req, res) => {
+        res.status(200).send("ok");
+      });
+      if (runtime) {
+        match.route.module = {
+          config: { runtime },
+          default: () => new Response("ok"),
+        } as unknown as PagesApiRouteModule;
+      }
+      capturedApiSpanTypes = [];
+      try {
+        const response = await handlePagesApiRoute({
+          match,
+          request: new Request("https://example.com/api/test"),
+          url: "/api/test",
+        });
+        expect(await response.text()).toBe("ok");
+      } finally {
+        const types = capturedApiSpanTypes;
+        capturedApiSpanTypes = null;
+        expect(types).toEqual(expected);
+      }
+    },
+  );
 
   // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts

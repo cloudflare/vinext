@@ -3364,10 +3364,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       setRootParams(matchedRootParams);
       return matchedRootParams;
     };
-    // A response stage prepares the route module it renders.
-    const rootParams = matchedResponseStage
-      ? setMatchedRouteContext()
-      : prepareRouteModule(route, setMatchedRouteContext);
+    // A response stage prepares the route module it renders. Next.js's edge
+    // route handler template doesn't prepare its route module.
+    const rootParams =
+      matchedResponseStage || (route.routeHandler && isEdgeRouteHandler(route.routeHandler))
+        ? setMatchedRouteContext()
+        : prepareRouteModule(route, setMatchedRouteContext);
 
     if (route.routeHandler) {
       // Next.js edge route handlers run through web/adapter.ts, which strips

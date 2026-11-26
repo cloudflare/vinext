@@ -896,6 +896,36 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  // Next.js's edge route handler template (build/templates/edge-app-route.ts)
+  // doesn't prepare its route module; its Node one does.
+  it.each([
+    { name: "Node", runtime: undefined, prepares: true },
+    { name: "edge", runtime: "edge", prepares: false },
+  ])(
+    "prepares a $name route handler's route module like Next.js",
+    async ({ runtime, prepares }) => {
+      const route = createPageRoute({
+        page: null,
+        pattern: "/api/inspect",
+        routeHandler: { GET: () => new Response("route"), runtime },
+        routeSegments: ["api", "inspect"],
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedRouteHandler: async () => new Response("route"),
+        ensureRouteLoaded: vi.fn(),
+        matchRoute: (pathname: string) =>
+          pathname === "/api/inspect" ? { params: {}, route } : null,
+      });
+      const spans = await captureRouteModuleSpans(async () => {
+        const response = await handler(new Request("https://example.test/docs/api/inspect"), null);
+        expect(await response.text()).toBe("route");
+      });
+
+      expect(spans.some(([type]) => type === "RouteModule.prepare")).toBe(prepares);
+    },
+  );
+
   it("leaves preparing the route module to the response stage it dispatches", async () => {
     const responseHandler = createHandler({ ensureRouteLoaded: vi.fn() });
     // The request stage holds no route modules.
