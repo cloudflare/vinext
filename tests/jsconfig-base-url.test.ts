@@ -81,4 +81,17 @@ describe("jsconfig.json baseUrl", () => {
     }
     expect(resolve).not.toHaveBeenCalled();
   });
+
+  // Like tsconfig `paths` in Next.js webpack, dependencies keep standard
+  // resolution. The importer is a native path (backslashes on Windows).
+  it("leaves imports from node_modules to standard resolution", async () => {
+    const plugin = createTsconfigBaseUrlPlugin({ getBaseUrl: () => FIXTURE });
+    const resolveId = plugin.resolveId as {
+      handler: (this: unknown, id: string, importer: string, options: object) => Promise<unknown>;
+    };
+    const resolve = vi.fn(async (id: string) => ({ id }));
+    const importer = path.join(FIXTURE, "node_modules", "pkg", "index.js");
+    expect(await resolveId.handler.call({ resolve }, "components/world", importer, {})).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+  });
 });

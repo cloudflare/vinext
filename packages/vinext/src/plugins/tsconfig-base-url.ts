@@ -1,4 +1,4 @@
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
 
 type TsconfigBaseUrlPluginOptions = {
@@ -42,7 +42,7 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
       async handler(id, importer, resolveOptions) {
         const baseUrl = options.getBaseUrl();
         if (!baseUrl || !importer || isJsonRequest(id)) return null;
-        if (importer.includes("/node_modules/")) return null;
+        if (toSlash(importer).includes("/node_modules/")) return null;
         const resolved = await this.resolve(path.join(baseUrl, id), importer, {
           ...resolveOptions,
           skipSelf: true,
