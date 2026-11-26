@@ -168,8 +168,13 @@ function readResolutionFromTsconfigFile(
 
   for (const extendsSpecifier of extendsList) {
     const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
-    if (!extendedPath && readConfigs && isRelativeExtends(extendsSpecifier)) {
-      // Watch a missing relative parent too, so creating it is picked up.
+    if (
+      !extendedPath &&
+      readConfigs &&
+      (isRelativeExtends(extendsSpecifier) || path.isAbsolute(extendsSpecifier))
+    ) {
+      // Watch a missing relative or absolute (including drive-letter) parent
+      // too, so creating it is picked up.
       const missing = path.resolve(path.dirname(configPath), extendsSpecifier);
       for (const candidate of tsconfigPathCandidates(missing)) readConfigs.add(candidate);
     }
