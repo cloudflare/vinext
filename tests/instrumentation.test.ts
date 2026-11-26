@@ -11,7 +11,10 @@ import {
   findInstrumentationFile,
 } from "../packages/vinext/src/server/instrumentation.js";
 import { toSlash } from "pathslash";
-import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
+import {
+  generateInstrumentationClientInjectModule,
+  isPackageInjectSpecifier,
+} from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE } from "../packages/vinext/src/client/instrumentation-client-state.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import {
@@ -897,6 +900,22 @@ describe("generateInstrumentationClientInjectModule", () => {
     const code = generateInstrumentationClientInjectModule(["./inject-a.js"], null);
     expect(code).toContain("import * as __vinj_1 from");
     expect(code).toContain("empty-module");
+  });
+
+  it("treats only package names as pre-bundlable injects", () => {
+    for (const spec of ["fake-instrumentation-inject", "@sentry/nextjs", "pkg/client.js"]) {
+      expect(isPackageInjectSpecifier(spec)).toBe(true);
+    }
+    for (const spec of [
+      "./inject.js",
+      "../inject.js",
+      "/abs/inject.js",
+      "@/inject",
+      "~/inject",
+      "#inject",
+    ]) {
+      expect(isPackageInjectSpecifier(spec)).toBe(false);
+    }
   });
 
   it("escapes special characters in specifier paths", () => {

@@ -283,6 +283,7 @@ import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+  isPackageInjectSpecifier,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
@@ -5039,7 +5040,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // the optimizer never crawls, imports a bare inject, so the first
           // request would discover it late, re-optimize and reload.
           const bareInstrumentationClientInjects = nextConfig.instrumentationClientInject.filter(
-            (spec) => !spec.startsWith(".") && !path.isAbsolute(spec) && !isExcludedShim(spec),
+            (spec) => isPackageInjectSpecifier(spec) && !isExcludedShim(spec),
           );
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;

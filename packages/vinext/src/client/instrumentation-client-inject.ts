@@ -14,6 +14,18 @@ export const INSTRUMENTATION_CLIENT_EMPTY_MODULE = resolveInstrumentationClientE
   import.meta.dirname,
 );
 
+// An npm package name, optionally scoped, then an optional subpath. Path
+// aliases (`@/x`, `~/x`) and subpath imports (`#x`) don't match.
+const PACKAGE_SPECIFIER_RE = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:\/|$)/i;
+
+/**
+ * Whether an `instrumentationClientInject` entry names a package, which the
+ * client dependency optimizer can pre-bundle at startup.
+ */
+export function isPackageInjectSpecifier(spec: string): boolean {
+  return PACKAGE_SPECIFIER_RE.test(spec);
+}
+
 /**
  * Generate a virtual ESM module that implements the Next.js
  * `instrumentationClientInject` contract for client bootstrap.
