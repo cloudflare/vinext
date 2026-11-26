@@ -225,7 +225,7 @@ export function loadTsconfigResolutionForRoot(projectRoot: string): TsconfigPath
   return emptyResolution();
 }
 
-export type TsconfigBaseUrlConfig = { configPath: string; baseUrl: string };
+type TsconfigBaseUrlConfig = { configPath: string; baseUrl: string };
 
 export type TsconfigBaseUrlLoad = {
   config: TsconfigBaseUrlConfig | null;
