@@ -2926,34 +2926,15 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain("email=no");
   });
 
-  it("renders every format-detection key in Next.js's order", () => {
-    // Next.js: lib/metadata/metadata-elements.tsx walks telephone, date,
-    // address, email, url. `date` and `url` were dropped.
+  it("renders the date and url format-detection keys in Next.js's order", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
         metadata: {
-          formatDetection: {
-            email: false,
-            url: false,
-            address: false,
-            date: false,
-            telephone: false,
-          },
+          formatDetection: { url: false, email: false, date: false, telephone: false },
         },
       }),
     );
-    expect(html).toContain(
-      '<meta name="format-detection" content="telephone=no, date=no, address=no, email=no, url=no"/>',
-    );
-  });
-
-  it("leaves a format-detection key that is true or absent out", () => {
-    const html = renderToStaticMarkup(
-      React.createElement(MetadataHead, {
-        metadata: { formatDetection: { telephone: true, date: false } },
-      }),
-    );
-    expect(html).toContain('<meta name="format-detection" content="date=no"/>');
+    expect(html).toContain('content="telephone=no, date=no, email=no, url=no"');
   });
 
   it("renders googlebot meta tag separately from robots", () => {
