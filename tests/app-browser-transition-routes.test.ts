@@ -24,6 +24,10 @@ const APP_DIR = path.resolve(
 );
 
 let manifest: BrowserRouteManifest;
+type ManifestSlotBinding =
+  BrowserRouteManifest["segmentGraph"]["slotBindings"] extends ReadonlyMap<string, infer Binding>
+    ? Binding
+    : never;
 
 beforeAll(async () => {
   const graph = await appRouteGraph(APP_DIR);
@@ -235,13 +239,12 @@ describe("resolveRouterTransitionFromRoutes", () => {
     const catchAll = manifest.segmentGraph.routes.get("route:/shop/:slug*");
     expect(catchAll).toBeDefined();
     const slotId = "slot:panel:/shop";
-    const binding = (routeId: string, state: "active" | "default") => ({
+    const binding = (routeId: string, state: "active" | "default"): ManifestSlotBinding => ({
       id: `${routeId}::${slotId}`,
       ownerLayoutId: null,
       routeId,
       routeSegments: state === "active" ? ["[[...slug]]"] : null,
       slotId,
-      slotPatternParts: null,
       state,
     });
     const withSibling = {
