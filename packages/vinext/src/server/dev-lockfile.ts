@@ -9,6 +9,10 @@
  * This is especially useful for AI coding agents, which frequently attempt to
  * start `vinext dev` without knowing a server is already running.
  *
+ * Vite 8.4 ships the same check (vitejs/vite#23624), with `--bypass-lock` to
+ * opt out, so this lock only runs on older Vite versions. See
+ * `supportsNativeCommandLock()`.
+ *
  * Ported behaviorally from Next.js:
  *   https://github.com/vercel/next.js/blob/canary/packages/next/src/build/lockfile.ts
  *

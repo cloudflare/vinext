@@ -56,8 +56,16 @@ export function applyDevServerDefaults(server: ServerOptions, options: DevServer
   server.host = options.hostname ?? server.host ?? "localhost";
 }
 
+type DevServerLifecycleOptions = DevServerCliOptions & {
+  /**
+   * Whether vinext guards against a second dev server with its own lock file.
+   * False on Vite versions that ship the same check natively.
+   */
+  devLock: boolean;
+};
+
 export function createDevServerLifecyclePlugin(
-  options: DevServerCliOptions,
+  options: DevServerLifecycleOptions,
   isEnabled: (config: UserConfig | ResolvedConfig) => boolean,
 ): Plugin {
   return {
@@ -81,7 +89,7 @@ export function createDevServerLifecyclePlugin(
           if (options.port !== undefined) server.config.server.port = options.port;
           if (options.hostname !== undefined) server.config.server.host = options.hostname;
         }
-        configureDevServerLifecycle(server);
+        configureDevServerLifecycle(server, options.devLock);
       },
     },
   };
@@ -92,7 +100,7 @@ export function normalizeDevServerHostname(host: string | boolean | undefined): 
   return host === true ? "0.0.0.0" : "localhost";
 }
 
-function configureDevServerLifecycle(server: ViteDevServer): void {
+function configureDevServerLifecycle(server: ViteDevServer, devLock: boolean): void {
   const root = normalizeDevLifecycleRoot(server.config.root);
   let activeLock: ActiveDevServerLock | undefined;
   const releaseLock = () => {
@@ -157,7 +165,13 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
   };
   const listenServer = server.listen.bind(server);
   server.listen = async (port?: number, isRestart?: boolean) => {
-    if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1") {
+    if (
+      server.config.server.middlewareMode ||
+      process.env.VINEXT_NO_DEV_LOCK === "1" ||
+      // Tests force the lock on Vite versions with their own check, so the
+      // lock and the lifecycle it observes stay covered in Vite's ecosystem CI.
+      (!devLock && process.env.VINEXT_TEST_FORCE_DEV_LOCK !== "1")
+    ) {
       return listenServer(port, isRestart);
     }
     const configuredPort = port ?? server.config.server.port;
