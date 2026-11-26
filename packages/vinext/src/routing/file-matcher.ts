@@ -140,7 +140,7 @@ export function findRouteFileWithExts(
  * Whether declaration files can be page files: an explicit declaration-suffixed
  * page extension (e.g. `d.ts`) without `ts` (see `skipsDeclarationFiles`).
  */
-export function routesDeclarationFiles(extensions: readonly string[]): boolean {
+function routesDeclarationFiles(extensions: readonly string[]): boolean {
   return (
     !skipsDeclarationFiles(extensions) &&
     extensions.some((ext) => ext === "d.ts" || ext.endsWith(".d.ts"))
@@ -206,7 +206,7 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
  * (`pages_structure.rs` / `app_structure.rs`). vinext skips them where both
  * bundlers do, so an explicit `pageExtensions: ["d.ts"]` still routes them.
  */
-export function skipsDeclarationFiles(extensions: readonly string[]): boolean {
+function skipsDeclarationFiles(extensions: readonly string[]): boolean {
   return extensions.includes("ts");
 }
 
