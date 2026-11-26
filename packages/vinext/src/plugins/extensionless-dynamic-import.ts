@@ -14,7 +14,7 @@ import { createTransformCache } from "./transform-cache.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { escapeRegExp, exactRegExpLiteral } from "../utils/regex.js";
+import { escapeRegExp, exactRegExpLiteral, prefixRegExpLiteral } from "../utils/regex.js";
 
 const MODULE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"];
 type ExtensionlessImport = {
@@ -375,6 +375,11 @@ function aliasesMayMatch(aliases: readonly Alias[], requestPattern: string): boo
       // Exact tsconfig `paths` keys are anchored literals: `^key$`.
       const literal = exactRegExpLiteral(find);
       if (literal !== null) return matchesTemplatePattern(requestPattern, literal);
+      // Declaration-only wildcard keys match below a literal prefix: `^key/`.
+      const prefix = prefixRegExpLiteral(find);
+      if (prefix !== null) {
+        return requestPrefix.startsWith(prefix) || prefix.startsWith(requestPrefix);
+      }
       // Arbitrary regular-expression/template intersection is not decidable.
       return !isViteInternalAlias(alias);
     }

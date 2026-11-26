@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "vite";
 import { createExtensionlessDynamicImportPlugin } from "../packages/vinext/src/plugins/extensionless-dynamic-import.js";
-import { exactRegExpLiteral } from "../packages/vinext/src/utils/regex.js";
+import { exactRegExpLiteral, prefixRegExpLiteral } from "../packages/vinext/src/utils/regex.js";
 
 const tempDirs: string[] = [];
 
@@ -57,6 +57,19 @@ describe("exactRegExpLiteral", () => {
     expect(exactRegExpLiteral(/^a.b$/)).toBeNull();
     expect(exactRegExpLiteral(/^ab(?=x)/)).toBeNull();
     expect(exactRegExpLiteral(/^ab(?=[?#]|$)/i)).toBeNull();
+  });
+});
+
+// Declaration-only wildcard tsconfig `paths` keys pass through below a literal
+// prefix; template imports outside it keep transforming.
+describe("prefixRegExpLiteral", () => {
+  it("reads `^literal/` and rejects other patterns", () => {
+    expect(prefixRegExpLiteral(new RegExp("^@lib/types/"))).toBe("@lib/types/");
+    expect(prefixRegExpLiteral(/^a\.b\//)).toBe("a.b/");
+    expect(prefixRegExpLiteral(/^a.b\//)).toBeNull();
+    expect(prefixRegExpLiteral(/^ab/)).toBeNull();
+    expect(prefixRegExpLiteral(/^ab\/$/)).toBeNull();
+    expect(prefixRegExpLiteral(/^ab\//i)).toBeNull();
   });
 });
 
