@@ -19,7 +19,7 @@ export const SERVICE_WORKER_CACHE_CONTROL = "public, max-age=0, must-revalidate"
  * `leading` is set. A loop rather than a regex, which would be polynomial on
  * long runs of `/`.
  */
-export function trimSlashes(value: string, leading = false): string {
+export function trimPathSlashes(value: string, leading = false): string {
   let start = 0;
   let end = value.length;
   if (leading) while (start < end && value[start] === "/") start++;
@@ -32,7 +32,7 @@ export function trimSlashes(value: string, leading = false): string {
  * slash, that holds the service workers of an app with this `basePath`.
  */
 export function serviceWorkerOutputDir(basePath: string): string {
-  const baseDir = trimSlashes(basePath, true);
+  const baseDir = trimPathSlashes(basePath, true);
   return `${baseDir ? `${baseDir}/` : ""}${SERVICE_WORKER_URL_DIR}/`;
 }
 
