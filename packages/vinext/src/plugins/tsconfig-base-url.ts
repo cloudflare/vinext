@@ -119,16 +119,14 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
         const resolved = await this.resolve(path.join(baseUrl, id), importer, options);
         // No file under baseUrl: standard resolution proceeds untouched.
         if (!resolved || resolved.external || isJsonRequest(resolved.id)) return null;
-        // Like Vite's native resolve.tsconfigPaths, other resolvers (later pre
-        // plugins, virtual modules) claim the bare id first; baseUrl still
-        // takes precedence over an installed package of that name.
+        // baseUrl takes precedence over an installed package of that name, so
+        // package resolution (and its errors, such as an unexported subpath)
+        // never runs for it.
         if (isInstalledPackage(id, importer)) return resolved;
-        let standard: Awaited<ReturnType<typeof this.resolve>> = null;
-        try {
-          standard = await this.resolve(id, importer, options);
-        } catch {
-          // e.g. an unexported package subpath: baseUrl resolves it.
-        }
+        // Like Vite's native resolve.tsconfigPaths, other resolvers (later pre
+        // plugins, virtual modules) claim the bare id first, and their errors
+        // propagate.
+        const standard = await this.resolve(id, importer, options);
         return standard && !standard.external ? standard : resolved;
       },
     },

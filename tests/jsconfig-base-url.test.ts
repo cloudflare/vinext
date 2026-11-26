@@ -184,22 +184,22 @@ describe("jsconfig.json baseUrl", () => {
     });
   });
 
-  // Standard resolution can throw (an unexported package subpath, say).
-  it("resolves through baseUrl when standard resolution throws", async () => {
+  // Another resolver may reject a bare id on purpose; baseUrl doesn't hide it.
+  it("propagates errors from other resolvers", async () => {
     const resolveId = createResolvedBaseUrlPlugin();
-    const fromBaseUrl = { id: path.join(FIXTURE, "components/world.js") };
     const resolve = vi.fn(async (id: string) => {
-      if (path.isAbsolute(id)) return fromBaseUrl;
-      throw new Error("Missing export");
+      if (path.isAbsolute(id)) return { id: path.join(FIXTURE, "components/world.js") };
+      throw new Error("Unsupported import");
     });
     const importer = path.join(FIXTURE, "pages/hello.js");
-    expect(await resolveId.handler.call({ resolve }, "components/world", importer, {})).toBe(
-      fromBaseUrl,
-    );
+    await expect(
+      resolveId.handler.call({ resolve }, "components/world", importer, {}),
+    ).rejects.toThrow("Unsupported import");
   });
 
   // Like Turbopack, baseUrl still takes precedence over an installed package
-  // (`react` is installed for this repo, as a symlink under pnpm).
+  // (`react` is installed for this repo, as a symlink under pnpm), without
+  // running package resolution, which could throw for an unexported subpath.
   it("prefers baseUrl over an installed package with the same name", async () => {
     const resolveId = createResolvedBaseUrlPlugin();
     const fromBaseUrl = { id: path.join(FIXTURE, "react/index.js") };
