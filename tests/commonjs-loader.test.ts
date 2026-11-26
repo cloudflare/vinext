@@ -1,10 +1,12 @@
 import fs, { globSync } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   importExportWithCommonJsFallback,
   loadCommonJsModule,
+  shouldRetryAsCommonJs,
 } from "../packages/vinext/src/utils/commonjs-loader.js";
 
 const tempDirs: string[] = [];
@@ -178,6 +180,43 @@ module.exports = typeof watcher;
     fs.writeFileSync(
       entryPath,
       `globalThis[${JSON.stringify(counterKey)}] = (globalThis[${JSON.stringify(counterKey)}] ?? 0) + 1;
+throw new ReferenceError("require is not defined in ES module scope");
+`,
+    );
+
+    await expect(importExportWithCommonJsFallback(entryPath)).rejects.toThrow(
+      "require is not defined in ES module scope",
+    );
+    expect((globalThis as Record<string, unknown>)[counterKey]).toBe(1);
+    delete (globalThis as Record<string, unknown>)[counterKey];
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/next-config/next.config.js
+  // V8 reports this error at `log`, the enclosing call, not at `require`.
+  it("detects a require() in a call's arguments as a CommonJS failure", () => {
+    const dir = createEsmProject();
+    const entryPath = path.join(dir, "entry.js");
+    fs.writeFileSync(path.join(dir, "dep.cjs"), `module.exports = {};\n`);
+    fs.writeFileSync(entryPath, `console.log(require("./dep.cjs"));\nmodule.exports = {};\n`);
+
+    let error: unknown;
+    try {
+      createRequire(entryPath)(entryPath);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(shouldRetryAsCommonJs(error, entryPath)).toBe(true);
+  });
+
+  it("does not retry when the global only appears as a property name", async () => {
+    const dir = createEsmProject();
+    const entryPath = path.join(dir, "entry.js");
+    const counterKey = `__vinext_commonjs_loader_property_${Date.now()}`;
+    fs.writeFileSync(
+      entryPath,
+      `globalThis[${JSON.stringify(counterKey)}] = (globalThis[${JSON.stringify(counterKey)}] ?? 0) + 1;
+const config = { require: true, module: { exports: {} } };
+config.require = config.module.exports;
 throw new ReferenceError("require is not defined in ES module scope");
 `,
     );

@@ -7,6 +7,8 @@ import { createRequire, Module } from "node:module";
 // oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { ESTree } from "vite";
+import { parseProgram, walkAst } from "../plugins/ast-utils.js";
 
 type CompilableCommonJsModule = Module & {
   _compile(content: string, filename: string): void;
@@ -44,30 +46,57 @@ export function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boo
   );
   if (!match || !error.stack) return false;
 
-  const identifier = match[1];
-  // This validation intentionally assumes the executed config/plugin source
-  // is byte-identical to the on-disk file. Current callers load raw user files;
-  // transformed modules should not use this fallback without source-map logic.
+  // The first frame is the module that threw. Retry only when its source
+  // really uses the global, so a user-thrown look-alike error isn't retried.
+  // The frame's column can't tell us that: V8 often reports the enclosing
+  // expression instead, e.g. `console.log` in `console.log(require("x"))`.
+  // This assumes the executed source is byte-identical to the on-disk file.
+  // Current callers load raw user files.
   for (const line of error.stack.split("\n").slice(1)) {
-    const location = line.match(/(?:\(|at )(.+):(\d+):(\d+)\)?$/);
+    const location = line.match(/(?:\(|at )(.+):\d+:\d+\)?$/);
     if (!location) continue;
-    const [, framePath, lineNumberText, columnNumberText] = location;
-    const canonicalFramePath = canonicalPath(framePath);
-    if (!canonicalFramePath.endsWith(".js")) continue;
-
-    let sourceLine: string | undefined;
+    const framePath = canonicalPath(location[1]);
+    if (!framePath.endsWith(".js")) return false;
     try {
-      sourceLine = fs.readFileSync(canonicalFramePath, "utf8").split(/\r?\n/)[
-        Number(lineNumberText) - 1
-      ];
+      return usesIdentifier(fs.readFileSync(framePath, "utf8"), match[1]);
     } catch {
-      continue;
+      return false;
     }
-    const column = Number(columnNumberText) - 1;
-    if (sourceLine?.slice(column, column + identifier.length) === identifier) return true;
   }
 
   return false;
+}
+
+/**
+ * Whether `code` uses `name` as a variable, not only as a property name
+ * (`obj.require`, `{ require: 1 }`) or inside a string or comment.
+ */
+function usesIdentifier(code: string, name: string): boolean {
+  let found = false;
+  const visit = (node: ESTree.Node): boolean | void => {
+    if (found) return false;
+    if (node.type === "Identifier" && node.name === name) {
+      found = true;
+      return false;
+    }
+    // Skip non-computed property names.
+    if (node.type === "MemberExpression" && !node.computed) {
+      walkAst(node.object, visit);
+      return false;
+    }
+    if (
+      (node.type === "Property" ||
+        node.type === "MethodDefinition" ||
+        node.type === "PropertyDefinition") &&
+      !node.computed &&
+      node.value
+    ) {
+      walkAst(node.value, visit);
+      return false;
+    }
+  };
+  walkAst(parseProgram(code), visit);
+  return found;
 }
 
 function compileCommonJsModule(resolvedPath: string, parent?: Module): unknown {
