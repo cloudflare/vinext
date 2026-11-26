@@ -143,6 +143,10 @@ const appPrerenderStaticParamsPath = resolveEntryPath(
   import.meta.url,
 );
 const seedCachePath = resolveEntryPath("../server/seed-cache.js", import.meta.url);
+const pagesExecutionTracingPath = resolveEntryPath(
+  "../server/pages-execution-tracing.js",
+  import.meta.url,
+);
 const pregeneratedConcretePathsPath = resolveEntryPath(
   "../server/pregenerated-concrete-paths.js",
   import.meta.url,
@@ -1141,6 +1145,7 @@ import { clearAppRequestContext as __clearRequestContext, setAppNavigationContex
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
 import { ensureAppRouteModulesLoaded as __ensureRouteLoaded } from ${JSON.stringify(appRouteModuleLoaderPath)};
+import { traceRouteModuleLoad as __traceRouteModuleLoad } from ${JSON.stringify(pagesExecutionTracingPath)};
 import {
   getRenderedConcreteUrlPathsForRoute as __getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals,
@@ -1989,7 +1994,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       readActionFormDataWithLimit: __readFormDataWithLimit,
     } = await __loadAppServerActionExecution();
     const __actionMatch = routeMatch;
-    if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
+    // Like Next.js, the page's own modules load only once the action isn't forwarded.
+    if (__actionMatch) {
+      await __traceRouteModuleLoad(__actionMatch.route.pattern, () => __ensureRouteLoaded(__actionMatch.route));
+    }
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))
       : false;

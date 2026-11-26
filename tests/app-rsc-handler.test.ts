@@ -785,7 +785,7 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
-  it("loads and prepares a Server Action's route module once before handling it", async () => {
+  it("prepares a Server Action's route module, leaving its load to the action handler", async () => {
     const order: string[] = [];
     const ensureRouteLoaded = vi.fn(() => {
       order.push("load");
@@ -809,12 +809,10 @@ describe("createAppRscHandler", () => {
       expect(await response.text()).toBe("action");
     });
 
-    expect(order).toEqual(["load", "action"]);
-    expect(spans).toEqual([
-      ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
-      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
-      ["RouteModule.prepare", "BaseServer.handleRequest"],
-    ]);
+    // The action handler loads the page once it doesn't forward the action,
+    // so a forwarded action doesn't run the page's modules.
+    expect(order).toEqual(["action"]);
+    expect(spans).toEqual([["RouteModule.prepare", "BaseServer.handleRequest"]]);
   });
 
   it.each([

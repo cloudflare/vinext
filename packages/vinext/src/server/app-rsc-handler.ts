@@ -2630,15 +2630,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     loadedRoute = route;
     await traceRouteModuleLoad(route.pattern, () => options.ensureRouteLoaded!(route));
   };
-  // Like Next.js, load and prepare the action's page before handling the
-  // action, which may forward it to the route that owns it. The action and the
-  // page it renders see the route's root params.
-  const prepareActionRoute = async (routeMatch: AppRscRouteMatch<TRoute> | null) => {
-    if (!routeMatch) return;
-    await loadRouteModule(routeMatch.route);
+  // Like Next.js, prepare the action's page before handling the action. The
+  // action and the page it renders see the route's root params.
+  const prepareActionRoute = (routeMatch: AppRscRouteMatch<TRoute>) =>
     prepareRouteModule(routeMatch.route, () =>
       setRootParams(pickRootParams(routeMatch.params, routeMatch.route.rootParamNames)),
     );
+  // Load the action's page, then prepare it. A Server Action that may be
+  // forwarded to the route that owns it loads the page only once it isn't, in
+  // `handleServerActionRequest`, so the page's modules don't run for it.
+  const loadAndPrepareActionRoute = async (routeMatch: AppRscRouteMatch<TRoute> | null) => {
+    if (!routeMatch) return;
+    await loadRouteModule(routeMatch.route);
+    prepareActionRoute(routeMatch);
   };
   let serverActionHandled = false;
   const handleServerAction = async (
@@ -2647,12 +2651,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible || !isPostRequest || !actionId) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
-    await prepareActionRoute(routeMatch);
     if (!options.handleServerActionRequest) {
+      // A build without Server Actions has nothing to forward.
+      await loadAndPrepareActionRoute(routeMatch);
       return markServerActionResponse(
         respondServerActionNotFound(actionId, options.clearRequestContext),
       );
     }
+    if (routeMatch) prepareActionRoute(routeMatch);
     const sourceConfigHeaders = new Headers();
     await applyAppRscConfigHeaders(sourceConfigHeaders, request, {
       basePath: options.basePath,
@@ -2689,7 +2695,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | ProgressiveActionFormStateResult | null> => {
     if (!filesystemRouteEligible || !isProgressiveActionRequest) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
-    await prepareActionRoute(routeMatch);
+    await loadAndPrepareActionRoute(routeMatch);
     if (!options.handleProgressiveActionRequest) {
       return unrenderedRouteMatch?.route.__loadPage &&
         !unrenderedRouteMatch.route.__loadRouteHandler
