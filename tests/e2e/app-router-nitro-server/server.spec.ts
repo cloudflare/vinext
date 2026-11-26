@@ -19,6 +19,16 @@ test.describe("App Router on Nitro (node server)", () => {
     expect(await response.text()).not.toContain('"isEntry"');
   });
 
+  // Next.js serves service workers revalidated on every use and allowed to
+  // register at basePath (packages/next/src/server/lib/router-server.ts).
+  test("serves a compiled service worker with Next.js's headers", async ({ request }) => {
+    const response = await request.get("/_next/static/service-worker/sw.js");
+    expect(response.status()).toBe(200);
+    expect(response.headers()["cache-control"]).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers()["service-worker-allowed"]).toBe("/");
+    expect(await response.text()).toContain("skipWaiting");
+  });
+
   test("runs middleware before serving a public file", async ({ request }) => {
     const response = await request.get("/hello.txt");
     expect(response.status()).toBe(200);

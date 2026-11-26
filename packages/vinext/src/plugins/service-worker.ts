@@ -17,7 +17,15 @@
  */
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { build, type ESTree, type Plugin, type ResolvedConfig, type Rolldown } from "vite";
+import fs from "node:fs";
+import {
+  build,
+  type Connect,
+  type ESTree,
+  type Plugin,
+  type ResolvedConfig,
+  type Rolldown,
+} from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { stripViteModuleQuery } from "../utils/path.js";
@@ -137,7 +145,15 @@ function propertyKeyName(property: ESTree.ObjectProperty): string | null {
  * statically. Like Turbopack, a missing options argument, a non-object one, or
  * an object without a `scope` key registers at the default scope "/".
  */
-function analyzeScope(options: ESTree.Node | undefined): { scope: string } | { error: string } {
+function analyzeScope(
+  argument: ESTree.Node | undefined,
+  constObjects: ReadonlyMap<string, ESTree.ObjectExpression | null>,
+): { scope: string } | { error: string } {
+  // Like Turbopack's value linking, an options object held in a `const` is
+  // read through its binding. Only a name declared once in the module is
+  // followed, so a shadowed binding can't pick up the wrong object.
+  const options =
+    argument?.type === "Identifier" ? (constObjects.get(argument.name) ?? undefined) : argument;
   if (options?.type !== "ObjectExpression") return { scope: DEFAULT_SCOPE };
   let scopeValue: ESTree.Node | undefined;
   for (const property of options.properties) {
@@ -164,12 +180,27 @@ export function analyzeServiceWorkerCalls(code: string, id: string): ServiceWork
   const result: ServiceWorkerCallAnalysis = { calls: [], warnings: [] };
   const lang = scriptParserLanguage(id) ?? "js";
   const program = parseProgram(code, { lang });
+  const constObjects = new Map<string, ESTree.ObjectExpression | null>();
+  walkAst(program, (node) => {
+    if (node.type !== "VariableDeclaration") return;
+    for (const declarator of node.declarations) {
+      if (declarator.id.type !== "Identifier") continue;
+      const name = declarator.id.name;
+      const init = declarator.init;
+      constObjects.set(
+        name,
+        node.kind === "const" && !constObjects.has(name) && init?.type === "ObjectExpression"
+          ? init
+          : null,
+      );
+    }
+  });
   walkAst(program, (node) => {
     if (node.type !== "CallExpression" || !isServiceWorkerRegister(node.callee)) return;
     const [scriptArg, optionsArg] = node.arguments;
     const specifier = relativeWorkerUrlSpecifier(scriptArg);
     if (specifier === null || !scriptArg) return;
-    const scope = analyzeScope(optionsArg);
+    const scope = analyzeScope(optionsArg, constObjects);
     if ("error" in scope) {
       result.warnings.push(
         `navigator.serviceWorker.register(new URL(${JSON.stringify(specifier)}, import.meta.url), ...) ${scope.error}`,
@@ -210,6 +241,7 @@ export function serviceWorkerRegisterArguments(
 }
 
 type BundledServiceWorker = { code: string; etag: string; moduleIds: Set<string> };
+type DevBundle = { source: string; bundle: Promise<BundledServiceWorker> };
 
 /**
  * Compile one service worker into a single self-contained classic script.
@@ -247,6 +279,10 @@ async function bundleServiceWorker(
       reportCompressedSize: false,
       modulePreload: false,
       sourcemap: false,
+      // Only the worker script is emitted or served, so assets it references
+      // (`new URL("./icon.png", import.meta.url)`, `?url` imports) are
+      // inlined as data URLs rather than emitted as files nothing serves.
+      assetsInlineLimit: () => true,
       minify,
       target: config.build.target,
       rolldownOptions: {
@@ -261,7 +297,7 @@ async function bundleServiceWorker(
       if (file.type === "chunk" && file.isEntry) {
         return {
           code: file.code,
-          etag: `"${createHash("sha256").update(file.code).digest("base64url").slice(0, 27)}"`,
+          etag: contentEtag(file.code),
           moduleIds: new Set(file.moduleIds.map((moduleId) => toSlash(moduleId))),
         };
       }
@@ -280,11 +316,36 @@ function formatConflictError(root: string, scope: string, sources: Iterable<stri
   );
 }
 
+function contentEtag(code: string): string {
+  return `"${createHash("sha256").update(code).digest("base64url").slice(0, 27)}"`;
+}
+
+/** Send a worker script with the headers Next.js serves it with. */
+function sendServiceWorker(
+  req: IncomingMessage,
+  res: ServerResponse,
+  code: string,
+  etag: string,
+  basePath: string,
+): void {
+  res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+  res.setHeader("Cache-Control", SERVICE_WORKER_CACHE_CONTROL);
+  res.setHeader("Service-Worker-Allowed", serviceWorkerAllowedHeader(basePath));
+  res.setHeader("ETag", etag);
+  if (req.headers["if-none-match"] === etag) {
+    res.statusCode = 304;
+    res.end();
+    return;
+  }
+  res.statusCode = 200;
+  res.end(req.method === "HEAD" ? undefined : code);
+}
+
 export function createServiceWorkerPlugin(options: { getBasePath: () => string }): Plugin {
   // Registrations by registering module, so a module that changes in dev
   // replaces (rather than adds to) what it registered.
   const registrationsByImporter = new Map<string, Map<string, string>>();
-  const devBundles = new Map<string, Promise<BundledServiceWorker>>();
+  const devBundles = new Map<string, DevBundle>();
   let clientConfig: ResolvedConfig | undefined;
 
   function sourcesByScope(): Map<string, Set<string>> {
@@ -316,17 +377,13 @@ export function createServiceWorkerPlugin(options: { getBasePath: () => string }
 
   function invalidateDevBundles(file: string): void {
     const changed = toSlash(file);
-    for (const [fileName, bundle] of devBundles) {
-      bundle.then(
-        (result) => {
-          if (result.moduleIds.has(changed) && devBundles.get(fileName) === bundle) {
-            devBundles.delete(fileName);
-          }
-        },
-        () => {
-          if (devBundles.get(fileName) === bundle) devBundles.delete(fileName);
-        },
-      );
+    for (const [fileName, entry] of devBundles) {
+      const forget = () => {
+        if (devBundles.get(fileName) === entry) devBundles.delete(fileName);
+      };
+      entry.bundle.then((result) => {
+        if (result.moduleIds.has(changed)) forget();
+      }, forget);
     }
   }
 
@@ -337,28 +394,44 @@ export function createServiceWorkerPlugin(options: { getBasePath: () => string }
   ): Promise<boolean> {
     const worker = servedWorkers().get(fileName);
     if (!worker || !clientConfig) return false;
-    let bundle = devBundles.get(fileName);
-    if (!bundle) {
-      bundle = bundleServiceWorker(clientConfig, worker.source, false);
-      devBundles.set(fileName, bundle);
-      bundle.catch(() => {
-        if (devBundles.get(fileName) === bundle) devBundles.delete(fileName);
+    let entry = devBundles.get(fileName);
+    // A module can switch the worker it registers at a scope, which keeps the
+    // file name but needs a new bundle.
+    if (entry?.source !== worker.source) {
+      const created: DevBundle = {
+        source: worker.source,
+        bundle: bundleServiceWorker(clientConfig, worker.source, false),
+      };
+      devBundles.set(fileName, created);
+      created.bundle.catch(() => {
+        if (devBundles.get(fileName) === created) devBundles.delete(fileName);
       });
+      entry = created;
     }
-    const { code, etag } = await bundle;
-    const basePath = options.getBasePath();
-    res.setHeader("Content-Type", "application/javascript; charset=utf-8");
-    res.setHeader("Cache-Control", SERVICE_WORKER_CACHE_CONTROL);
-    res.setHeader("Service-Worker-Allowed", serviceWorkerAllowedHeader(basePath));
-    res.setHeader("ETag", etag);
-    if (req.headers["if-none-match"] === etag) {
-      res.statusCode = 304;
-      res.end();
-      return true;
-    }
-    res.statusCode = 200;
-    res.end(req.method === "HEAD" ? undefined : code);
+    const { code, etag } = await entry.bundle;
+    sendServiceWorker(req, res, code, etag, options.getBasePath());
     return true;
+  }
+
+  /**
+   * Serve `/<basePath>/_next/static/service-worker/<file>` requests through
+   * `serve`, from a middleware registered before Vite's own, so `req.url`
+   * still carries `basePath` and app routing never sees them.
+   */
+  function serviceWorkerMiddleware(
+    serve: (req: IncomingMessage, res: ServerResponse, fileName: string) => Promise<boolean>,
+  ): Connect.NextHandleFunction {
+    return (req, res, next) => {
+      if (req.method !== "GET" && req.method !== "HEAD") return next();
+      const prefix = `${options.getBasePath()}/${SERVICE_WORKER_URL_DIR}/`;
+      const pathname = (req.url ?? "").split("?", 1)[0];
+      if (!pathname.startsWith(prefix)) return next();
+      const fileName = pathname.slice(prefix.length);
+      if (!fileName || fileName.includes("/") || fileName.includes("\\")) return next();
+      serve(req, res, fileName).then((served) => {
+        if (!served) next();
+      }, next);
+    };
   }
 
   return {
@@ -379,17 +452,40 @@ export function createServiceWorkerPlugin(options: { getBasePath: () => string }
         invalidateDevBundles(file);
         forgetImporter(file);
       });
-      server.middlewares.use((req, res, next) => {
-        if (req.method !== "GET" && req.method !== "HEAD") return next();
-        const prefix = `${options.getBasePath()}/${SERVICE_WORKER_URL_DIR}/`;
-        const pathname = (req.url ?? "").split("?", 1)[0];
-        if (!pathname.startsWith(prefix)) return next();
-        const fileName = pathname.slice(prefix.length);
-        if (fileName.includes("/")) return next();
-        serveDevWorker(req, res, fileName).then((served) => {
-          if (!served) next();
-        }, next);
-      });
+      server.middlewares.use(serviceWorkerMiddleware(serveDevWorker));
+    },
+    configurePreviewServer(server) {
+      // `vite preview` serves the client build with its own static file
+      // headers, so serve the built workers with Next.js's instead.
+      const clientOutDir = path.resolve(
+        server.config.root,
+        server.config.environments.client?.build.outDir ?? server.config.build.outDir,
+      );
+      const workers = new Map<string, Promise<{ code: string; etag: string } | null>>();
+      const readWorker = (fileName: string) => {
+        let worker = workers.get(fileName);
+        if (!worker) {
+          const file = path.join(
+            clientOutDir,
+            serviceWorkerOutputDir(options.getBasePath()),
+            fileName,
+          );
+          worker = fs.promises.readFile(file, "utf8").then(
+            (code) => ({ code, etag: contentEtag(code) }),
+            () => null,
+          );
+          workers.set(fileName, worker);
+        }
+        return worker;
+      };
+      server.middlewares.use(
+        serviceWorkerMiddleware(async (req, res, fileName) => {
+          const worker = await readWorker(fileName);
+          if (!worker) return false;
+          sendServiceWorker(req, res, worker.code, worker.etag, options.getBasePath());
+          return true;
+        }),
+      );
     },
     transform: {
       filter: {
