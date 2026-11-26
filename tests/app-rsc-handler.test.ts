@@ -785,7 +785,7 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
-  it("prepares a Server Action's route module, leaving its load to the action handler", async () => {
+  it("looks up and prepares a Server Action's route without loading its modules first", async () => {
     const order: string[] = [];
     const ensureRouteLoaded = vi.fn(() => {
       order.push("load");
@@ -809,10 +809,14 @@ describe("createAppRscHandler", () => {
       expect(await response.text()).toBe("action");
     });
 
-    // The action handler loads the page once it doesn't forward the action,
-    // so a forwarded action doesn't run the page's modules.
+    // Like Next.js, the page's modules stay unloaded until a render needs
+    // them, so a forwarded action never runs them.
     expect(order).toEqual(["action"]);
-    expect(spans).toEqual([["RouteModule.prepare", "BaseServer.handleRequest"]]);
+    expect(spans).toEqual([
+      ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", "BaseServer.handleRequest"],
+    ]);
   });
 
   it.each([
@@ -829,7 +833,7 @@ describe("createAppRscHandler", () => {
       true,
     ],
   ])(
-    "prepares a progressive Server Action's route module once when it %s",
+    "looks up and prepares a progressive Server Action's route once when it %s",
     async (_outcome, handleProgressiveActionRequest, rendersPage) => {
       const order: string[] = [];
       const handler = createHandler({
@@ -853,17 +857,13 @@ describe("createAppRscHandler", () => {
         await response.text();
       });
 
-      // The action may be forwarded, so its page loads only for the render
-      // that follows a form-state result.
+      // The page's modules load only for the render that follows a
+      // form-state result, never before a (possibly forwarded) action.
       expect(order).toEqual(rendersPage ? ["action", "load"] : ["action"]);
       expect(spans).toEqual([
+        ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+        ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
         ["RouteModule.prepare", "BaseServer.handleRequest"],
-        ...(rendersPage
-          ? [
-              ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
-              ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
-            ]
-          : []),
       ]);
     },
   );
@@ -880,9 +880,10 @@ describe("createAppRscHandler", () => {
       { handleProgressiveActionRequest: undefined },
     ],
   ])(
-    "prepares the page of a %s Server Action in a build without Server Actions",
+    "looks up and prepares the page of a %s Server Action in a build without Server Actions",
     async (_kind, headers, noActions) => {
-      const handler = createHandler({ ensureRouteLoaded: vi.fn(), ...noActions });
+      const ensureRouteLoaded = vi.fn();
+      const handler = createHandler({ ensureRouteLoaded, ...noActions });
       const spans = await captureRouteModuleSpans(async () => {
         const response = await handler(
           new Request("https://example.test/docs/about", { method: "POST", headers }),
@@ -893,6 +894,8 @@ describe("createAppRscHandler", () => {
         await response.text();
       });
 
+      // An invalid action never imports the page.
+      expect(ensureRouteLoaded).not.toHaveBeenCalled();
       expect(spans).toEqual([
         ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
         ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],

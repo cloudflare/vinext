@@ -2630,19 +2630,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     loadedRoute = route;
     await traceRouteModuleLoad(route.pattern, () => options.ensureRouteLoaded!(route));
   };
-  // Like Next.js, prepare the action's page before handling the action. The
-  // action and the page it renders see the route's root params.
-  const prepareActionRoute = (routeMatch: AppRscRouteMatch<TRoute>) =>
-    prepareRouteModule(routeMatch.route, () =>
-      setRootParams(pickRootParams(routeMatch.params, routeMatch.route.rootParamNames)),
-    );
-  // Load the action's page, then prepare it. A Server Action that may be
-  // forwarded to the route that owns it loads the page only once it isn't, so
-  // the page's modules don't run for a forwarded action.
-  const loadAndPrepareActionRoute = async (routeMatch: AppRscRouteMatch<TRoute> | null) => {
+  // Next.js's `loadRouteModule` resolves only the route's generated entry
+  // before an action is handled or forwarded; the page's own modules stay lazy
+  // until it renders. vinext already holds that entry (the matched route), so
+  // an action traces the lookup and leaves loading the page's modules to the
+  // render that needs them, which a forwarded action never reaches.
+  const prepareActionRoute = (routeMatch: AppRscRouteMatch<TRoute> | null) => {
     if (!routeMatch) return;
-    await loadRouteModule(routeMatch.route);
-    prepareActionRoute(routeMatch);
+    const actionRoute = routeMatch.route;
+    if (options.ensureRouteLoaded && loadedRoute !== actionRoute) {
+      loadedRoute = actionRoute;
+      traceRouteModuleLoad(actionRoute.pattern, () => undefined);
+    }
+    // The action and the page it renders see the route's root params.
+    prepareRouteModule(actionRoute, () =>
+      setRootParams(pickRootParams(routeMatch.params, actionRoute.rootParamNames)),
+    );
   };
   let serverActionHandled = false;
   const handleServerAction = async (
@@ -2651,14 +2654,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible || !isPostRequest || !actionId) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
+    prepareActionRoute(routeMatch);
     if (!options.handleServerActionRequest) {
-      // A build without Server Actions has nothing to forward.
-      await loadAndPrepareActionRoute(routeMatch);
       return markServerActionResponse(
         respondServerActionNotFound(actionId, options.clearRequestContext),
       );
     }
-    if (routeMatch) prepareActionRoute(routeMatch);
     const sourceConfigHeaders = new Headers();
     await applyAppRscConfigHeaders(sourceConfigHeaders, request, {
       basePath: options.basePath,
@@ -2695,17 +2696,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | ProgressiveActionFormStateResult | null> => {
     if (!filesystemRouteEligible || !isProgressiveActionRequest) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
+    prepareActionRoute(routeMatch);
     if (!options.handleProgressiveActionRequest) {
-      // A build without Server Actions has nothing to forward.
-      await loadAndPrepareActionRoute(routeMatch);
       return unrenderedRouteMatch?.route.__loadPage &&
         !unrenderedRouteMatch.route.__loadRouteHandler
         ? markServerActionResponse(respondServerActionNotFound(null, options.clearRequestContext))
         : null;
     }
-    // The action may be forwarded, so its page loads only for the render that
-    // follows a form-state result.
-    if (routeMatch) prepareActionRoute(routeMatch);
     const progressiveActionResult = await options.handleProgressiveActionRequest({
       actionId,
       cleanPathname,

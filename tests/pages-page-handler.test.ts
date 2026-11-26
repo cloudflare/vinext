@@ -278,6 +278,48 @@ describe("createPagesPageHandler — coalesced route module spans", () => {
   });
 });
 
+describe("createPagesPageHandler — missing /500 lookup span", () => {
+  it("resolves the missing /500 page beneath its own route module load like Next.js", async () => {
+    const errorRoute = makeRoute("/_error", makePageModule());
+    const failingRoute = makeRoute(
+      "/boom",
+      makePageModule({
+        getServerSideProps: async () => {
+          throw new Error("gssp failure");
+        },
+      }),
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [failingRoute, errorRoute], errorPageRoute: errorRoute }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    capturedRouteModuleSpans.length = 0;
+    captureRouteModuleSpans = true;
+    try {
+      const response = await handler(makeRequest("/boom"), "/boom", null, null, null);
+      expect(response.status).toBe(500);
+      await response.text();
+    } finally {
+      captureRouteModuleSpans = false;
+      consoleError.mockRestore();
+    }
+
+    // The failing page, the missing /500 page, then _error, each resolved
+    // beneath its own route module load.
+    const lookups = capturedRouteModuleSpans.filter(([type]) =>
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"].includes(type),
+    );
+    expect(lookups).toEqual([
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+    ]);
+  });
+});
+
 describe("createPagesPageHandler — after() lifecycle", () => {
   it("runs callbacks only after the response body closes", async () => {
     let callbackRan = false;

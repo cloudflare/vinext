@@ -2980,13 +2980,6 @@ describe("App Router entry templates", () => {
     expect(code).toContain("interceptBranchSegments:");
     expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
     expect(code).toContain("? __isEdgeRuntime(__resolveRouteRuntime(__actionMatch.route))");
-    // The action's page loads, traced, only after forwarding declines it.
-    const forwardIndex = code.indexOf("if (__forwardResponse) return __forwardResponse;");
-    const actionLoadIndex = code.indexOf(
-      "await __traceRouteModuleLoad(__actionMatch.route.pattern, () => __ensureRouteLoaded(__actionMatch.route));",
-    );
-    expect(forwardIndex).toBeGreaterThan(-1);
-    expect(actionLoadIndex).toBeGreaterThan(forwardIndex);
     expect(code).toContain(
       "const __isEdge = route ? __isEdgeRuntime(__resolveRouteRuntime(route))",
     );
