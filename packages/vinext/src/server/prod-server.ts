@@ -1803,7 +1803,8 @@ export function resolveAppRouterAssetPath(
 /**
  * Service workers are served below `basePath` whatever the `assetPrefix`, as a
  * worker must be same-origin. The client build writes them to the matching
- * path, so the request pathname is the lookup path.
+ * path, so the request pathname is the lookup path. Resolved before the asset
+ * prefix, which can strip `basePath` when its pathname matches it.
  */
 export function resolveServiceWorkerAssetPath(pathname: string, basePath: string): string | null {
   return pathname.startsWith(`${basePath}/${SERVICE_WORKER_URL_DIR}/`) ? pathname : null;
@@ -2205,8 +2206,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // router classifies unmatched static paths after resolving rewrites.
     {
       const assetLookupPath =
-        resolveAppRouterAssetPath(pathname, appAssetPathPrefix, appRouterAssetPrefix) ??
-        resolveServiceWorkerAssetPath(pathname, appRouterBasePath);
+        resolveServiceWorkerAssetPath(pathname, appRouterBasePath) ??
+        resolveAppRouterAssetPath(pathname, appAssetPathPrefix, appRouterAssetPrefix);
       if (assetLookupPath) {
         if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
           return;
@@ -2667,8 +2668,8 @@ async function createPagesRouterRequestHandler(
     // must still reach middleware so it can rewrite or respond. The shared
     // router classifies unmatched static paths after resolving rewrites.
     const pagesAssetLookup =
-      resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix) ??
-      resolveServiceWorkerAssetPath(pathname, basePath);
+      resolveServiceWorkerAssetPath(pathname, basePath) ??
+      resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
     if (pagesAssetLookup) {
       if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
         return;

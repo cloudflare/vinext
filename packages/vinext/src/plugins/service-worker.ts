@@ -305,6 +305,7 @@ async function bundleServiceWorker(
     configFile: false,
     root: config.root,
     mode: config.mode,
+    base: config.base,
     // Warnings and errors only: the worker is part of the app's build, so a
     // second build banner would be noise.
     logLevel: config.logLevel === "silent" ? "silent" : "warn",
