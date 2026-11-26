@@ -9,6 +9,15 @@ const CLOUDFLARE_WORKER_ENTRY_ID = "virtual:cloudflare/worker-entry";
 export type CdnAdapterOptions = {
   /** Version metadata binding used to verify version-overridden requests. */
   versionMetadataBinding?: string;
+  /**
+   * Whether the build adds the `VinextCachedResponse` and `VinextUncachedResponse`
+   * exports to the Worker's entry. Defaults to `true`. Set `false` when the
+   * Worker's own entry exports them instead, for example a subclass of
+   * `VinextCachedResponse` from `@vinext/cloudflare/cache/cdn-adapter.worker`
+   * that does work only on a Workers Cache miss. An entry exported by the build
+   * would otherwise shadow the app's own export of the same name.
+   */
+  exportEntrypoints?: boolean;
 };
 
 /**
@@ -42,6 +51,12 @@ export function workersCacheCdnAdapter(options?: CdnAdapterOptions) {
       "[vinext] workersCacheCdnAdapter({ versionMetadataBinding }) must be a non-empty string binding name.",
     );
   }
+  if (options?.exportEntrypoints !== undefined && typeof options.exportEntrypoints !== "boolean") {
+    throw new TypeError(
+      "[vinext] workersCacheCdnAdapter({ exportEntrypoints }) must be a boolean.",
+    );
+  }
+  const exportEntrypoints = options?.exportEntrypoints !== false;
   const versionMetadataBinding =
     options?.versionMetadataBinding ?? DEFAULT_CDN_VERSION_METADATA_BINDING;
   const bindingIsExplicit = options?.versionMetadataBinding !== undefined;
@@ -58,6 +73,7 @@ export function workersCacheCdnAdapter(options?: CdnAdapterOptions) {
         );
       },
       transformHostEntry({ code, id }: { code: string; id: string }) {
+        if (!exportEntrypoints) return null;
         const cleanId = id.charCodeAt(0) === 0 ? id.slice(1) : id;
         if (cleanId !== CLOUDFLARE_WORKER_ENTRY_ID) return null;
         return `${code}\nexport { VinextCachedResponse, VinextUncachedResponse } from ${JSON.stringify(workerEntry)};\n`;

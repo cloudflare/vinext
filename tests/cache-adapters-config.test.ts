@@ -505,6 +505,33 @@ describe("workersCacheCdnAdapter builder + factory", () => {
       "must be a non-empty string binding name",
     );
   });
+
+  it("leaves the response entrypoint exports to the Worker entry when exportEntrypoints is false", () => {
+    // The Cloudflare plugin's worker entry re-exports the user's main with
+    // `export *`, which an explicit export of the same name shadows. Appending
+    // vinext's classes would silently replace an app's subclass.
+    const descriptor = workersCacheCdnAdapter({ exportEntrypoints: false });
+    expect(descriptor.options).toEqual({ exportEntrypoints: false });
+    expect(
+      descriptor.output.transformHostEntry({
+        code: 'export * from "virtual:cloudflare/user-entry";',
+        id: "\0virtual:cloudflare/worker-entry",
+      }),
+    ).toBeNull();
+    expect(
+      workersCacheCdnAdapter({ exportEntrypoints: true }).output.transformHostEntry({
+        code: "export default {};",
+        id: "virtual:cloudflare/worker-entry",
+      }),
+    ).toContain("export { VinextCachedResponse, VinextUncachedResponse } from ");
+  });
+
+  it("rejects a non-boolean exportEntrypoints", () => {
+    expect(() =>
+      // @ts-expect-error - invalid option shape is rejected at runtime.
+      workersCacheCdnAdapter({ exportEntrypoints: "false" }),
+    ).toThrow("workersCacheCdnAdapter({ exportEntrypoints }) must be a boolean.");
+  });
 });
 
 describe("responseStoreAdapter builder", () => {
