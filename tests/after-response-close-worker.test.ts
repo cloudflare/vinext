@@ -78,6 +78,15 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
         !src.includes(`${path.sep}pages${path.sep}tsconfig-exact-path-pages`),
       CLOUDFLARE_NODE_MODULES,
     );
+    // next.config.ts injects the local fake-instrumentation-inject package into
+    // every page, so it can't be excluded like a route. Drop it from the copy.
+    const nextConfigPath = path.join(root, "next.config.ts");
+    const nextConfig = await fs.readFile(nextConfigPath, "utf8");
+    const withoutLocalInject = nextConfig.replace(/\s*"fake-instrumentation-inject",/, "");
+    if (withoutLocalInject === nextConfig) {
+      throw new Error("app-basic next.config.ts no longer injects fake-instrumentation-inject");
+    }
+    await fs.writeFile(nextConfigPath, withoutLocalInject);
     // app-basic has no wrangler config of its own (it's normally only used
     // for Vite/Node-mode tests) — write a minimal one so @cloudflare/vite-plugin
     // emits dist/server/wrangler.json for unstable_startWorker to read.

@@ -12,6 +12,7 @@ import {
 } from "../packages/vinext/src/server/instrumentation.js";
 import { toSlash } from "pathslash";
 import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
+import { INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE } from "../packages/vinext/src/client/instrumentation-client-state.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import {
   createInstrumentationClientTransformPlugin,
@@ -953,6 +954,56 @@ export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push
 
       expect(calls).toEqual(["esm /a", "late /b", "esm /b"]);
     } finally {
+      delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Next.js reads each module's hook inside callHooks' per-module try
+  // (client/components/router-transition.ts).
+  it("isolates a CommonJS inject whose hook export is a throwing getter", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-getter-"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "esm.mjs"),
+        `export function onRouterTransitionStart(url) { globalThis.__vinextInjectCalls.push("esm " + url); }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "user.mjs"),
+        `export function onRouterTransitionStart(url) { globalThis.__vinextInjectCalls.push("user " + url); }\n`,
+      );
+      const code = generateInstrumentationClientInjectModule(
+        ["./getter.cjs", "./esm.mjs"],
+        "./user.mjs",
+      );
+      // Rolldown's CommonJS interop namespace exposes module.exports through
+      // live getters, which an ES module namespace cannot express.
+      const getterImport = 'import * as __vinj_0 from "./getter.cjs";';
+      expect(code).toContain(getterImport);
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      fs.writeFileSync(
+        entryPath,
+        code.replace(
+          getterImport,
+          'const __vinj_0 = { get onRouterTransitionStart() { throw new Error("getter failed"); } };',
+        ),
+      );
+      const calls: string[] = [];
+      (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls = calls;
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        onRouterTransitionStart: (url: string, type: string, event: null) => void;
+      };
+
+      mod.onRouterTransitionStart("/a", "push", null);
+
+      expect(calls).toEqual(["esm /a", "user /a"]);
+      expect(consoleError).toHaveBeenCalledWith(
+        INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE,
+        expect.objectContaining({ message: "getter failed" }),
+      );
+    } finally {
+      consoleError.mockRestore();
       delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

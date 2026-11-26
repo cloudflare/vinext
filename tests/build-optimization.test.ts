@@ -1274,6 +1274,47 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  // Only the generated private-next-instrumentation-client module imports an
+  // inject, and the dependency scan never crawls it, so a bare inject would be
+  // discovered on the first request, re-optimized and reloaded.
+  it("pre-bundles bare instrumentationClientInject packages for the client", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.configResolved === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    // app-basic injects two relative files and the bare fake-instrumentation-inject.
+    const root = path.resolve(import.meta.dirname, "fixtures/app-basic");
+    await (mainPlugin as any).config({ root, build: {} }, { command: "serve" });
+
+    const client = { consumer: "client", optimizeDeps: {} as { include?: string[] } };
+    const noDiscoveryClient = {
+      consumer: "client",
+      optimizeDeps: { noDiscovery: true, include: ["some-lib"] } as {
+        include?: string[];
+        noDiscovery: boolean;
+      },
+    };
+    const ssr = { consumer: "server", optimizeDeps: {} as { include?: string[] } };
+    await (mainPlugin as any).configResolved({
+      cacheDir: path.join(root, "node_modules/.vite"),
+      command: "serve",
+      configFile: false,
+      environments: { client, noDiscoveryClient, ssr },
+      logger: createLogger("silent"),
+      plugins: [],
+    });
+
+    expect(client.optimizeDeps.include).toContain("fake-instrumentation-inject");
+    expect(
+      client.optimizeDeps.include?.filter((id) => id.includes("instrumentation-client-inject")),
+    ).toEqual([]);
+    expect(noDiscoveryClient.optimizeDeps.include).not.toContain("fake-instrumentation-inject");
+    expect(ssr.optimizeDeps.include ?? []).not.toContain("fake-instrumentation-inject");
+  }, 15000);
+
   it("leaves the Pages Router client optimizer's shim includes alone", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
