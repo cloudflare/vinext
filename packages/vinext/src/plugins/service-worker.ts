@@ -504,11 +504,15 @@ export function createServiceWorkerPlugin(options: { getBasePath: () => string }
       clientConfig = server.environments.client?.config ?? server.config;
       // Registered before Vite's internal middlewares, so `req.url` still
       // carries `basePath` and the worker is served before any app routing.
-      server.watcher.on("change", invalidateDevBundles);
-      server.watcher.on("unlink", (file) => {
+      // A changed module registers again on its next transform. The transform
+      // filter skips a module whose edit removed every registration, so its
+      // registrations are forgotten here rather than there.
+      const forgetFile = (file: string) => {
         invalidateDevBundles(file);
         forgetImporter(file);
-      });
+      };
+      server.watcher.on("change", forgetFile);
+      server.watcher.on("unlink", forgetFile);
       server.middlewares.use(serviceWorkerMiddleware(serveDevWorker));
     },
     configurePreviewServer(server) {

@@ -362,6 +362,18 @@ describe("service worker dev server", () => {
     const body = await (await fetch(`${baseUrl}/_next/static/service-worker/sw.js`)).text();
     expect(body).toContain("intercepted-by-vinext-sw");
   });
+
+  it("stops serving a worker once an edit removes its registration", async () => {
+    // The edit leaves no `serviceWorker` reference, so the transform filter
+    // skips the module and only the file watcher can forget its registration.
+    const file = path.join(fixtureDir, "lib", "register-root.ts");
+    fs.writeFileSync(file, "export {};\n");
+    // The watcher reports real paths (macOS tmp dirs sit behind a symlink).
+    server!.watcher.emit("change", fs.realpathSync(file));
+
+    const response = await fetch(`${baseUrl}/_next/static/service-worker/sw.js`);
+    expect(response.status).toBe(404);
+  });
 });
 
 describe("conflicting service worker registrations", () => {
