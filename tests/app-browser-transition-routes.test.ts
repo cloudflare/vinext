@@ -153,6 +153,34 @@ describe("resolveRouterTransitionFromRoutes", () => {
     ).toEqual(["/dashboard"]);
   });
 
+  it("reports only the slots of a layout composed only of named slots", async () => {
+    // parallel-nested/home declares no children: its route renders through
+    // @parallelB, so Next.js's tree has no children branch to report.
+    const graph = await appRouteGraph(
+      path.resolve(import.meta.dirname, "fixtures/app-basic/app/parallel-nested"),
+    );
+    const namedSlotsManifest = decodeBrowserRouteManifest(
+      toBrowserRouteManifestWire(graph.routeManifest),
+    );
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          slotBindings: [
+            { ownerLayoutId: "layout:/home", slotId: "slot:children:/home", state: "unmatched" },
+            {
+              activeRouteId: "route:/home/nested",
+              ownerLayoutId: "layout:/home",
+              slotId: "slot:parallelB:/home",
+              state: "active",
+            },
+          ],
+          sourcePage: "/home/nested/page",
+        }),
+        namedSlotsManifest,
+      ),
+    ).toEqual(["/home/@parallelB/nested"]);
+  });
+
   it("reports a whole intercepting route as the owner's default and the intercepted slot", () => {
     expect(
       resolveRouterTransitionFromRoutes(

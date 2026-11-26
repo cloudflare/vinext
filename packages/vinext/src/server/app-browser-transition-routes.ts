@@ -179,7 +179,7 @@ export function resolveRouterTransitionFromRoutes(
       ? null
       : resolveWholeInterceptedSlot(state.slotBindings, sourceSegments, routeManifest);
 
-  let primary: string;
+  let primary: string | null;
   if (sourceSegments === null) {
     primary = "/_not-found";
   } else if (wholeIntercepted !== null) {
@@ -199,10 +199,14 @@ export function resolveRouterTransitionFromRoutes(
         }
       }
     }
+    // A layout composed only of named slots has no children branch, so the
+    // route reports only its slots (Next.js explicitParallelRouteChildren).
     primary =
-      children !== null && children.binding.state !== "active"
-        ? joinSourcePath([...children.owner, "default"])
-        : joinSourcePath(sourceSegments);
+      children === null || children.binding.state === "active"
+        ? joinSourcePath(sourceSegments)
+        : children.binding.state === "unmatched"
+          ? null
+          : joinSourcePath([...children.owner, "default"]);
   }
 
   const slots: string[] = [];
@@ -234,5 +238,5 @@ export function resolveRouterTransitionFromRoutes(
   }
 
   slots.sort((left, right) => left.localeCompare(right));
-  return [primary, ...slots];
+  return primary === null ? slots : [primary, ...slots];
 }

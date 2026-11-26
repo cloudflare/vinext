@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as Sentry from "@sentry/nextjs";
-import { createServer, parseAst } from "vite-plus";
+import { createServer, minifySync, parseAst } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 import {
   findInstrumentationClientFile,
@@ -870,6 +870,15 @@ describe("instrumentationClientInject plugin pipeline", () => {
   });
 });
 
+// Applies the client define vinext sets for
+// experimental.instrumentationClientRouterTransitionEvents.
+function withTransitionEventsFlag(code: string, enabled: boolean): string {
+  return code.replaceAll(
+    "process.env.__NEXT_INSTRUMENTATION_CLIENT_ROUTER_TRANSITION_EVENTS",
+    JSON.stringify(enabled),
+  );
+}
+
 describe("generateInstrumentationClientInjectModule", () => {
   it("returns passthrough when injects is empty (userPath ignored)", () => {
     expect(generateInstrumentationClientInjectModule([], null)).toBe("export {};");
@@ -978,6 +987,17 @@ export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push
     }
   });
 
+  // Ported from Next.js: test/production/app-dir/instrumentation-client-dce/instrumentation-client-dce.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/production/app-dir/instrumentation-client-dce/instrumentation-client-dce.test.ts
+  it("drops the start event copy from builds without the transition events flag", () => {
+    const code = generateInstrumentationClientInjectModule(["./inject-a.js"], null);
+    const minified = (enabled: boolean) =>
+      minifySync("inject.mjs", withTransitionEventsFlag(code, enabled)).code;
+
+    expect(minified(true)).toContain("fromRoutes");
+    expect(minified(false)).not.toContain("fromRoutes");
+  });
+
   // Next.js builds the start event inside each callHooks invocation
   // (client/components/router-transition.ts startRouterTransition).
   it("gives each hook its own start event", async () => {
@@ -1002,7 +1022,10 @@ export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push
       const entryPath = path.join(tmpDir, "entry.mjs");
       fs.writeFileSync(
         entryPath,
-        generateInstrumentationClientInjectModule(["./mutates.mjs"], "./user.mjs"),
+        withTransitionEventsFlag(
+          generateInstrumentationClientInjectModule(["./mutates.mjs"], "./user.mjs"),
+          true,
+        ),
       );
       const events: unknown[] = [];
       (globalThis as { __vinextInjectEvents?: unknown[] }).__vinextInjectEvents = events;
