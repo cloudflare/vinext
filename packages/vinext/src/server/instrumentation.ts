@@ -162,8 +162,12 @@ export async function runInstrumentation(
   runner: ModuleImporter,
   instrumentationPath: string,
 ): Promise<void> {
+  const startTime = performance.timeOrigin + performance.now();
   const mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
-  await ensureInstrumentationRegistered(mod, instrumentationPath);
+  await ensureInstrumentationRegistered(mod, instrumentationPath, {
+    startTime,
+    endTime: performance.timeOrigin + performance.now(),
+  });
 }
 
 /**

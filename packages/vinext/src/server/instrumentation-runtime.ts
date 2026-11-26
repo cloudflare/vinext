@@ -26,7 +26,43 @@
  */
 
 import type { OnRequestErrorHandler } from "./instrumentation.js";
+import { recordFrameworkSpanError } from "./framework-tracer.js";
 import { extendTracerProviderForCacheComponents } from "./otel-tracer-extension.js";
+import { frameworkTracer } from "./tracer.js";
+
+/** When loading the instrumentation module started and finished (epoch milliseconds). */
+export type InstrumentationLoadTiming = {
+  endTime: number;
+  startTime: number;
+};
+
+function getInstrumentationTimestamp(): number {
+  return performance.timeOrigin + performance.now();
+}
+
+/**
+ * Emits a lifecycle span of `instrumentation.ts` after the fact, as Next.js
+ * does (`traceBackdatedInstrumentationSpan` in
+ * server/lib/router-utils/instrumentation-globals.external.ts): `register()`
+ * commonly installs the tracer provider, so the spans can only be emitted
+ * once it returns, with their original timestamps. Like `next start`, which
+ * registers at startup, they are emitted outside of any request's trace.
+ */
+function traceInstrumentationLifecycleSpan(
+  type: "Instrumentation.loadModule" | "Instrumentation.register",
+  name: string,
+  timing: InstrumentationLoadTiming,
+  error?: unknown,
+): void {
+  frameworkTracer.runWithDetachedContext(() =>
+    frameworkTracer.trace(
+      { endTime: timing.endTime, name, recordErrors: false, startTime: timing.startTime, type },
+      (span) => {
+        if (error !== undefined) recordFrameworkSpanError(span, error);
+      },
+    ),
+  );
+}
 
 type InstrumentationState = {
   initialized: boolean;
@@ -83,10 +119,14 @@ function isOnRequestErrorHandler(value: unknown): value is OnRequestErrorHandler
  *   without this helper needing to know the module path.
  * @param instrumentationId - Stable source path used to deduplicate the same
  *   instrumentation file when Vite evaluates it in separate environments.
+ * @param loadTiming - When importing the module started and finished, when the
+ *   caller imported it itself. Generated server entries import it statically,
+ *   so it was evaluated with the entry and its load has no separate duration.
  */
 export async function ensureInstrumentationRegistered(
   instrumentationModule: Record<string, unknown>,
   instrumentationId?: string,
+  loadTiming?: InstrumentationLoadTiming,
 ): Promise<void> {
   if (process.env.VINEXT_PRERENDER === "1") return;
   const state = getInstrumentationState(instrumentationModule, instrumentationId);
@@ -94,8 +134,35 @@ export async function ensureInstrumentationRegistered(
   if (state.initPromise) return state.initPromise;
 
   state.initPromise = (async () => {
+    const loadedAt = getInstrumentationTimestamp();
+    const moduleLoadTiming = loadTiming ?? { startTime: loadedAt, endTime: loadedAt };
     if (typeof instrumentationModule.register === "function") {
-      await instrumentationModule.register();
+      const startTime = getInstrumentationTimestamp();
+      let error: unknown;
+      try {
+        await instrumentationModule.register();
+      } catch (err) {
+        error = err;
+        throw err;
+      } finally {
+        traceInstrumentationLifecycleSpan(
+          "Instrumentation.loadModule",
+          "load instrumentation module",
+          moduleLoadTiming,
+        );
+        traceInstrumentationLifecycleSpan(
+          "Instrumentation.register",
+          "register instrumentation",
+          { startTime, endTime: getInstrumentationTimestamp() },
+          error,
+        );
+      }
+    } else {
+      traceInstrumentationLifecycleSpan(
+        "Instrumentation.loadModule",
+        "load instrumentation module",
+        moduleLoadTiming,
+      );
     }
 
     // Extend the OTel tracer provider after register() so that span creation

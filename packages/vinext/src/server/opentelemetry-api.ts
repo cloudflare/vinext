@@ -12,7 +12,7 @@ type OpenTelemetryContext = {
 };
 
 export type OpenTelemetrySpan = {
-  end(): void;
+  end(endTime?: number): void;
   isRecording(): boolean;
   recordException(error: unknown): void;
   setAttribute(key: string, value: OpenTelemetryAttributeValue): void;
@@ -27,6 +27,7 @@ export type OpenTelemetryTracer = {
     options: {
       attributes: Record<string, OpenTelemetryAttributeValue>;
       kind?: number;
+      startTime?: number;
     },
     callback: (span: OpenTelemetrySpan) => T,
   ): T;

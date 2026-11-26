@@ -308,6 +308,59 @@ describe("OpenTelemetry integration", () => {
     ]);
   });
 
+  it("passes backdated start and end times to the registered provider", () => {
+    const requireFromSentry = createRequire(import.meta.resolve("@sentry/nextjs/package.json"));
+    const api = requireFromSentry("@opentelemetry/api") as {
+      trace: {
+        disable(): void;
+        setGlobalTracerProvider(provider: unknown): boolean;
+      };
+    };
+    const timings: Array<{ endTime?: number; startTime?: number }> = [];
+    api.trace.disable();
+    api.trace.setGlobalTracerProvider({
+      getTracer: () => ({
+        startActiveSpan<T>(
+          _name: string,
+          options: { startTime?: number },
+          callback: (span: unknown) => T,
+        ): T {
+          const timing: { endTime?: number; startTime?: number } = {
+            startTime: options.startTime,
+          };
+          timings.push(timing);
+          return callback({
+            end: (endTime?: number) => {
+              timing.endTime = endTime;
+            },
+            isRecording: () => true,
+            recordException() {},
+            setAttribute() {},
+            setStatus() {},
+            spanContext: () => ({}),
+            updateName() {},
+          });
+        },
+      }),
+    });
+
+    try {
+      const tracer = createFrameworkTracer([openTelemetryTracingIntegration]);
+      tracer.trace(
+        { endTime: 2_000, startTime: 1_000, type: "Instrumentation.register" },
+        () => {},
+      );
+      tracer.trace({ type: "AppRender.fetch" }, () => {});
+    } finally {
+      api.trace.disable();
+    }
+
+    expect(timings).toEqual([
+      { startTime: 1_000, endTime: 2_000 },
+      { startTime: undefined, endTime: undefined },
+    ]);
+  });
+
   it("extracts incoming propagation only when no span is already active", () => {
     const spanKey = Symbol.for("OpenTelemetry Context Key SPAN");
     type TestContext = {

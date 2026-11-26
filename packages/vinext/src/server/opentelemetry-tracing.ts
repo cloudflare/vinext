@@ -69,22 +69,24 @@ export const openTelemetryTracingIntegration: FrameworkTracingIntegration = {
     const api = getOpenTelemetryApi();
     if (!api || !isEnabled(api)) return callback(noopSpan);
 
+    const { endTime } = descriptor;
     return api.trace.getTracer("next.js", "0.0.1").startActiveSpan(
       descriptor.name,
       {
         attributes: descriptor.attributes,
         kind: spanKinds[descriptor.kind],
+        startTime: descriptor.startTime,
       },
       (span) => {
         try {
           const result = callback(backendSpan(span));
           if (!isPromiseLike(result)) {
-            span.end();
+            span.end(endTime);
             return result;
           }
-          return Promise.resolve(result).finally(() => span.end()) as unknown as T;
+          return Promise.resolve(result).finally(() => span.end(endTime)) as unknown as T;
         } catch (error) {
-          span.end();
+          span.end(endTime);
           throw error;
         }
       },
