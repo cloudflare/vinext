@@ -45,6 +45,7 @@ import {
 } from "./url-utils.js";
 import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
 import { getI18nContext } from "./i18n-context.js";
+import { addNavigationTransitionTypes } from "./internal/navigation-transition-types.js";
 import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-next-data.js";
 import {
   navigatePagesRouterLinkWithFallback,
@@ -1296,7 +1297,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     unstable_dynamicOnHover = false,
     legacyBehavior = false,
     passHref = false,
-    transitionTypes: _transitionTypes,
+    transitionTypes,
     locale,
     ...anchorProps
   },
@@ -1709,12 +1710,18 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
-        void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, false).finally(
-          () => {
-            setPending(false);
-            if (setter) clearLinkForCurrentNavigation(setter);
-          },
-        );
+        addNavigationTransitionTypes(transitionTypes);
+        void navigateClientSide(
+          navigateHref,
+          replace ? "replace" : "push",
+          scroll,
+          false,
+          undefined,
+          transitionTypes,
+        ).finally(() => {
+          setPending(false);
+          if (setter) clearLinkForCurrentNavigation(setter);
+        });
       });
       return;
     } else if (HAS_PAGES_ROUTER) {
