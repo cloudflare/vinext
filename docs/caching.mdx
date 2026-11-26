@@ -273,6 +273,32 @@ defineWorker({
 
 The helper disables caching on the application's default entrypoint and enables it on `VinextCachedResponse`. The source config owns these policies; vinext does not rewrite them in the Build Output.
 
+The build adds the `VinextCachedResponse` and `VinextUncachedResponse` exports to the Worker's entry. To run your own code only on a Workers Cache miss, export a subclass from the Worker's `main` module instead and pass `exportEntrypoints: false`, so the build's exports don't replace yours. The Worker must still export both classes under these names:
+
+```ts
+// vite.config.ts
+vinext({ cache: { cdn: workersCacheCdnAdapter({ exportEntrypoints: false }) } });
+```
+
+```ts
+// worker/index.ts (the Worker's main)
+import {
+  VinextCachedResponse as BaseCachedResponse,
+  VinextUncachedResponse,
+} from "@vinext/cloudflare/cache/cdn-adapter.worker";
+import handler from "vinext/server/fetch-handler";
+
+export class VinextCachedResponse extends BaseCachedResponse {
+  async fetch(request: Request): Promise<Response> {
+    // Runs only when Workers Cache misses.
+    return super.fetch(request);
+  }
+}
+
+export { VinextUncachedResponse };
+export default handler;
+```
+
 ## KV data cache
 
 You can use Workers KV without Workers Cache:
