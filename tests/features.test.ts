@@ -2926,6 +2926,72 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain("email=no");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // ("should support other basic tags", app/basic/page.tsx)
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts
+  it("renders pagination as rel=prev and rel=next links", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: { pagination: { previous: "/basic?page=1", next: "/basic?page=3" } },
+        pathname: "/basic",
+      }),
+    );
+    expect(html).toContain('<link rel="prev" href="/basic?page=1"/>');
+    expect(html).toContain('<link rel="next" href="/basic?page=3"/>');
+  });
+
+  it("resolves pagination against metadataBase and leaves a missing end out", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          metadataBase: new URL("https://example.com"),
+          pagination: { previous: null, next: "/list?page=2" },
+        },
+        pathname: "/list",
+      }),
+    );
+    expect(html).toContain('<link rel="next" href="https://example.com/list?page=2"/>');
+    expect(html).not.toContain('rel="prev"');
+  });
+
+  it("renders abstract, classification and the archives, assets and bookmarks links", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          abstract: "A summary",
+          classification: "Health",
+          archives: ["https://example.com/2020", "https://example.com/2021"],
+          assets: "https://example.com/assets",
+          bookmarks: ["https://example.com/bookmark"],
+        },
+      }),
+    );
+    expect(html).toContain('<meta name="abstract" content="A summary"/>');
+    expect(html).toContain('<meta name="classification" content="Health"/>');
+    expect(html).toContain('<link rel="archives" href="https://example.com/2020"/>');
+    expect(html).toContain('<link rel="archives" href="https://example.com/2021"/>');
+    expect(html).toContain('<link rel="assets" href="https://example.com/assets"/>');
+    expect(html).toContain('<link rel="bookmarks" href="https://example.com/bookmark"/>');
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // ("should support socials related tags like facebook and pinterest", app/socials/page.tsx)
+  it("renders facebook and pinterest tags", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          facebook: { appId: "12345678", admins: ["120", "122", "124"] },
+          pinterest: { richPin: true },
+        },
+      }),
+    );
+    expect(html).toContain('<meta property="fb:app_id" content="12345678"/>');
+    expect(html).toContain('<meta property="fb:admins" content="120"/>');
+    expect(html).toContain('<meta property="fb:admins" content="122"/>');
+    expect(html).toContain('<meta property="fb:admins" content="124"/>');
+    expect(html).toContain('<meta property="pinterest-rich-pin" content="true"/>');
+  });
+
   it("renders googlebot meta tag separately from robots", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
