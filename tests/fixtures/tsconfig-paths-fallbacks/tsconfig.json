@@ -7,6 +7,7 @@
       "@lib/typed": ["components/alias-to-d-ts.d.ts"],
       "@lib/types/*": ["components/*.d.ts"],
       "@fixed/*": ["lib/missing/*", "lib/fixed.ts", "lib/b/*"],
+      "@fixed-exact": ["lib/missing.ts", "lib/fixed.ts"],
       "d-ts-alias": ["components/alias-to-d-ts.d.ts", "components/alias-to-d-ts.tsx"],
       "@types-only": ["components/alias-to-d-ts.d.ts"]
     },

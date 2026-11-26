@@ -425,6 +425,7 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
     ["/resolve-fixed", "Hello from fixed"],
     // The import's `?raw` query carries over to the fixed fallback.
     ["/resolve-fixed-raw", "fixed-source-marker"],
+    ["/resolve-fixed-exact-raw", "fixed-source-marker"],
   ] as const;
 
   it("resolves the first matching target and skips .d.ts targets in dev", async () => {
@@ -448,11 +449,11 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
         customResolver?: unknown;
       }[];
       const aliases = aliasEntriesToRecord(aliasEntries);
-      expect(aliases[String(/^d-ts-alias$/)]).toMatch(/components\/alias-to-d-ts\.tsx$/);
+      expect(aliases[String(/^d-ts-alias(?=[?#]|$)/)]).toMatch(/components\/alias-to-d-ts\.tsx$/);
       const findIndex = (find: string) => aliasEntries.findIndex((e) => String(e.find) === find);
       const passThroughEntries = [
-        [String(/^@types-only$/), "@types-only"],
-        [String(/^@lib\/typed$/), "@lib/typed"],
+        [String(/^@types-only(?=[?#]|$)/), "@types-only"],
+        [String(/^@lib\/typed(?=[?#]|$)/), "@lib/typed"],
         [String(/^@lib\/types\//), "@lib/types/"],
       ] as const;
       for (const [find, replacement] of passThroughEntries) {
@@ -461,6 +462,12 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
         expect(await (entry.customResolver as (id: string) => unknown)(replacement)).toBeNull();
         expect(findIndex(find)).toBeLessThan(findIndex("@lib"));
       }
+      // Exact keys also match before a query/hash, so `@lib/typed?raw` never
+      // reaches `@lib/*`.
+      const typedFind = aliasEntries[findIndex(String(/^@lib\/typed(?=[?#]|$)/))]!.find as RegExp;
+      expect(
+        ["@lib/typed?raw", "@lib/typed#x", "@lib/typedx"].map((id) => typedFind.test(id)),
+      ).toEqual([true, true, false]);
       // Like Next.js, `@lib/types/*` matches paths below `@lib/types` only.
       const typesFind = aliasEntries[findIndex(String(/^@lib\/types\//))]!.find as RegExp;
       expect(["@lib/types", "@lib/types/x"].map((id) => typesFind.test(id))).toEqual([false, true]);

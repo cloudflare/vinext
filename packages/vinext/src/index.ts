@@ -1627,6 +1627,12 @@ function aliasFindMatches(find: string | RegExp, id: string): boolean {
   return matches;
 }
 
+// Vite tests alias finds against the full importee, so an exact key ends at
+// the specifier or before its query/hash (`key?raw`, `key#hash`).
+function exactTsconfigKeyFind(find: string): RegExp {
+  return new RegExp(`^${escapeRegExp(find)}(?=[?#]|$)`);
+}
+
 /**
  * Convert the merged alias map into Vite alias entries, attaching the
  * stylesheet-scoping resolver to entries that came from tsconfig `paths`.
@@ -1652,7 +1658,7 @@ function buildResolveAliasEntries(
     ...Object.entries(tsconfigExactPathAliases)
       .filter(([find]) => !Object.hasOwn(explicitAliases, find))
       .map(([find, replacement]) => ({
-        find: new RegExp(`^${escapeRegExp(find)}$`),
+        find: exactTsconfigKeyFind(find),
         replacement,
         customResolver: createTsconfigAliasCustomResolver(
           replacement,
@@ -1662,7 +1668,7 @@ function buildResolveAliasEntries(
     ...tsconfigExactPassThrough
       .filter((find) => !Object.hasOwn(explicitAliases, find))
       .map((find) => ({
-        find: new RegExp(`^${escapeRegExp(find)}$`),
+        find: exactTsconfigKeyFind(find),
         replacement: find,
         customResolver: resolveTsconfigPassThrough,
       })),
