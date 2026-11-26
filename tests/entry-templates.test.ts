@@ -2334,6 +2334,7 @@ describe("App Router entry templates", () => {
       expect(serializedRoutes).toBeDefined();
       const routes = JSON.parse(serializedRoutes!) as Array<{
         forceDynamic: boolean;
+        interceptForcesDynamic: boolean;
         pattern: string;
       }>;
 
@@ -2343,6 +2344,18 @@ describe("App Router entry templates", () => {
         "/api": true,
         "/layout": true,
         "/page": true,
+        // As in Next.js, an intercepting route's segment config applies only
+        // to the render it intercepts, not to a direct request for its owner.
+        "/sibling-intercept": false,
+        "/slot-intercept": false,
+        "/static": false,
+      });
+      expect(
+        Object.fromEntries(routes.map((route) => [route.pattern, route.interceptForcesDynamic])),
+      ).toEqual({
+        "/api": false,
+        "/layout": false,
+        "/page": false,
         "/sibling-intercept": true,
         "/slot-intercept": true,
         "/static": false,

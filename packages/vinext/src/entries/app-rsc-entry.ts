@@ -363,21 +363,22 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
 
   return routes.map((route) => ({
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
-    forceDynamic:
-      directRequestForcesDynamic(route, forcesDynamic) ||
-      [
-        ...route.parallelSlots.flatMap((slot) =>
-          slot.interceptingRoutes.flatMap((intercept) => [
-            ...intercept.layoutPaths,
-            intercept.pagePath,
-            intercept.ownerDefaultPath,
-          ]),
-        ),
-        ...route.siblingIntercepts.flatMap((intercept) => [
+    forceDynamic: directRequestForcesDynamic(route, forcesDynamic),
+    // As in Next.js, an intercepting route's segment config applies only to
+    // the render it intercepts. The handler applies this one only then.
+    interceptForcesDynamic: [
+      ...route.parallelSlots.flatMap((slot) =>
+        slot.interceptingRoutes.flatMap((intercept) => [
           ...intercept.layoutPaths,
           intercept.pagePath,
+          intercept.ownerDefaultPath,
         ]),
-      ].some(forcesDynamic),
+      ),
+      ...route.siblingIntercepts.flatMap((intercept) => [
+        ...intercept.layoutPaths,
+        intercept.pagePath,
+      ]),
+    ].some(forcesDynamic),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,

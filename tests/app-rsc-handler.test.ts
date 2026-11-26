@@ -140,6 +140,7 @@ type TestRoute = {
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
   forceDynamic?: boolean;
+  interceptForcesDynamic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -2945,6 +2946,58 @@ describe("createAppRscHandler", () => {
     await expect(response.text()).resolves.toBe("dynamic stage");
     expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({ forceDynamic: true });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
+  // Next.js rewrites an intercepted request to the intercepting route's own
+  // app path (`generateInterceptionRoutesRewrites`, keyed on `Next-Url`), and
+  // each app path collects segment config from its own loader tree. So an
+  // intercepting route's `dynamic = "force-dynamic"` applies only when it
+  // renders, never to a direct request for the route that owns it.
+  it("bypasses the shared response stage for a force-dynamic intercept only when it renders", async () => {
+    const sourceRoute = createPageRoute({
+      interceptForcesDynamic: true,
+      pattern: "/feed",
+      routeSegments: ["feed"],
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchInterceptRoute: (pathname, sourcePathname) =>
+        pathname === "/photos/1" && sourcePathname === "/feed"
+          ? { interceptionSourceIsConcrete: true, params: {}, route: sourceRoute }
+          : null,
+      matchRequestRoute: (pathname) =>
+        pathname === "/feed" ? { params: {}, route: sourceRoute } : null,
+      matchRoute: (pathname) => (pathname === "/feed" ? { params: {}, route: sourceRoute } : null),
+    });
+
+    await handler(
+      new Request("https://example.test/docs/feed"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      forceDynamic: false,
+      interceptionContext: null,
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    await handler(
+      new Request(`https://example.test${rscUrl}`, { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+    expect(dispatchResponseStage.mock.calls[1]?.[1]).toMatchObject({
+      forceDynamic: true,
+      interceptionContext: "/feed",
+    });
+    expect(dispatchResponseStage.mock.calls[1]?.[2]).toEqual({ cache: "bypass" });
   });
 
   it("keeps a force-dynamic route shared when next.config supplies a public cache policy", async () => {
