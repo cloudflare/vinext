@@ -72,12 +72,12 @@ import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-p
 import {
   type AppPageInterceptState,
   buildAppPageElement,
+  checkAppPageRouteDynamicParams,
   markInterceptionSourceRender,
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptState,
   resolveAppPageInterceptionSourceRootParams,
-  validateAppPageRouteDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
 import { applyIneligibleRouteCachePolicy, renderAppPageLifecycle } from "./app-page-render.js";
@@ -900,7 +900,33 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
     revalidateSeconds: options.revalidateSeconds,
   });
-  const isStaticEligible = options.pprRuntime !== undefined || isNextStaticEligible;
+  let isStaticEligible = options.pprRuntime !== undefined || isNextStaticEligible;
+  // Next.js also prerenders a route whose last dynamic segment has no
+  // generator when its generators give every row every param. Only running
+  // them tells, so vinext learns it from the `dynamicParams = false` check,
+  // which runs them anyway where that segment, a layout below it or the page
+  // sets it. Such a route's GET and HEAD requests read the cache, and a miss
+  // is stored only once the check shows every parent's rows have every param.
+  // An entry is stored only after that check, so a hit needs none.
+  const method = options.request.method.toUpperCase();
+  const isEveryParamCacheCandidate =
+    options.isProduction &&
+    options.pprRuntime === undefined &&
+    !isNextStaticEligible &&
+    route.isDynamic &&
+    options.dynamicParamsConfig === false &&
+    options.isStaticParamsOnlyAtLastDynamicSegment &&
+    options.hasAnyGenerateStaticParams === true &&
+    options.interceptStaticParams === undefined &&
+    options.skipStaticParamsValidation !== true &&
+    (method === "GET" || method === "HEAD") &&
+    isAppPageStaticEligible({
+      dynamicConfig,
+      hasGenerateStaticParams: true,
+      isDynamicRoute: true,
+      isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
+      revalidateSeconds: options.revalidateSeconds,
+    });
   // Next.js defaults every static or SSG route to `revalidate = false`, so a
   // render that uses no dynamic API is stored until it is revalidated. This
   // includes a generateStaticParams route whose generator returns no concrete
@@ -925,11 +951,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
         revalidateSeconds: options.revalidateSeconds ?? null,
       });
+    // The check below decides for a route only the generators classify.
     const patternDynamicReason = isForceDynamic
       ? 'dynamic = "force-dynamic"'
       : currentRevalidateSeconds === 0
         ? "revalidate = 0"
-        : !isRouteStaticEligible
+        : !isRouteStaticEligible && !isEveryParamCacheCandidate
           ? "route is not statically generated"
           : null;
     if (patternDynamicReason) markRouteCacheabilityPatternDynamic(patternDynamicReason);
@@ -1045,39 +1072,45 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // serves the stored entry: it renders in the foreground and stores that.
   const isOnDemandRevalidate = _isOnDemandRevalidate();
   const shouldReadCache = isStoredRender && !isOnDemandRevalidate;
-  // A render that may be stored, and so must not let the request's query reach
-  // its output unless it turns out dynamic. The Workers Cache deploy probe
-  // renders this way too, so its manifest matches the runtime. A
-  // cacheComponents page is stored under the same key, so it's gated too. Only
-  // the build's PPR fallback shell renders follow their own model.
-  const isCacheCandidate =
-    isCacheEligibleRender &&
-    isStaticEligible &&
-    options.pprFallbackShell === undefined &&
-    !isNeverStoredPath;
   // A render without PPR sends only the route tree for a loading-shell prefetch
   // without a loading boundary. With Cache Components, Next.js renders layouts
   // for every production prefetch (isRoutePPREnabled), so only dev does.
   const routeTreeOnlyPrefetchShell =
     options.pprFallbackShell === undefined &&
     (options.pprRuntime === undefined || !options.isProduction);
-  // A render that can never be stored and, in production, is never sent with
-  // static cache headers. Only it may skip the layouts a navigation's client
-  // holds.
-  const isUncacheableRender =
-    !(isCacheEligibleRender && isStaticEligible) && routeTreeOnlyPrefetchShell;
-  // A navigation names the layouts it holds, so a render that's never stored
-  // can leave them out, as Next.js renders only below where a navigation
-  // diverges. A stored payload stays whole for every client that reads it.
-  const mountedLayouts =
-    isUncacheableRender &&
-    options.isRscRequest &&
-    (options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION) === APP_RSC_RENDER_MODE_NAVIGATION &&
-    options.interceptionContext === null &&
-    options.isProgressiveActionRender !== true
-      ? parseMountedLayoutsHeader(options.request.headers.get(VINEXT_MOUNTED_LAYOUTS_HEADER))
-      : null;
-  if (shouldReadCache && isStaticEligible) {
+  const resolveRenderCacheability = (isRenderStaticEligible: boolean) => {
+    // A render that may be stored, and so must not let the request's query
+    // reach its output unless it turns out dynamic. The Workers Cache deploy
+    // probe renders this way too, so its manifest matches the runtime. A
+    // cacheComponents page is stored under the same key, so it's gated too.
+    // Only the build's PPR fallback shell renders follow their own model.
+    const isCacheCandidate =
+      isCacheEligibleRender &&
+      isRenderStaticEligible &&
+      options.pprFallbackShell === undefined &&
+      !isNeverStoredPath;
+    // A render that can never be stored and, in production, is never sent
+    // with static cache headers. Only it may skip the layouts a navigation's
+    // client holds.
+    const isUncacheableRender =
+      !(isCacheEligibleRender && isRenderStaticEligible) && routeTreeOnlyPrefetchShell;
+    // A navigation names the layouts it holds, so a render that's never
+    // stored can leave them out, as Next.js renders only below where a
+    // navigation diverges. A stored payload stays whole for every client that
+    // reads it.
+    const mountedLayouts =
+      isUncacheableRender &&
+      options.isRscRequest &&
+      (options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION) === APP_RSC_RENDER_MODE_NAVIGATION &&
+      options.interceptionContext === null &&
+      options.isProgressiveActionRender !== true
+        ? parseMountedLayoutsHeader(options.request.headers.get(VINEXT_MOUNTED_LAYOUTS_HEADER))
+        : null;
+    return { isCacheCandidate, isUncacheableRender, mountedLayouts };
+  };
+  let { isCacheCandidate, isUncacheableRender, mountedLayouts } =
+    resolveRenderCacheability(isStaticEligible);
+  if (shouldReadCache && (isStaticEligible || isEveryParamCacheCandidate)) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,
       isDynamicError,
@@ -1409,8 +1442,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
   if (options.skipStaticParamsValidation !== true && !isDraftMode) {
     const interceptStaticParams = options.interceptStaticParams;
-    const dynamicParamsResponse = await runStaticParamsCheckDetached(() =>
-      validateAppPageRouteDynamicParams(
+    const staticParamsCheck = await runStaticParamsCheckDetached(() =>
+      checkAppPageRouteDynamicParams(
         interceptStaticParams
           ? {
               ...interceptStaticParams,
@@ -1420,6 +1453,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               routePattern: route.pattern,
             }
           : {
+              confirmEveryParamGenerated: isEveryParamCacheCandidate,
               dynamicConfig,
               dynamicParamsConfig: options.dynamicParamsConfig,
               fetchCache: options.fetchCache,
@@ -1440,6 +1474,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             },
       ),
     );
+    const dynamicParamsResponse = staticParamsCheck.response;
     if (dynamicParamsResponse) {
       // Next.js rejects a generated-param miss while routing, so it renders
       // the root not-found as if no route matched. None of this route's
@@ -1494,6 +1529,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return markRouteMissResponse(
         applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy),
       );
+    }
+    if (isEveryParamCacheCandidate) {
+      if (staticParamsCheck.generatesEveryParam) {
+        isStaticEligible = true;
+        ({ isCacheCandidate, isUncacheableRender, mountedLayouts } =
+          resolveRenderCacheability(true));
+      } else if (isRouteCacheabilityProbe()) {
+        markRouteCacheabilityPatternDynamic("route is not statically generated");
+      }
     }
   }
 

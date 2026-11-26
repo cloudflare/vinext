@@ -3,13 +3,17 @@ import path from "pathslash";
 import type { AppRoute } from "../routing/app-router.js";
 import {
   collectAppPageStaticGenerationRuntimes,
+  collectAppPageStaticParamsWalkSegments,
   hasAppPageGenerateStaticParamsAtLastDynamicSegment,
   isAppPageStaticEligible,
   isEdgeRuntime,
+  lastDynamicSegmentHasGenerateStaticParams,
+  lastDynamicSegmentIsStaticParamsOnly,
   resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime,
 } from "../server/app-segment-config.js";
 import {
+  extractExportConstBoolean,
   extractExportConstNumber,
   extractExportConstString,
   hasRuntimeExportedName,
@@ -35,10 +39,12 @@ function createSegmentConfigReader(readMdxEsm: ((source: string) => string) | nu
       code = esm ?? "";
     }
     const dynamic = extractExportConstString(code, "dynamic");
+    const dynamicParams = extractExportConstBoolean(code, "dynamicParams");
     const revalidate = extractExportConstNumber(code, "revalidate");
     const runtime = extractExportConstString(code, "runtime");
     return {
       ...(dynamic === null ? {} : { dynamic }),
+      ...(dynamicParams === null ? {} : { dynamicParams }),
       ...(hasRuntimeExportedName(code, "generateStaticParams")
         ? { generateStaticParams() {} }
         : {}),
@@ -59,11 +65,18 @@ function createSegmentConfigReader(readMdxEsm: ((source: string) => string) | nu
  * exports and never stores a route that isn't static, while an unlisted path's
  * render failure would be dropped instead of failing. But no probe renders an
  * unreadable route's fallback, so it never certifies one.
+ *
+ * A dynamic route whose last dynamic segment has no `generateStaticParams` is
+ * "every-param" when `dynamicParams = false` sits at or below that segment and
+ * its config is otherwise static: it is SSG only if its generators give every
+ * row every param, which only running them tells. vinext's runtime check
+ * learns that per request and stores such a route only then, and never where a
+ * parallel route slot exports `generateStaticParams`.
  */
 export function classifyAppPageRouteStaticEligibility(
   route: AppRoute,
   readMdxEsm: ((source: string) => string) | null,
-): "eligible" | "ineligible" | "unreadable" {
+): "eligible" | "every-param" | "ineligible" | "unreadable" {
   const { isUnreadable, read: readSegmentConfig } = createSegmentConfigReader(readMdxEsm);
   const layouts = route.layouts.map(readSegmentConfig);
   const page = readSegmentConfig(route.pagePath);
@@ -85,32 +98,38 @@ export function classifyAppPageRouteStaticEligibility(
     parallelBranches,
     routeSegments: route.routeSegments,
   });
-  const eligible = isAppPageStaticEligible({
-    dynamicConfig: segmentConfig.dynamicConfig,
-    hasGenerateStaticParams: hasAppPageGenerateStaticParamsAtLastDynamicSegment({
-      childrenSlot: route.childrenSlot ?? null,
-      layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page,
-      parallelBranches,
-      routeSegments: route.routeSegments,
-    }),
-    isDynamicRoute: route.isDynamic,
-    isStaticGenerationEdgeRuntime: isEdgeRuntime(
-      resolveAppPageStaticGenerationRuntime(
-        collectAppPageStaticGenerationRuntimes({
-          childrenSlot: route.childrenSlot ?? null,
-          layouts,
-          layoutTreePositions: route.layoutTreePositions,
-          page,
-          parallelBranches,
-          routeSegments: route.routeSegments,
-        }),
+  const tree = {
+    childrenSlot: route.childrenSlot ?? null,
+    layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page,
+    parallelBranches,
+    routeSegments: route.routeSegments,
+  };
+  const walkSegments = collectAppPageStaticParamsWalkSegments(tree);
+  const classify = (hasGenerateStaticParams: boolean) =>
+    isAppPageStaticEligible({
+      dynamicConfig: segmentConfig.dynamicConfig,
+      hasGenerateStaticParams,
+      isDynamicRoute: route.isDynamic,
+      isStaticGenerationEdgeRuntime: isEdgeRuntime(
+        resolveAppPageStaticGenerationRuntime(collectAppPageStaticGenerationRuntimes(tree)),
       ),
+      revalidateSeconds: segmentConfig.revalidateSeconds,
+    });
+  if (classify(lastDynamicSegmentHasGenerateStaticParams(walkSegments))) return "eligible";
+  // The runtime never stores such a route with a slot generator.
+  const hasSlotGenerator = parallelBranches.some((branch) =>
+    [branch.layout, ...branch.configLayouts, branch.page].some(
+      (config) => config?.generateStaticParams !== undefined,
     ),
-    revalidateSeconds: segmentConfig.revalidateSeconds,
-  });
-  return eligible ? "eligible" : "ineligible";
+  );
+  return segmentConfig.dynamicParamsConfig === false &&
+    lastDynamicSegmentIsStaticParamsOnly(walkSegments) &&
+    !hasSlotGenerator &&
+    classify(true)
+    ? "every-param"
+    : "ineligible";
 }
 
 /**
@@ -123,7 +142,10 @@ export function isAppPageRouteRenderedDynamically(
   readMdxEsm: ((source: string) => string) | null,
 ): boolean {
   try {
-    return classifyAppPageRouteStaticEligibility(route, readMdxEsm) === "ineligible";
+    // An "every-param" route is SSG only for some generator results, so its
+    // prefetches stay those of a dynamic route.
+    const eligibility = classifyAppPageRouteStaticEligibility(route, readMdxEsm);
+    return eligibility === "ineligible" || eligibility === "every-param";
   } catch {
     return false;
   }

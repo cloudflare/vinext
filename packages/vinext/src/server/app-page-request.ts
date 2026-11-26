@@ -87,7 +87,34 @@ export type ValidateAppPageDynamicParamsOptions = {
   rootParamNames?: readonly string[];
   /** The fetchCache the generators start from, when the caller sets one. */
   initialFetchCache?: FetchCacheMode | null;
+  /**
+   * With `enforceWhenEveryParamGenerated`, a match among the rows for the
+   * request's parent params also runs the generators for every other parent,
+   * to report whether every row has every param (`generatesEveryParam`).
+   */
+  confirmEveryParamGenerated?: boolean;
 };
+
+/** The outcome of a `dynamicParams = false` check. */
+export type AppPageDynamicParamsCheck = {
+  /** The 404 for params the route doesn't list, or `null` to render. */
+  response: Response | null;
+  /**
+   * Whether every row the generators give has every param and the request is
+   * one of them, so Next.js prerenders the request's path. Reported only for
+   * `confirmEveryParamGenerated`.
+   */
+  generatesEveryParam: boolean;
+};
+
+const renderCheck: AppPageDynamicParamsCheck = Object.freeze({
+  response: null,
+  generatesEveryParam: false,
+});
+
+function notFoundCheck(): AppPageDynamicParamsCheck {
+  return { response: notFoundResponse(), generatesEveryParam: false };
+}
 
 type ResolveAppPageGenerateStaticParamsSourcesOptions = {
   /**
@@ -770,14 +797,20 @@ export function routePatternOptionalCatchAllParamNames(patternParts: readonly st
 export async function validateAppPageDynamicParams(
   options: ValidateAppPageDynamicParamsOptions,
 ): Promise<Response | null> {
+  return (await checkAppPageDynamicParams(options)).response;
+}
+
+export async function checkAppPageDynamicParams(
+  options: ValidateAppPageDynamicParamsOptions,
+): Promise<AppPageDynamicParamsCheck> {
   if (!options.enforceStaticParamsOnly || !options.isDynamicRoute) {
-    return null;
+    return renderCheck;
   }
 
   const generateStaticParamsSources = normalizeGenerateStaticParams(options.generateStaticParams);
   const everyParamNames = options.enforceWhenEveryParamGenerated;
   if (generateStaticParamsSources.length === 0) {
-    return everyParamNames ? null : notFoundResponse();
+    return everyParamNames ? renderCheck : notFoundCheck();
   }
   const rowsHaveEveryParam = (rows: readonly Record<string, unknown>[]) =>
     rows.length > 0 &&
@@ -786,6 +819,9 @@ export async function validateAppPageDynamicParams(
   const chainedSources = generateStaticParamsSources.filter((source) => source.chained);
   const hasIndependentSources = generateStaticParamsSources.some((source) => !source.chained);
   let chainedStaticParams: Record<string, unknown>[] | null = null;
+  // Shared by a confirming pass over every parent, so it calls generators only
+  // for the parents the request's pass skipped.
+  const chainedResults = new Map<GenerateStaticParamsSource, Map<string, unknown>>();
   if (chainedSources.length > 0) {
     // Next walks the loader-tree segments top-down. Route groups are real
     // loader-tree segments even though they do not appear in the URL, so a
@@ -800,7 +836,7 @@ export async function validateAppPageDynamicParams(
       hasIndependentSources ? null : options.params,
       options.rootParamNames,
       options.initialFetchCache,
-      undefined,
+      chainedResults,
       everyParamNames !== undefined && !hasIndependentSources,
     );
   }
@@ -812,9 +848,28 @@ export async function validateAppPageDynamicParams(
     // parent params generate decide, so a miss runs no generator for the
     // other parents. Where the request's params match no parent, every
     // parent's rows decide, so the answer doesn't hang on their order.
-    return rowsHaveEveryParam(rows) && !areStaticParamsAllowed(options.params, rows)
-      ? notFoundResponse()
-      : null;
+    if (!rowsHaveEveryParam(rows)) return renderCheck;
+    if (!areStaticParamsAllowed(options.params, rows)) return notFoundCheck();
+    if (!options.confirmEveryParamGenerated) return renderCheck;
+    // Next.js prerenders the route only when every parent's rows have every
+    // param. Another parent's generator failing leaves the request to render
+    // uncached, as it did before vinext ran it.
+    try {
+      const everyRow = await generateChainedStaticParams(
+        chainedSources,
+        null,
+        options.rootParamNames,
+        options.initialFetchCache,
+        chainedResults,
+      );
+      return { response: null, generatesEveryParam: rowsHaveEveryParam(everyRow) };
+    } catch (error) {
+      console.error(
+        "[vinext] generateStaticParams failed while checking the route's paths:",
+        error,
+      );
+      return renderCheck;
+    }
   }
 
   const independentChains = new Map<unknown, GenerateStaticParamsSource[]>();
@@ -845,7 +900,7 @@ export async function validateAppPageDynamicParams(
     // A miss rejects at once, unless every chain's rows decide whether the
     // route enforces at all.
     if (!everyParamNames && !isAllowedByParallelRows(result.staticParams)) {
-      return notFoundResponse();
+      return notFoundCheck();
     }
   }
   const validatedIndependentResults = independentRowSets.length > 0;
@@ -860,15 +915,15 @@ export async function validateAppPageDynamicParams(
       everyParamNames.every((name) =>
         rowSets.some((rows) => rows.length > 0 && rows.every((row) => Object.hasOwn(row, name))),
       );
-    if (!hasEveryParam) return null;
+    if (!hasEveryParam) return renderCheck;
     // An empty result keeps the rows before it, so only chains with rows
     // decide the match.
     const filledRowSets = independentRowSets.filter((rows) => rows.length > 0);
-    if (!filledRowSets.every(isAllowedByParallelRows)) return notFoundResponse();
+    if (!filledRowSets.every(isAllowedByParallelRows)) return notFoundCheck();
   }
 
   if (options.requiredParamNames && !validatedIndependentResults) {
-    return notFoundResponse();
+    return notFoundCheck();
   }
 
   if (chainedStaticParams && !validatedIndependentResults) {
@@ -877,11 +932,14 @@ export async function validateAppPageDynamicParams(
     // parallel result, the primary chain itself must match exactly.
     // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
     if (!areStaticParamsAllowed(options.params, chainedStaticParams)) {
-      return notFoundResponse();
+      return notFoundCheck();
     }
   }
 
-  return null;
+  // vinext checks each parallel route slot's chain on its own, where Next.js
+  // runs every slot's generators in one chain, so it can't show that a route
+  // with a slot generator has every param, and never stores one.
+  return renderCheck;
 }
 
 type ValidateAppPageRouteDynamicParamsOptions = {
@@ -939,14 +997,25 @@ export function isAppPageStaticParamsOnly(
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/base-server.ts
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
  */
-export function validateAppPageRouteDynamicParams(
+export async function validateAppPageRouteDynamicParams(
   options: ValidateAppPageRouteDynamicParamsOptions,
 ): Promise<Response | null> {
+  return (await checkAppPageRouteDynamicParams(options)).response;
+}
+
+/**
+ * `validateAppPageRouteDynamicParams`, which also reports whether Next.js
+ * prerenders the request's path because the generators give every param.
+ * Pass `confirmEveryParamGenerated` to learn that.
+ */
+export function checkAppPageRouteDynamicParams(
+  options: ValidateAppPageRouteDynamicParamsOptions & { confirmEveryParamGenerated?: boolean },
+): Promise<AppPageDynamicParamsCheck> {
   // Next.js' production force-dynamic routes are absent from the prerender
   // manifest, so they never enter its generated-path fallback gate. Dev still
   // resolves and exact-matches generateStaticParams for the same route.
   if (options.isProduction && options.dynamicConfig === "force-dynamic") {
-    return Promise.resolve(null);
+    return Promise.resolve(renderCheck);
   }
   // A deployed export serves a dynamic page only at the paths its build wrote,
   // whatever generateStaticParams returns now. The prerender that writes them
@@ -961,11 +1030,11 @@ export function validateAppPageRouteDynamicParams(
     const exported = getRenderedConcreteUrlPathsForRoute(options.routePattern)?.has(
       removeTrailingSlash(options.pathname),
     );
-    return Promise.resolve(exported === true ? null : notFoundResponse());
+    return Promise.resolve(exported === true ? renderCheck : notFoundCheck());
   }
   // So are its production `revalidate = 0` routes, outside an export.
   if (options.isProduction && options.revalidateSeconds === 0) {
-    return Promise.resolve(null);
+    return Promise.resolve(renderCheck);
   }
   const isExport = options.isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export";
   // Next.js builds no paths for an edge route, so it has none to enforce.
@@ -983,12 +1052,13 @@ export function validateAppPageRouteDynamicParams(
     (options.isProduction &&
       (options.dynamicConfig === "force-static" || options.dynamicConfig === "error"));
   // Only running the generators tells whether they give every param, and
-  // vinext can't cache such a route, so they would run on every request.
-  // vinext checks only where `dynamicParams = false` is set at or below the
-  // last dynamic segment. Set above it, as in an `app/[lang]/layout.tsx`
+  // vinext caches such a route only once this check has shown it, so they
+  // would run on every request of a route it never checks. vinext checks
+  // only where `dynamicParams = false` is set at or below the last dynamic
+  // segment. Set above it, as in an `app/[lang]/layout.tsx`
   // over `[slug]/page.tsx`, any params render without running them.
   if (!alwaysBuildsPaths && !options.isStaticParamsOnlyAtLastDynamicSegment) {
-    return Promise.resolve(null);
+    return Promise.resolve(renderCheck);
   }
   // Next.js runs generateStaticParams in a work store of its own: the route's
   // implicit tags, no revalidate or force-dynamic default, and the fetchCache
@@ -1000,11 +1070,12 @@ export function validateAppPageRouteDynamicParams(
   setCurrentFetchSoftTags(buildAppStaticParamsTags(options.routeSegments ?? []));
   setCurrentFetchRevalidate(null);
   setCurrentForceDynamicFetchDefault(false);
-  return validateAppPageDynamicParams({
+  return checkAppPageDynamicParams({
     enforceStaticParamsOnly: enforcesDynamicParams || isExport,
     ...(alwaysBuildsPaths
       ? {}
       : {
+          confirmEveryParamGenerated: options.confirmEveryParamGenerated,
           enforceWhenEveryParamGenerated: routeSegmentParamNames(
             options.routeSegments,
             options.params,

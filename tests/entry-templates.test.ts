@@ -22,6 +22,7 @@ import {
   rootBoundaryRouteFiles,
 } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import {
+  classifyAppPageRouteStaticEligibility,
   isAppInterceptRenderedDynamically,
   isAppPageRouteRenderedDynamically,
 } from "../packages/vinext/src/build/app-page-static-eligibility.js";
@@ -621,6 +622,38 @@ describe("App Router generated manifest construction", () => {
         ["posts/:slug", undefined],
       ]);
       expect(toLinkPrefetchRoutes(routes).some((route) => route.rendersDynamically)).toBe(false);
+
+      // A layout generator above the last dynamic segment makes the route SSG
+      // only if it gives every param, which only running it tells.
+      const langLayoutPath = writeSource(
+        "[lang]/layout.tsx",
+        "export function generateStaticParams() { return []; }\nexport default function Layout({ children }) { return children; }",
+      );
+      const langRoute = (pageSource: string) =>
+        pageRoute("/:lang/:slug", true, pageSource, [layoutPath, langLayoutPath]);
+      const staticParamsOnly = langRoute(`export const dynamicParams = false;\n${page}`);
+      expect(classifyAppPageRouteStaticEligibility(staticParamsOnly, null)).toBe("every-param");
+      expect(isAppPageRouteRenderedDynamically(staticParamsOnly, null)).toBe(true);
+      // vinext never stores one whose parallel route slot exports a generator.
+      const withSlotGenerator: AppRoute = {
+        ...staticParamsOnly,
+        parallelSlots: [
+          {
+            configLayoutPaths: [],
+            defaultPath: null,
+            layoutPath: writeSource(
+              "@modal/layout.tsx",
+              "export function generateStaticParams() { return []; }\nexport default function Layout({ children }) { return children; }",
+            ),
+            name: "modal",
+            ownerTreePosition: 0,
+            pagePath: writeSource("@modal/[lang]/[slug]/page.tsx", page),
+            routeSegments: ["[lang]", "[slug]"],
+          } as unknown as AppRoute["parallelSlots"][number],
+        ],
+      };
+      expect(classifyAppPageRouteStaticEligibility(withSlotGenerator, null)).toBe("ineligible");
+      expect(classifyAppPageRouteStaticEligibility(langRoute(page), null)).toBe("ineligible");
     } finally {
       fs.rmSync(appDir, { force: true, recursive: true });
     }
