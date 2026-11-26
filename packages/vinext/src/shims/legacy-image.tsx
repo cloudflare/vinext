@@ -93,6 +93,15 @@ function warnOnce(message: string): void {
   console.warn(message);
 }
 
+/**
+ * Whether `value` stays inside a double-quoted CSS string. Only `"`, `\` and
+ * line breaks can end one, so quotes and parentheses that blur data URLs
+ * (including Next.js's own test fixtures) contain stay allowed.
+ */
+function isCssStringSafe(value: string): boolean {
+  return !/["\\\n\r\f]/.test(value);
+}
+
 function defaultLoader({ config, src, width, quality }: ImageLoaderPropsWithConfig): string {
   if (!config.dangerouslyAllowSVG && src.split("?", 1)[0].endsWith(".svg")) {
     // Special case to make svg serve as-is to avoid proxying
@@ -134,7 +143,13 @@ function defaultLoader({ config, src, width, quality }: ImageLoaderPropsWithConf
         );
       }
 
-      if (!hasRemoteMatch(__imageDomains, __imageRemotePatterns, parsedSrc)) {
+      // vinext allows every remote host when neither images.remotePatterns
+      // nor images.domains is configured (see validateRemoteUrl), so only
+      // reject an unmatched host once one of them is.
+      if (
+        (__imageDomains.length > 0 || __imageRemotePatterns.length > 0) &&
+        !hasRemoteMatch(__imageDomains, __imageRemotePatterns, parsedSrc)
+      ) {
         throw new Error(
           `Invalid src prop (${src}) on \`next/image\`, hostname "${parsedSrc.hostname}" is not configured under images in your \`next.config.js\`\n` +
             `See more info: https://nextjs.org/docs/messages/next-image-unconfigured-host`,
@@ -904,9 +919,10 @@ export default function Image({
   }
   const imgStyle = Object.assign({}, style, layoutStyle);
   // Like the dev check above, skip the placeholder when there is no
-  // blurDataURL (a static import), rather than request `url("undefined")`.
+  // blurDataURL (a static import), rather than request `url("undefined")`,
+  // or when it could close the quoted `url("...")` and inject CSS.
   const blurStyle: ImgElementStyle =
-    placeholder === "blur" && !blurComplete && blurDataURL
+    placeholder === "blur" && !blurComplete && blurDataURL && isCssStringSafe(blurDataURL)
       ? {
           backgroundSize: objectFit || "cover",
           backgroundPosition: objectPosition || "0% 0%",

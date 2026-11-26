@@ -222,6 +222,17 @@ describe("legacy image blur placeholder", () => {
     });
     expect(imgs(html)[1].style).toContain("background-size:contain;background-position:center");
   });
+
+  // React escapes the style attribute but not CSS, so a `"` in blurDataURL
+  // would close the quoted url() and inject declarations.
+  it("skips a placeholder whose blurDataURL could break out of url()", () => {
+    const html = render({
+      placeholder: "blur",
+      blurDataURL: 'data:image/png;base64,x");color:red;background-image:url("',
+      priority: true,
+    });
+    expect(image(html).style).toBe(IMG_LAYOUT_STYLE);
+  });
 });
 
 // Ported from Next.js client/legacy/image.tsx getWidths(): `sizes` picks the
@@ -309,6 +320,17 @@ describe("legacy image remote sources", () => {
     const Image = await importWithRemotePatterns("production");
     expect(image(renderWith(Image, "https://other.example.com/a.jpg")).src).toBe(
       "/_next/image?url=https%3A%2F%2Fother.example.com%2Fa.jpg&w=128&q=75",
+    );
+  });
+
+  // With no images.remotePatterns or images.domains, vinext allows every
+  // remote host, in development as well.
+  it("loads any remote image in development when no remote hosts are configured", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.resetModules();
+    const Image = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
+    expect(image(renderWith(Image, "https://other.example.com/a.jpg")).src).toBe(
+      "https://other.example.com/a.jpg",
     );
   });
 
