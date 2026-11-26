@@ -160,15 +160,18 @@ describe("pagesRouter - route discovery", () => {
     expect(await scan("**/layout", { keepDeclarationFiles: true })).toEqual(["layout.d.ts"]);
   });
 
-  // The dependency scan can't parse every declaration file, so they stay out
-  // of the optimizer entries unless an explicit `d.ts` page extension (without
-  // `ts`) routes them.
+  // The dependency scan can't parse every declaration file, so only the ones a
+  // declaration page extension (without `ts`) routes join the optimizer entries.
   it("keeps declaration files out of optimizer entries unless they are routable", () => {
     const filtered = ["pages/**/*.{tsx,jsx,js}", "pages/**/!(.*|*.d).ts"];
     expect(routeSourceOptimizeEntries("pages", ["ts", "tsx"])).toEqual(filtered);
     expect(routeSourceOptimizeEntries("pages", ["js"])).toEqual(filtered);
     expect(routeSourceOptimizeEntries("pages", ["ts", "d.ts"])).toEqual(filtered);
-    expect(routeSourceOptimizeEntries("pages", ["d.ts"])).toEqual(["pages/**/*.{tsx,ts,jsx,js}"]);
+    expect(routeSourceOptimizeEntries("pages", ["d.ts"])).toEqual([...filtered, "pages/**/*.d.ts"]);
+    expect(routeSourceOptimizeEntries("pages", ["js", "route.d.ts"])).toEqual([
+      ...filtered,
+      "pages/**/*.route.d.ts",
+    ]);
   });
 
   it("ignores _app.tsx and _document.tsx", async () => {

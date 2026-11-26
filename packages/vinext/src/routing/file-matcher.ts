@@ -137,14 +137,13 @@ export function findRouteFileWithExts(
 }
 
 /**
- * Whether declaration files can be page files: an explicit declaration-suffixed
- * page extension (e.g. `d.ts`) without `ts` (see `skipsDeclarationFiles`).
+ * The page extensions that make declaration files page files: explicit
+ * declaration-suffixed ones (`d.ts`, `route.d.ts`) without `ts` (see
+ * `skipsDeclarationFiles`).
  */
-function routesDeclarationFiles(extensions: readonly string[]): boolean {
-  return (
-    !skipsDeclarationFiles(extensions) &&
-    extensions.some((ext) => ext === "d.ts" || ext.endsWith(".d.ts"))
-  );
+function routableDeclarationExtensions(extensions: readonly string[]): string[] {
+  if (skipsDeclarationFiles(extensions)) return [];
+  return extensions.filter((ext) => ext === "d.ts" || ext.endsWith(".d.ts"));
 }
 
 /**
@@ -242,17 +241,21 @@ export async function* scanWithExtensions(
 
 // optimizeDeps.entries globs for the route source files under `dir`.
 //
-// TypeScript declaration files are not route modules unless an explicit
-// declaration page extension routes them (see `routesDeclarationFiles`), and
-// the dependency scan can't parse every one of them as a module, so `.ts`
-// leaves otherwise skip `*.d.ts`. A negated
-// `!**/*.d.ts` entry would also prune directories named `*.d.ts`: tinyglobby
-// expands ignores to their `/**` descendants. The leading negative extglob
-// bypasses picomatch's dotfile guard, so it rejects `.*` basenames itself.
+// TypeScript declaration files are not route modules unless a configured
+// declaration page extension routes them (see `routableDeclarationExtensions`),
+// and the dependency scan can't parse every one of them as a module, so `.ts`
+// leaves skip `*.d.ts` and only the routable declaration suffixes are added
+// back. A negated `!**/*.d.ts` entry would also prune directories named
+// `*.d.ts`: tinyglobby expands ignores to their `/**` descendants. The leading
+// negative extglob bypasses picomatch's dotfile guard, so it rejects `.*`
+// basenames itself.
 export function routeSourceOptimizeEntries(
   dir: string,
   pageExtensions: readonly string[],
 ): string[] {
-  if (routesDeclarationFiles(pageExtensions)) return [`${dir}/**/*.{tsx,ts,jsx,js}`];
-  return [`${dir}/**/*.{tsx,jsx,js}`, `${dir}/**/!(.*|*.d).ts`];
+  return [
+    `${dir}/**/*.{tsx,jsx,js}`,
+    `${dir}/**/!(.*|*.d).ts`,
+    ...routableDeclarationExtensions(pageExtensions).map((ext) => `${dir}/**/*.${ext}`),
+  ];
 }
