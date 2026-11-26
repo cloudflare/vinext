@@ -816,7 +816,7 @@ describe("createAppRscHandler", () => {
   });
 
   it.each([
-    ["answers", async () => new Response("progressive-action")],
+    ["answers", async () => new Response("progressive-action"), false],
     [
       "returns form state",
       async () => ({
@@ -826,10 +826,11 @@ describe("createAppRscHandler", () => {
         pendingCookies: [],
         revalidationKind: 0,
       }),
+      true,
     ],
   ])(
-    "loads and prepares a progressive Server Action's route module once when it %s",
-    async (_outcome, handleProgressiveActionRequest) => {
+    "prepares a progressive Server Action's route module once when it %s",
+    async (_outcome, handleProgressiveActionRequest, rendersPage) => {
       const order: string[] = [];
       const handler = createHandler({
         ensureRouteLoaded: vi.fn(() => {
@@ -852,11 +853,17 @@ describe("createAppRscHandler", () => {
         await response.text();
       });
 
-      expect(order.slice(0, 2)).toEqual(["load", "action"]);
+      // The action may be forwarded, so its page loads only for the render
+      // that follows a form-state result.
+      expect(order).toEqual(rendersPage ? ["action", "load"] : ["action"]);
       expect(spans).toEqual([
-        ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
-        ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
         ["RouteModule.prepare", "BaseServer.handleRequest"],
+        ...(rendersPage
+          ? [
+              ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+              ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+            ]
+          : []),
       ]);
     },
   );

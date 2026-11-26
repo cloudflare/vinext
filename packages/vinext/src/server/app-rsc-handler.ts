@@ -2637,8 +2637,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       setRootParams(pickRootParams(routeMatch.params, routeMatch.route.rootParamNames)),
     );
   // Load the action's page, then prepare it. A Server Action that may be
-  // forwarded to the route that owns it loads the page only once it isn't, in
-  // `handleServerActionRequest`, so the page's modules don't run for it.
+  // forwarded to the route that owns it loads the page only once it isn't, so
+  // the page's modules don't run for a forwarded action.
   const loadAndPrepareActionRoute = async (routeMatch: AppRscRouteMatch<TRoute> | null) => {
     if (!routeMatch) return;
     await loadRouteModule(routeMatch.route);
@@ -2695,13 +2695,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | ProgressiveActionFormStateResult | null> => {
     if (!filesystemRouteEligible || !isProgressiveActionRequest) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
-    await loadAndPrepareActionRoute(routeMatch);
     if (!options.handleProgressiveActionRequest) {
+      // A build without Server Actions has nothing to forward.
+      await loadAndPrepareActionRoute(routeMatch);
       return unrenderedRouteMatch?.route.__loadPage &&
         !unrenderedRouteMatch.route.__loadRouteHandler
         ? markServerActionResponse(respondServerActionNotFound(null, options.clearRequestContext))
         : null;
     }
+    // The action may be forwarded, so its page loads only for the render that
+    // follows a form-state result.
+    if (routeMatch) prepareActionRoute(routeMatch);
     const progressiveActionResult = await options.handleProgressiveActionRequest({
       actionId,
       cleanPathname,
