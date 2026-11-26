@@ -101,6 +101,41 @@ function resolveSlotSourcePath(
   return joinSourcePath([...slotBase, "default"]);
 }
 
+type WholeInterceptedSlot = {
+  binding: AppElementsSlotBinding;
+  ownerSegments: string[];
+  path: string;
+};
+
+function resolveWholeInterceptedSlot(
+  bindings: readonly AppElementsSlotBinding[],
+  sourceSegments: readonly string[],
+  routeManifest: BrowserRouteManifest | null,
+): WholeInterceptedSlot | null {
+  const candidates: WholeInterceptedSlot[] = [];
+  for (const binding of bindings) {
+    const slot = AppElementsWire.parseElementKey(binding.slotId);
+    if (slot?.kind !== "slot" || slot.name === "children" || binding.state !== "active") continue;
+    const ownerSegments = treePathSegments(slot.treePath);
+    if (!startsWithSegments(sourceSegments, ownerSegments)) continue;
+    const path = joinSourcePath([
+      ...ownerSegments,
+      `@${slot.name}`,
+      ...sourceSegments.slice(ownerSegments.length),
+    ]);
+    candidates.push({ binding, ownerSegments, path });
+  }
+  return (
+    candidates.find((candidate) =>
+      routeManifest?.segmentGraph.interceptionsBySlotId
+        .get(candidate.binding.slotId)
+        ?.some((interception) => interception.sourcePagePath === candidate.path),
+    ) ??
+    candidates[0] ??
+    null
+  );
+}
+
 /**
  * The source route patterns of the committed App Router tree, as Next.js
  * reports them in `RouterTransitionStartEvent.fromRoutes`: the primary
@@ -122,31 +157,19 @@ export function resolveRouterTransitionFromRoutes(
   const metadata = AppElementsWire.readMetadata(state.elements);
   const sourceSegments = sourcePageDirectory(metadata.sourcePage);
   // A render of a whole intercepting route shows the owner's default as its
-  // children and the intercepting page in its one active slot. Its source page
-  // is the intercepting page's, without the slot's own segment.
-  const wholeInterceptedSlot =
-    metadata.wholeInterceptionSource === null
+  // children and the intercepting page in its slot. Its source page is the
+  // intercepting page's, without the slot's own segment. A merge can keep
+  // another active slot, so the manifest's interceptions pick the slot.
+  const wholeIntercepted =
+    metadata.wholeInterceptionSource === null || sourceSegments === null
       ? null
-      : (state.slotBindings.find((binding) => {
-          const slot = AppElementsWire.parseElementKey(binding.slotId);
-          return slot?.kind === "slot" && slot.name !== "children" && binding.state === "active";
-        }) ?? null);
+      : resolveWholeInterceptedSlot(state.slotBindings, sourceSegments, routeManifest);
 
   let primary: string;
-  let wholeInterceptedSlotPath: string | null = null;
   if (sourceSegments === null) {
     primary = "/_not-found";
-  } else if (wholeInterceptedSlot !== null) {
-    const slot = AppElementsWire.parseElementKey(wholeInterceptedSlot.slotId);
-    const ownerSegments = slot?.kind === "slot" ? treePathSegments(slot.treePath) : [];
-    primary = joinSourcePath([...ownerSegments, "default"]);
-    if (slot?.kind === "slot") {
-      wholeInterceptedSlotPath = joinSourcePath([
-        ...ownerSegments,
-        `@${slot.name}`,
-        ...sourceSegments.slice(ownerSegments.length),
-      ]);
-    }
+  } else if (wholeIntercepted !== null) {
+    primary = joinSourcePath([...wholeIntercepted.ownerSegments, "default"]);
   } else {
     // The deepest children slot above the page decides whether the children
     // render its page or its default, as a synthetic parallel sub-route's do.
@@ -178,8 +201,8 @@ export function resolveRouterTransitionFromRoutes(
     ) {
       continue;
     }
-    if (binding === wholeInterceptedSlot && wholeInterceptedSlotPath !== null) {
-      slots.push(wholeInterceptedSlotPath);
+    if (binding === wholeIntercepted?.binding) {
+      slots.push(wholeIntercepted.path);
       continue;
     }
     const intercepted = resolveInterceptionSourcePagePath(

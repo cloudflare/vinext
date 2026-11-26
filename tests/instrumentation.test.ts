@@ -882,7 +882,7 @@ describe("generateInstrumentationClientInjectModule", () => {
     const code = generateInstrumentationClientInjectModule(["./inject-a.js"], null);
     expect(code).toContain('import * as __vinj_0 from "./inject-a.js"');
     expect(code).toContain("export function onRouterTransitionStart(url, type, event)");
-    expect(code).toContain("Reflect.apply(hook, hooks, [url, type, event]);");
+    expect(code).toContain("Reflect.apply(hook, hooks, [");
   });
 
   it("generates imports in config order with user file last", () => {
@@ -974,6 +974,49 @@ export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push
       expect(calls).toEqual(["esm /a", "late /b", "esm /b"]);
     } finally {
       delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Next.js builds the start event inside each callHooks invocation
+  // (client/components/router-transition.ts startRouterTransition).
+  it("gives each hook its own start event", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-event-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "mutates.mjs"),
+        `export function onRouterTransitionStart(url, type, event) {
+  event.id = "changed";
+  event.fromRoutes.push("/mutated");
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "user.mjs"),
+        `export function onRouterTransitionStart(url, type, event) {
+  globalThis.__vinextInjectEvents.push(event);
+}
+`,
+      );
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      fs.writeFileSync(
+        entryPath,
+        generateInstrumentationClientInjectModule(["./mutates.mjs"], "./user.mjs"),
+      );
+      const events: unknown[] = [];
+      (globalThis as { __vinextInjectEvents?: unknown[] }).__vinextInjectEvents = events;
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        onRouterTransitionStart: (url: string, type: string, event: unknown) => void;
+      };
+      const event = { id: "1", timestamp: 1, fromRoutes: ["/"], prefetchIntent: "auto" };
+
+      mod.onRouterTransitionStart("/a", "push", event);
+
+      expect(events).toEqual([event]);
+      expect(events[0]).not.toBe(event);
+      expect(event).toEqual({ id: "1", timestamp: 1, fromRoutes: ["/"], prefetchIntent: "auto" });
+    } finally {
+      delete (globalThis as { __vinextInjectEvents?: unknown[] }).__vinextInjectEvents;
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });

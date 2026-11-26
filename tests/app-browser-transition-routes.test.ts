@@ -168,6 +168,32 @@ describe("resolveRouterTransitionFromRoutes", () => {
         manifest,
       ),
     ).toEqual(["/gallery/default", "/gallery/@modal/(.)photos/[id]"]);
+    // A merge kept an active @aside, which sorts before @modal; the manifest's
+    // interceptions still identify @modal as the intercepted slot.
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          interceptionContext: "/gallery",
+          slotBindings: [
+            {
+              activeRouteId: "route:/gallery",
+              ownerLayoutId: "layout:/gallery",
+              slotId: "slot:aside:/gallery",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/gallery/photos/1",
+              ownerLayoutId: "layout:/gallery",
+              slotId: "slot:modal:/gallery",
+              state: "active",
+            },
+          ],
+          sourcePage: "/gallery/(.)photos/[id]/page",
+          wholeInterceptionSource: "/gallery",
+        }),
+        manifest,
+      ),
+    ).toEqual(["/gallery/default", "/gallery/@aside", "/gallery/@modal/(.)photos/[id]"]);
   });
 
   it("puts the primary route first, then each slot", () => {
