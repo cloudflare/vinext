@@ -110,6 +110,22 @@ The stable built-in child span types are:
     </tr>
     <tr>
       <td>
+        <code>LoadComponents.loadRouteModule</code>
+      </td>
+      <td>
+        <code>LoadComponents.loadRouteModule</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>RouteModule.prepare</code>
+      </td>
+      <td>
+        <code>RouteModule.prepare</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
         <code>NextNodeServer.getLayoutOrPageModule</code>
       </td>
       <td></td>
@@ -128,6 +144,8 @@ The stable built-in child span types are:
     </tr>
   </tbody>
 </table>
+
+As in Next.js, `LoadComponents.loadRouteModule` (`load route module`) nests under `NextNodeServer.findPageComponents` and covers loading the matched route's own module. `RouteModule.prepare` (`prepare route module`) sits under the request span and covers setting up the route's request context. Edge-runtime App route handlers and Pages API routes don't emit `RouteModule.prepare`, matching Next.js's edge templates.
 
 `NEXT_OTEL_FETCH_DISABLED=1` disables vinext's `AppRender.fetch` span when another agent already instruments `fetch`. `NEXT_OTEL_VERBOSE=1` does not currently enable additional vinext spans; the stable set above is unchanged.
 
