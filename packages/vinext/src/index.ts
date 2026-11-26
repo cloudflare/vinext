@@ -3314,12 +3314,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // an explicit user resolve.tsconfigPaths value remains untouched.
         const shouldAutoEnableNativeTsconfigPaths =
           userResolve?.tsconfigPaths === undefined && configuredTsconfigPath === undefined;
-        // Native discovery reads only tsconfig.json. Next.js also reads
-        // jsconfig.json (build/load-jsconfig.ts) and the configured tsconfigPath.
+        // The native resolver reads Vite's top-level `tsconfig` option, else
+        // discovers tsconfig.json. Next.js also reads jsconfig.json
+        // (build/load-jsconfig.ts) and the configured tsconfigPath.
         const baseUrlConfig = loadTsconfigBaseUrl(root, configuredTsconfigPath);
+        const nativeTsconfigPath = config.tsconfig
+          ? path.resolve(root, config.tsconfig)
+          : path.join(root, "tsconfig.json");
         const nativeReadsBaseUrlConfig =
           (userResolve?.tsconfigPaths ?? shouldAutoEnableNativeTsconfigPaths) &&
-          baseUrlConfig?.configPath === path.join(root, "tsconfig.json");
+          baseUrlConfig?.configPath === nativeTsconfigPath;
         unhandledTsconfigBaseUrl =
           baseUrlConfig && !nativeReadsBaseUrlConfig ? baseUrlConfig.baseUrl : null;
 

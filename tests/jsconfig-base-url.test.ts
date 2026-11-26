@@ -94,4 +94,29 @@ describe("jsconfig.json baseUrl", () => {
     expect(await resolveId.handler.call({ resolve }, "components/world", importer, {})).toBeNull();
     expect(resolve).not.toHaveBeenCalled();
   });
+
+  // Next.js reads tsconfig.json's baseUrl. Vite's native resolver reads its
+  // own top-level `tsconfig` option instead when one is set.
+  it("resolves baseUrl when Vite's tsconfig option selects another config", async () => {
+    const { server, baseUrl } = await startFixtureServer(
+      path.resolve(import.meta.dirname, "fixtures/vite-tsconfig-base-url"),
+      {
+        prependPlugins: [
+          {
+            // As if set in vite.config: ahead of vinext's own pre config hook.
+            name: "test:vite-tsconfig",
+            enforce: "pre",
+            config: () => ({ tsconfig: "tsconfig.vite.json" }),
+          },
+        ],
+      },
+    );
+    try {
+      const { res, html } = await fetchHtml(baseUrl, "/hello");
+      expect(res.status).toBe(200);
+      expect(html).toContain("World");
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
 });
