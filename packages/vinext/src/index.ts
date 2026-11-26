@@ -1059,10 +1059,16 @@ function createDevPagesModuleDependencyReader(
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
 
+// optimizeDeps.entries globs for the route source files under `dir`.
+//
 // TypeScript declaration files are never route modules (see
 // `scanWithExtensions`), and the dependency scan can't parse every one of them
-// as a module. Negated optimizeDeps.entries patterns are glob ignores.
-const OPTIMIZE_ENTRIES_DECLARATION_FILES_EXCLUDE = "!**/*.d.ts";
+// as a module, so `.ts` leaves skip `*.d.ts`. A negated `!**/*.d.ts` entry
+// would also prune directories named `*.d.ts`: tinyglobby expands ignores to
+// their `/**` descendants.
+function routeSourceOptimizeEntries(dir: string): string[] {
+  return [`${dir}/**/*.{tsx,jsx,js}`, `${dir}/**/!(*.d).ts`];
+}
 
 function resolveTsconfigPathCandidate(candidate: string): string | null {
   const candidates = candidate.endsWith(".json")
@@ -4463,10 +4469,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         pagesOptimizeEntries = !hasAppDir
           ? [
               ...(hasPagesDir
-                ? [
-                    toRelativeFileEntry(root, pagesDir) + "/**/*.{tsx,ts,jsx,js}",
-                    OPTIMIZE_ENTRIES_DECLARATION_FILES_EXCLUDE,
-                  ]
+                ? routeSourceOptimizeEntries(toRelativeFileEntry(root, pagesDir))
                 : []),
               ...[instrumentationPath, instrumentationClientPath].flatMap((entry) =>
                 entry ? [toRelativeFileEntry(root, entry)] : [],
@@ -4494,10 +4497,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // "Invalid hook call" from duplicate React instances).
           // The entries must be relative to the project root.
           const relAppDir = path.relative(root, appDir);
-          const appEntries = [
-            `${relAppDir}/**/*.{tsx,ts,jsx,js}`,
-            OPTIMIZE_ENTRIES_DECLARATION_FILES_EXCLUDE,
-          ];
+          const appEntries = routeSourceOptimizeEntries(relAppDir);
           const explicitInstrumentationEntries = [
             instrumentationPath,
             instrumentationClientPath,
@@ -4507,7 +4507,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // rsc. Without these, each dependency only pages/ imports is found on
           // the first request for its page, re-optimizing and reloading.
           const ssrAndClientOptimizeEntries = hasPagesDir
-            ? [...optimizeEntries, toRelativeFileEntry(root, pagesDir) + "/**/*.{tsx,ts,jsx,js}"]
+            ? [
+                ...optimizeEntries,
+                ...routeSourceOptimizeEntries(toRelativeFileEntry(root, pagesDir)),
+              ]
             : optimizeEntries;
           const additionalRscOptimizeIncludes: string[] = [];
           if (
