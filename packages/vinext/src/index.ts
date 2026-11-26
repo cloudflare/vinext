@@ -54,7 +54,7 @@ import {
   buildViteResolveExtensions,
   normalizeViteResolveExtensions,
   createValidFileMatcher,
-  skipsDeclarationFiles,
+  routeSourceOptimizeEntries,
   findFileWithExts,
 } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -1059,19 +1059,6 @@ function createDevPagesModuleDependencyReader(
 }
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
-
-// optimizeDeps.entries globs for the route source files under `dir`.
-//
-// When `ts` is a page extension, TypeScript declaration files are not route
-// modules (see `skipsDeclarationFiles`), and the dependency scan can't parse
-// every one of them as a module, so `.ts` leaves skip `*.d.ts`. A negated
-// `!**/*.d.ts` entry would also prune directories named `*.d.ts`: tinyglobby
-// expands ignores to their `/**` descendants. The leading negative extglob
-// bypasses picomatch's dotfile guard, so it rejects `.*` basenames itself.
-function routeSourceOptimizeEntries(dir: string, pageExtensions: readonly string[]): string[] {
-  if (!skipsDeclarationFiles(pageExtensions)) return [`${dir}/**/*.{tsx,ts,jsx,js}`];
-  return [`${dir}/**/*.{tsx,jsx,js}`, `${dir}/**/!(.*|*.d).ts`];
-}
 
 function resolveTsconfigPathCandidate(candidate: string): string | null {
   const candidates = candidate.endsWith(".json")

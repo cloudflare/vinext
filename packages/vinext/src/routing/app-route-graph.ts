@@ -8,7 +8,12 @@ import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
-import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
+import {
+  findFileWithExts,
+  findRouteFileWithExts,
+  scanWithExtensions,
+  type ValidFileMatcher,
+} from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
 import { createAppRouteGraphInterceptionId } from "./app-route-ids.js";
@@ -3243,9 +3248,17 @@ const findFileProbeCache = new WeakMap<ValidFileMatcher, Map<string, string | nu
  * result). The `null` "not found" outcome is cached too, so repeated misses on
  * shared ancestors cost a single set of `existsSync` calls per scan.
  */
+// Page and route probes skip declaration files like the scanners do; layouts
+// and boundary files keep them (see `scanWithExtensions`).
+function lookupFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
+  return name === "page" || name === "route"
+    ? findRouteFileWithExts(dir, name, matcher)
+    : findFileWithExts(dir, name, matcher);
+}
+
 function findFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
   const cache = findFileProbeCache.get(matcher);
-  if (!cache) return findFileWithExts(dir, name, matcher);
+  if (!cache) return lookupFile(dir, name, matcher);
 
   const key = `${dir}\0${name}`;
   // `findFileWithExts` returns `string | null`, so a stored miss reads back as
@@ -3254,7 +3267,7 @@ function findFile(dir: string, name: string, matcher: ValidFileMatcher): string 
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
 
-  const result = findFileWithExts(dir, name, matcher);
+  const result = lookupFile(dir, name, matcher);
   cache.set(key, result);
   return result;
 }

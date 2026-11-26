@@ -119,6 +119,35 @@ export function findFileWithExts(
 }
 
 /**
+ * `findFileWithExts` for page and route files: like `scanWithExtensions`, it
+ * skips declaration files when `ts` is a page extension.
+ */
+export function findRouteFileWithExts(
+  dir: string,
+  name: string,
+  matcher: ValidFileMatcher,
+): string | null {
+  const skipDeclarations = skipsDeclarationFiles(matcher.extensions);
+  for (const ext of matcher.dottedExtensions) {
+    if (skipDeclarations && ext.endsWith(".d.ts")) continue;
+    const filePath = path.join(dir, name + ext);
+    if (existsSync(filePath)) return filePath;
+  }
+  return null;
+}
+
+/**
+ * Whether declaration files can be page files: an explicit declaration-suffixed
+ * page extension (e.g. `d.ts`) without `ts` (see `skipsDeclarationFiles`).
+ */
+export function routesDeclarationFiles(extensions: readonly string[]): boolean {
+  return (
+    !skipsDeclarationFiles(extensions) &&
+    extensions.some((ext) => ext === "d.ts" || ext.endsWith(".d.ts"))
+  );
+}
+
+/**
  * Add the config extensions produced by `vinext init` to vinext's resolver.
  *
  * `pageExtensions` is intentionally not part of module resolution. Next.js
@@ -209,4 +238,21 @@ export async function* scanWithExtensions(
     if (skipDeclarations && file.endsWith(".d.ts")) continue;
     yield toSlash(file);
   }
+}
+
+// optimizeDeps.entries globs for the route source files under `dir`.
+//
+// TypeScript declaration files are not route modules unless an explicit
+// declaration page extension routes them (see `routesDeclarationFiles`), and
+// the dependency scan can't parse every one of them as a module, so `.ts`
+// leaves otherwise skip `*.d.ts`. A negated
+// `!**/*.d.ts` entry would also prune directories named `*.d.ts`: tinyglobby
+// expands ignores to their `/**` descendants. The leading negative extglob
+// bypasses picomatch's dotfile guard, so it rejects `.*` basenames itself.
+export function routeSourceOptimizeEntries(
+  dir: string,
+  pageExtensions: readonly string[],
+): string[] {
+  if (routesDeclarationFiles(pageExtensions)) return [`${dir}/**/*.{tsx,ts,jsx,js}`];
+  return [`${dir}/**/*.{tsx,jsx,js}`, `${dir}/**/!(.*|*.d).ts`];
 }

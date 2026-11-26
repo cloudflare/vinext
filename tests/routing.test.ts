@@ -18,7 +18,10 @@ import {
   type AppRoute,
 } from "../packages/vinext/src/routing/app-router.js";
 import { toSlash } from "pathslash";
-import { scanWithExtensions } from "../packages/vinext/src/routing/file-matcher.js";
+import {
+  routeSourceOptimizeEntries,
+  scanWithExtensions,
+} from "../packages/vinext/src/routing/file-matcher.js";
 
 /** Expected canonical (forward-slash) path for router-output assertions. */
 function canonical(base: string, relativePath = ""): string {
@@ -155,6 +158,17 @@ describe("pagesRouter - route discovery", () => {
 
     expect(await scan("**/page")).toEqual(["page.ts"]);
     expect(await scan("**/layout", { keepDeclarationFiles: true })).toEqual(["layout.d.ts"]);
+  });
+
+  // The dependency scan can't parse every declaration file, so they stay out
+  // of the optimizer entries unless an explicit `d.ts` page extension (without
+  // `ts`) routes them.
+  it("keeps declaration files out of optimizer entries unless they are routable", () => {
+    const filtered = ["pages/**/*.{tsx,jsx,js}", "pages/**/!(.*|*.d).ts"];
+    expect(routeSourceOptimizeEntries("pages", ["ts", "tsx"])).toEqual(filtered);
+    expect(routeSourceOptimizeEntries("pages", ["js"])).toEqual(filtered);
+    expect(routeSourceOptimizeEntries("pages", ["ts", "d.ts"])).toEqual(filtered);
+    expect(routeSourceOptimizeEntries("pages", ["d.ts"])).toEqual(["pages/**/*.{tsx,ts,jsx,js}"]);
   });
 
   it("ignores _app.tsx and _document.tsx", async () => {

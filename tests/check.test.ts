@@ -2394,6 +2394,8 @@ describe("integration: declaration files with a d.ts page extension", () => {
     expect(routes.map((route) => route.pattern)).toEqual(["/"]);
     expect(routes[0]!.loadingPath).toMatch(/loading\.d\.ts$/);
     expect(routes[0]!.layouts).toEqual([expect.stringMatching(/layout\.d\.ts$/)]);
+    // Slot page probes skip declaration files like the page scanner.
+    expect(routes[0]!.parallelSlots.map((slot) => slot.pagePath)).toEqual([]);
 
     const names = checkConventions(fixtureDir).map((item) => item.name);
     expect(names).toContain("1 page(s)");
