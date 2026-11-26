@@ -1,5 +1,21 @@
 # @vinext/cloudflare
 
+## 1.5.0
+
+### Features
+
+- **Cloudflare:** support custom request headers during --warm-cache deploys (#4787)
+
+### Bug Fixes
+
+- **Build:** guard every output directory that vinext or Vite empties (#4778)
+- **Build:** write the build output under Vite's build.outDir (#4774)
+- **Cloudflare:** warm file-based metadata routes (#4788)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.4.0
 
 ### Features

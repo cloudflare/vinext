@@ -1,5 +1,94 @@
 # vinext
 
+## 1.4.7
+
+### Bug Fixes
+
+#### App Router
+
+- reuse a slot intercept's payload when the modal opens again (#4920)
+- keep a navigation's mounted layouts through shared dispatches (#4862)
+- check dynamicParams = false set only on a parent layout again (#4890)
+- enforce dynamicParams = false only where Next.js prerenders the route (#4881)
+- check an interception's params against its own dynamicParams and generators (#4868)
+- render a slot's default afresh when its layout's params change (#4867)
+- settle server actions with their outcome when the response hard-navigates (#4837)
+- match Next.js for kept interception sources, shared slots, modal params and caught error shells (#4856)
+- render the target directly for an unusable interception context (#4803)
+- render the target directly when a rewrite serves an intercepting source as a page without the intercept (#4802)
+- head an intercepted render by the metadata files of the intercepting page's own path (#4801)
+- keep a layout's parallel slots in the document of a page's notFound(), forbidden() and unauthorized() (#4800)
+- intercept from an unmatched URL's not-found page only where /_not-found matches the source (#4799)
+- return softly to an intercepted entry whose committed tree the client still holds (#4798)
+- keep the layouts a refresh renders for an intercepted route (#4797)
+- render the whole intercepting route from a sibling page without the slot (#4796)
+- keep flight headers through a middleware request-header override (#4816)
+- learn optimistic route shells from the route the server matched (#4734)
+- render collections built from their children whole in SSR (#4794)
+- authorize a slot intercept by the target when it renders the target's layouts (#4782)
+- render only the intercepting tree beneath a slot intercept (#4650)
+- keep the elements an intercepted payload retains (#4649)
+- keep request context when the client cancels a document (#4790)
+- name the page head by a request-scoped id in head component props (#4786)
+- skip the refetch of a rewritten page's own route on refresh (#4760)
+- don't learn optimistic route shells from rewritten URLs (#4720)
+- answer 404 for params a static export doesn't list (#4708)
+- link a page's client component CSS in the shell under loading.js (#4707)
+
+#### Build
+
+- resolve the package root's real path for dynamic package subpath imports (#4878)
+- guard every output directory that vinext or Vite empties (#4778)
+- write the build output under Vite's build.outDir (#4774)
+- ship the client assets module once when ssr is nested in the rsc output (#4775)
+- keep server output ESM under a CommonJS package scope (#4738)
+
+#### Fonts
+
+- respect preload: false in next/font/local (#4811)
+- scope Pages Router next/font rules and preloads to the requested page (#4833)
+- carry route font rules in the App Router navigation payload (#4832)
+- scope App Router next/font rules and preloads to the requested route (#4830)
+
+#### Image
+
+- constrain legacy intrinsic images to their container (#4882)
+- set data-nimg on images with a custom loader or a remote src (#4843)
+- render color: transparent until an image fails to load (#4844)
+- warn in dev when fill images are missing sizes (#4829)
+- give fill images a w-descriptor srcSet like Next.js (#4827)
+- leave fill object-fit to the caller instead of inlining cover (#4791)
+- serve data: and blob: sources unoptimized and eager (#4725)
+
+#### Misc
+
+- **Dev:** leave duplicate dev server detection to Vite 8.4 (#4918)
+- **Dev:** support Vite 8.4 per-environment file access (#4889)
+- **Router:** announce client navigations to screen readers (#4848)
+- resolve the Windows project root with the native realpath like Vite (#4877)
+- **Script:** keep beforeInteractive script bodies out of the head HTML (#4636)
+- **Link:** prefetch App Router hrefs only a middleware or proxy rewrite resolves (#4808)
+- **Dynamic:** commit preloaded ssr: false components with the navigation (#4831)
+- **Cloudflare:** warm file-based metadata routes (#4788)
+- **Init:** install a @cloudflare/vite-plugin version that cf accepts (#4776)
+- **Pages Router:** give useRouter() the new route on the first render after a client navigation (#4749)
+- **Use Cache:** key File arguments by name and MIME type (#4737)
+- **Prerender:** render the 404 page without matching a top-level dynamic route (#4709)
+- **Cloudflare:** skip warming paths a next.config redirect or external rewrite answers (#4706)
+
+### Performance
+
+- **App Router:** cache dynamicParams = false routes whose generators give every param (#4887)
+- **App Router:** run fewer generators for dynamicParams = false routes vinext can't cache (#4886)
+
+### Contributors
+
+- @edmundhung
+- @fengmk2
+- @james-elicx
+- @shuaiyafei
+- @shulaoda
+
 ## 1.4.6
 
 ### Bug Fixes

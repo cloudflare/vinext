@@ -1,5 +1,19 @@
 # @cloudflare/workers-response-store
 
+## 1.2.1
+
+### Bug Fixes
+
+#### Response Store
+
+- back off and retry same-key R2 writes (#4872)
+- answer RPC mutations with a copy of the result (#4871)
+- answer a revalidation that loses its claim with the committed entry instead of throwing (#4870)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.2.0
 
 ### Features
