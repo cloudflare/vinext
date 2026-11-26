@@ -1377,7 +1377,7 @@ describe("App Router generated manifest construction", () => {
     expect(dynamicRouteEntry).toContain("__pageLoader: load_17");
     expect(dynamicRouteEntry).toContain('params: ["photoId"]');
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([{ load: load_5 }], ["id"]),',
+      '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([{ load: load_5 }], ["id"], "/dashboard/[id]"),',
     ]);
   });
 
@@ -1812,8 +1812,8 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/:lang/:locale/other/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","locale"]),',
-      '  "layouts:[lang]/[locale]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"]),',
+      '  "/:lang/:locale/other/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","locale"], "/[lang]/[locale]/other/[slug]"),',
+      '  "layouts:[lang]/[locale]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"], "/[lang]/[locale]"),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/:locale/other/:slug": ["lang","locale"],',
@@ -2022,8 +2022,8 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/:lang/docs v2/:section/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","section"]),',
-      '  "layouts:[lang]/docs%20v2/[section]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"]),',
+      '  "/:lang/docs v2/:section/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","section"], "/[lang]/docs v2/[section]/[slug]"),',
+      '  "layouts:[lang]/docs%20v2/[section]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"], "/[lang]/docs v2/[section]"),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/docs v2/:section/:slug": ["lang","section"],',

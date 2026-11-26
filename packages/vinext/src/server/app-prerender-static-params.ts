@@ -1,4 +1,9 @@
-import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
+import {
+  pickRootParams,
+  runGenerateStaticParamsWithRootParams,
+  runWithRootParamsScope,
+  type RootParams,
+} from "vinext/shims/root-params";
 import { isUnknownRecord } from "../utils/record.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
@@ -67,10 +72,13 @@ function isRootParams(value: unknown): value is RootParams {
  *  - otherwise composes all sources into the cartesian set of param objects.
  *
  * Returns `null` (no resolver) only when the pattern has zero sources at all.
+ *
+ * `route` is the Next.js-format route (`/[lang]/[locale]`) named in errors.
  */
 export function createAppPrerenderStaticParamsResolver(
   sources: readonly unknown[],
   rootParamNames?: readonly string[],
+  route = "",
 ): AppPrerenderStaticParamsResolver | null {
   // A source is usable if it is an eager generateStaticParams function or a
   // lazy `{ load }` page source. Keep them in their original order so the
@@ -80,9 +88,6 @@ export function createAppPrerenderStaticParamsResolver(
     (source) => isGenerateStaticParamsFunction(source) || isLazyStaticParamsSource(source),
   );
   if (usableSources.length === 0) return null;
-
-  const filterRootParams = (params: RootParams): RootParams =>
-    pickRootParams(params, rootParamNames ?? []);
 
   // Resolve lazy page modules once, on first invocation (prerender time), and
   // memoize the combined function list. Dedup concurrent callers. Resolution
@@ -128,21 +133,25 @@ export function createAppPrerenderStaticParamsResolver(
       // Wrap the single source in the same non-array/non-object guards as the
       // multi-source composition path so the contract is uniform regardless of
       // how many sources were composed.
-      const picked = filterRootParams(input.params);
-      return runWithRootParamsScope(picked, async () => {
-        const result = await single({ params: input.params });
-        if (!Array.isArray(result)) {
-          return invalidGenerateStaticParamsResult("generateStaticParams must return an array");
-        }
-        for (const item of result) {
-          if (!isRootParams(item)) {
-            return invalidGenerateStaticParamsResult(
-              "generateStaticParams must return an array of objects",
-            );
+      return runGenerateStaticParamsWithRootParams(
+        route,
+        input.params,
+        rootParamNames ?? [],
+        async () => {
+          const result = await single({ params: input.params });
+          if (!Array.isArray(result)) {
+            return invalidGenerateStaticParamsResult("generateStaticParams must return an array");
           }
-        }
-        return result;
-      });
+          for (const item of result) {
+            if (!isRootParams(item)) {
+              return invalidGenerateStaticParamsResult(
+                "generateStaticParams must return an array of objects",
+              );
+            }
+          }
+          return result;
+        },
+      );
     }
 
     // As in Next.js (build/static-paths/app.ts generateRouteStaticParams), a
@@ -155,10 +164,11 @@ export function createAppPrerenderStaticParamsResolver(
       const hasParentSets = paramSets.length > 0;
 
       for (const parentParams of hasParentSets ? paramSets : [{}]) {
-        const rootScope = filterRootParams(parentParams);
-
-        const result = await runWithRootParamsScope(rootScope, async () =>
-          generateStaticParams({ params: parentParams }),
+        const result = await runGenerateStaticParamsWithRootParams(
+          route,
+          parentParams,
+          rootParamNames ?? [],
+          async () => generateStaticParams({ params: parentParams }),
         );
 
         if (!Array.isArray(result)) {

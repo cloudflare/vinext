@@ -7,6 +7,7 @@ import {
   type AppRoute,
 } from "../routing/app-router.js";
 import { findSlotPageTreePosition } from "../routing/app-route-graph.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
@@ -670,9 +671,13 @@ function buildGenerateStaticParamsEntries(
 
   const entry = (key: string, pattern: string, sources: string[]): string => {
     const rootParamNames = namesByPattern.get(pattern) ?? [];
+    // The route names a generator's root param errors, so only a route with
+    // root params needs it.
+    const route =
+      rootParamNames.length > 0 ? `, ${JSON.stringify(patternToNextFormat(pattern))}` : "";
     return `  ${JSON.stringify(key)}: __createAppPrerenderStaticParamsResolver([${sources.join(
       ", ",
-    )}], ${JSON.stringify(rootParamNames)}),`;
+    )}], ${JSON.stringify(rootParamNames)}${route}),`;
   };
   return [
     ...Array.from(sourcesByPattern, ([pattern, sources]) => entry(pattern, pattern, sources)),

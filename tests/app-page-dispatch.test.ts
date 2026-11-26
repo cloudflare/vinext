@@ -192,6 +192,15 @@ type TestRoute = {
 };
 type DispatchOptions = Parameters<typeof dispatchAppPage<TestRoute>>[0];
 
+/** A root param's value, or the message of the error reading it throws. */
+async function readRootParamOrError(name: string): Promise<unknown> {
+  try {
+    return await getRootParam(name);
+  } catch (error) {
+    return error instanceof Error ? error.message : error;
+  }
+}
+
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -1650,7 +1659,8 @@ describe("app page dispatch", () => {
         return "page";
       },
       async generateStaticParams() {
-        seen.push(await getRootParam("lang"));
+        // The generator that provides `lang` can't read it, nor the request's.
+        seen.push(await readRootParamOrError("lang"));
         return [{ lang: "fr" }];
       },
       params: { lang: "fr" },
@@ -1672,7 +1682,9 @@ describe("app page dispatch", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(seen).toEqual([undefined]);
+    expect(seen).toEqual([
+      "Route /[lang] used `import('next/root-params').lang()` inside `generateStaticParams`, but the `lang` parameter was not provided by a parent `generateStaticParams`. In `generateStaticParams`, root params are only available for segments nested below the segment that provides them.",
+    ]);
   });
 
   it.each([
@@ -5802,7 +5814,7 @@ describe("app page dispatch", () => {
           {
             default: () => null,
             async generateStaticParams() {
-              seen.push(await getRootParam("slug"));
+              seen.push(await readRootParamOrError("slug"));
               return [{ slug: "acme" }];
             },
           } as Record<string, unknown>,
@@ -5823,7 +5835,10 @@ describe("app page dispatch", () => {
       );
 
       expect(response.status).toBe(200);
-      expect(seen).toEqual([undefined, "acme"]);
+      expect(seen).toEqual([
+        expect.stringContaining("parameter was not provided by a parent"),
+        "acme",
+      ]);
     });
 
     it("checks an interception of the matched route against its own generators", async () => {

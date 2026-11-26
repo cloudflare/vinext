@@ -56,6 +56,58 @@ describe("App prerender endpoint helpers", () => {
     });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/generate-static-params-error.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/generate-static-params-error.test.ts
+  it("rejects a generateStaticParams reading the root param it provides", async () => {
+    const layoutGenerateStaticParams = vi.fn(async () => {
+      const lang = await getRootParam("lang");
+      return [{ lang, locale: "us" }];
+    });
+    const resolveStaticParams = createAppPrerenderStaticParamsResolver(
+      [layoutGenerateStaticParams],
+      ["lang", "locale"],
+      "/[lang]/[locale]",
+    );
+
+    await expect(resolveStaticParams?.({ params: {} })).rejects.toThrow(
+      "Route /[lang]/[locale] used `import('next/root-params').lang()` inside `generateStaticParams`, but the `lang` parameter was not provided by a parent `generateStaticParams`. In `generateStaticParams`, root params are only available for segments nested below the segment that provides them.",
+    );
+  });
+
+  it("rejects a nested generateStaticParams reading a root param no parent provides", async () => {
+    const langGenerateStaticParams = vi.fn(() => [{ lang: "en" }]);
+    const localeGenerateStaticParams = vi.fn(async () => {
+      expect(await getRootParam("lang")).toBe("en");
+      const locale = await getRootParam("locale");
+      return [{ locale }];
+    });
+    const resolveStaticParams = createAppPrerenderStaticParamsResolver(
+      [langGenerateStaticParams, localeGenerateStaticParams],
+      ["lang", "locale"],
+      "/[lang]/[locale]",
+    );
+
+    await expect(resolveStaticParams?.({ params: {} })).rejects.toThrow(
+      "Route /[lang]/[locale] used `import('next/root-params').locale()` inside `generateStaticParams`, but the `locale` parameter was not provided by a parent `generateStaticParams`.",
+    );
+  });
+
+  it("lets a generateStaticParams read the root params its parent params provide", async () => {
+    const pageGenerateStaticParams = vi.fn(async () => {
+      const lang = await getRootParam("lang");
+      return [{ slug: `${String(lang)}-post` }];
+    });
+    const resolveStaticParams = createAppPrerenderStaticParamsResolver(
+      [pageGenerateStaticParams],
+      ["lang"],
+      "/[lang]/[slug]",
+    );
+
+    await expect(resolveStaticParams?.({ params: { lang: "fr" } })).resolves.toEqual([
+      { slug: "fr-post" },
+    ]);
+  });
+
   it("preserves incoming non-root parent params in the resolver", async () => {
     const first = vi.fn(async ({ params }) => {
       expect(params).toEqual({ lang: "en", category: "docs" });
