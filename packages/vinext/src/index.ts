@@ -1117,10 +1117,20 @@ type MaterializedTsconfigPathAliases = {
   viteFallbacks: Record<string, string[]>;
   viteExactFallbacks: Record<string, string[]>;
   sass: SassTsconfigPathAlias[];
+  // Every `paths` key the config (or its `extends` chain) declares, including
+  // keys that materialize nothing, so a child key replaces an inherited one.
+  declaredKeys: string[];
 };
 
 function emptyTsconfigPathAliases(): MaterializedTsconfigPathAliases {
-  return { vite: {}, viteExact: {}, viteFallbacks: {}, viteExactFallbacks: {}, sass: [] };
+  return {
+    vite: {},
+    viteExact: {},
+    viteFallbacks: {},
+    viteExactFallbacks: {},
+    sass: [],
+    declaredKeys: [],
+  };
 }
 
 function mergeSassTsconfigPathAliases(
@@ -1133,6 +1143,11 @@ function mergeSassTsconfigPathAliases(
     }
   }
   return [...merged.values()];
+}
+
+// The `prefix/*` form Vite aliases can represent.
+function isTrailingWildcardPattern(value: string): boolean {
+  return value.length > 2 && value.endsWith("/*") && value.indexOf("*") === value.length - 1;
 }
 
 function hasZeroOrOneAsterisk(value: string): boolean {
@@ -1187,13 +1202,11 @@ function materializeTsconfigPathAliases(
     const target = targets[0]!;
 
     if (find.includes("*") || target.includes("*")) {
-      const isTrailingWildcard = (value: string) =>
-        value.endsWith("/*") && value.indexOf("*") === value.length - 1 && value.length > 2;
-      if (!isTrailingWildcard(find) || !isTrailingWildcard(target)) continue;
+      if (!isTrailingWildcardPattern(find) || !isTrailingWildcardPattern(target)) continue;
 
       const aliasKey = find.slice(0, -2);
       const [replacement, ...fallbacks] = targets
-        .filter(isTrailingWildcard)
+        .filter(isTrailingWildcardPattern)
         .map((value) =>
           toViteAliasReplacement(path.resolve(baseUrl, value.slice(0, -2)), projectRoot),
         );
@@ -1209,7 +1222,14 @@ function materializeTsconfigPathAliases(
     if (fallbacks.length > 0) viteExactFallbacks[find] = fallbacks;
   }
 
-  return { vite, viteExact, viteFallbacks, viteExactFallbacks, sass };
+  return {
+    vite,
+    viteExact,
+    viteFallbacks,
+    viteExactFallbacks,
+    sass,
+    declaredKeys: Object.keys(pathsConfig),
+  };
 }
 
 function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
@@ -1306,26 +1326,31 @@ function mergeTsconfigPathAliases(
   base: MaterializedTsconfigPathAliases,
   override: MaterializedTsconfigPathAliases,
 ): MaterializedTsconfigPathAliases {
-  // A key redefined by `override` replaces the base key's fallbacks too.
-  const keepFallbacks = (
-    fallbacks: Record<string, string[]>,
-    overridden: Record<string, string>,
-  ): Record<string, string[]> =>
-    Object.fromEntries(
-      Object.entries(fallbacks).filter(([find]) => !Object.hasOwn(overridden, find)),
-    );
+  // A key `override` declares replaces the inherited key entirely (targets,
+  // fallbacks and Sass entry), even when it materializes nothing itself, e.g.
+  // when all of its targets are declaration files.
+  const declared = new Set(override.declaredKeys);
+  const declaredPrefixes = new Set(
+    override.declaredKeys.filter(isTrailingWildcardPattern).map((find) => find.slice(0, -2)),
+  );
+  const withoutKeys = <T>(record: Record<string, T>, keys: ReadonlySet<string>) =>
+    Object.fromEntries(Object.entries(record).filter(([find]) => !keys.has(find)));
   return {
-    vite: { ...base.vite, ...override.vite },
-    viteExact: { ...base.viteExact, ...override.viteExact },
+    vite: { ...withoutKeys(base.vite, declaredPrefixes), ...override.vite },
+    viteExact: { ...withoutKeys(base.viteExact, declared), ...override.viteExact },
     viteFallbacks: {
-      ...keepFallbacks(base.viteFallbacks, override.vite),
+      ...withoutKeys(base.viteFallbacks, declaredPrefixes),
       ...override.viteFallbacks,
     },
     viteExactFallbacks: {
-      ...keepFallbacks(base.viteExactFallbacks, override.viteExact),
+      ...withoutKeys(base.viteExactFallbacks, declared),
       ...override.viteExactFallbacks,
     },
-    sass: mergeSassTsconfigPathAliases(base.sass, override.sass),
+    sass: mergeSassTsconfigPathAliases(
+      base.sass.filter((alias) => !declared.has(alias.find)),
+      override.sass,
+    ),
+    declaredKeys: [...new Set([...base.declaredKeys, ...override.declaredKeys])],
   };
 }
 

@@ -25,7 +25,12 @@ import path from "node:path";
 import { createBuilder, createServer, type AliasOptions } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { buildPagesFixture, startFixtureServer, fetchHtml } from "./helpers.js";
+import {
+  aliasEntriesToRecord,
+  buildPagesFixture,
+  startFixtureServer,
+  fetchHtml,
+} from "./helpers.js";
 
 const tmpDirs: string[] = [];
 
@@ -426,6 +431,13 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
         results.push([pathname, res.status, html.includes(text)]);
       }
       expect(results).toEqual(pages.map(([pathname]) => [pathname, 200, true]));
+
+      // tsconfig.json redefines the inherited `@types-only` key with only a
+      // declaration target, which replaces the parent's runtime target. (Vite's
+      // native resolve.tsconfigPaths may still resolve it to the .d.ts file.)
+      const aliases = aliasEntriesToRecord(server.config.resolve.alias);
+      expect(Object.keys(aliases).filter((find) => find.includes("types-only"))).toEqual([]);
+      expect(aliases[String(/^d-ts-alias$/)]).toMatch(/components\/alias-to-d-ts\.tsx$/);
     } finally {
       await server.close();
     }

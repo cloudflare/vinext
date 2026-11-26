@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@types-only": ["components/alias-to-d-ts.tsx"]
+    }
+  }
+}
