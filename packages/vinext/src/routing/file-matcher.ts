@@ -137,16 +137,6 @@ export function findRouteFileWithExts(
 }
 
 /**
- * The page extensions that make declaration files page files: explicit
- * declaration-suffixed ones (`d.ts`, `route.d.ts`) without `ts` (see
- * `skipsDeclarationFiles`).
- */
-function routableDeclarationExtensions(extensions: readonly string[]): string[] {
-  if (skipsDeclarationFiles(extensions)) return [];
-  return extensions.filter((ext) => ext === "d.ts" || ext.endsWith(".d.ts"));
-}
-
-/**
  * Add the config extensions produced by `vinext init` to vinext's resolver.
  *
  * `pageExtensions` is intentionally not part of module resolution. Next.js
@@ -241,21 +231,13 @@ export async function* scanWithExtensions(
 
 // optimizeDeps.entries globs for the route source files under `dir`.
 //
-// TypeScript declaration files are not route modules unless a configured
-// declaration page extension routes them (see `routableDeclarationExtensions`),
-// and the dependency scan can't parse every one of them as a module, so `.ts`
-// leaves skip `*.d.ts` and only the routable declaration suffixes are added
-// back. A negated `!**/*.d.ts` entry would also prune directories named
+// The dependency scan can't parse every TypeScript declaration file as a
+// module, so `.ts` leaves skip `*.d.ts`, even the ones a declaration page
+// extension routes (those load on request; entries only seed the scan). A
+// negated `!**/*.d.ts` entry would also prune directories named
 // `*.d.ts`: tinyglobby expands ignores to their `/**` descendants. The leading
 // negative extglob bypasses picomatch's dotfile guard, so it rejects `.*`
 // basenames itself.
-export function routeSourceOptimizeEntries(
-  dir: string,
-  pageExtensions: readonly string[],
-): string[] {
-  return [
-    `${dir}/**/*.{tsx,jsx,js}`,
-    `${dir}/**/!(.*|*.d).ts`,
-    ...routableDeclarationExtensions(pageExtensions).map((ext) => `${dir}/**/*.${ext}`),
-  ];
+export function routeSourceOptimizeEntries(dir: string): string[] {
+  return [`${dir}/**/*.{tsx,jsx,js}`, `${dir}/**/!(.*|*.d).ts`];
 }

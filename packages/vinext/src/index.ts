@@ -4459,10 +4459,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         pagesOptimizeEntries = !hasAppDir
           ? [
               ...(hasPagesDir
-                ? routeSourceOptimizeEntries(
-                    toRelativeFileEntry(root, pagesDir),
-                    fileMatcher.extensions,
-                  )
+                ? routeSourceOptimizeEntries(toRelativeFileEntry(root, pagesDir))
                 : []),
               ...[instrumentationPath, instrumentationClientPath].flatMap((entry) =>
                 entry ? [toRelativeFileEntry(root, entry)] : [],
@@ -4490,7 +4487,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // "Invalid hook call" from duplicate React instances).
           // The entries must be relative to the project root.
           const relAppDir = path.relative(root, appDir);
-          const appEntries = routeSourceOptimizeEntries(relAppDir, fileMatcher.extensions);
+          const appEntries = routeSourceOptimizeEntries(relAppDir);
           const explicitInstrumentationEntries = [
             instrumentationPath,
             instrumentationClientPath,
@@ -4502,10 +4499,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const ssrAndClientOptimizeEntries = hasPagesDir
             ? [
                 ...optimizeEntries,
-                ...routeSourceOptimizeEntries(
-                  toRelativeFileEntry(root, pagesDir),
-                  fileMatcher.extensions,
-                ),
+                ...routeSourceOptimizeEntries(toRelativeFileEntry(root, pagesDir)),
               ]
             : optimizeEntries;
           const additionalRscOptimizeIncludes: string[] = [];
