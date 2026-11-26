@@ -73,6 +73,7 @@ import {
 import { completeAppRouteHandlerResponse } from "./app-route-handler-execution.js";
 import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
+import { staticParamsForJson } from "./prerender-static-params-json.js";
 import { decodeMatchedParams, normalizePathnameForRouteMatch } from "../routing/utils.js";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -454,8 +455,8 @@ export async function getWarmableMetadataRoutes(
         generateStaticParams({ params: {} }),
       );
       // JSON drops an undefined value, so send null to keep the route named in
-      // the discovery error.
-      routes.push({ ...base, staticParams: staticParams ?? null });
+      // the discovery error, and a present undefined param as null.
+      routes.push({ ...base, staticParams: staticParamsForJson(staticParams) ?? null });
     } else {
       routes.push({ ...base, paths: [route.servedUrl] });
     }

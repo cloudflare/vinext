@@ -688,6 +688,21 @@ function getDynamicPatternParams(pattern: string): DynamicPatternParam[] {
     }));
 }
 
+/** The Next.js page path for a route pattern: `/blog/:slug*` → `/blog/[[...slug]]`. */
+function patternToNextPage(pattern: string): string {
+  return pattern
+    .split("/")
+    .map((segment) => {
+      const markerParam = interceptionMarkerPatternParam(segment);
+      if (markerParam) return `${markerParam.marker}[${markerParam.name}]`;
+      if (!segment.startsWith(":")) return segment;
+      if (segment.endsWith("*")) return `[[...${segment.slice(1, -1)}]]`;
+      if (segment.endsWith("+")) return `[...${segment.slice(1, -1)}]`;
+      return `[${segment.slice(1)}]`;
+    })
+    .join("/");
+}
+
 export function validateDiscoveredParams(
   value: unknown,
   pattern: string,
@@ -709,12 +724,15 @@ export function validateDiscoveredParams(
       paramValue = [];
       params[name] = paramValue;
     }
-    const valid = repeat
-      ? Array.isArray(paramValue) && paramValue.every((entry) => typeof entry === "string")
-      : typeof paramValue === "string";
-    if (!valid) {
+    if (repeat ? !Array.isArray(paramValue) : typeof paramValue !== "string") {
+      // Next.js's message (build/static-paths/app.ts and pages.ts validateParams).
       throw new InvalidStaticParamsError(
-        `Parameter ${name} from ${source} for ${pattern} must be ${repeat ? "an array of strings" : "a string"}.`,
+        `A required parameter (${name}) was not provided as ${repeat ? "an array" : "a string"} received ${typeof paramValue} in ${source} for ${patternToNextPage(pattern)}`,
+      );
+    }
+    if (Array.isArray(paramValue) && !paramValue.every((entry) => typeof entry === "string")) {
+      throw new InvalidStaticParamsError(
+        `Parameter ${name} from ${source} for ${pattern} must be an array of strings.`,
       );
     }
     const values = Array.isArray(paramValue) ? paramValue : [paramValue];

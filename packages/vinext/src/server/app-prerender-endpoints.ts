@@ -5,6 +5,7 @@ import {
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { staticParamsForJson, staticPathsForJson } from "./prerender-static-params-json.js";
 import type { RootParams } from "vinext/shims/root-params";
 import {
   runInWorkStoreScope,
@@ -122,7 +123,7 @@ async function handleStaticParamsEndpoint(
       }),
     );
     if (result === null) return jsonNullResponse();
-    return jsonResponse(result);
+    return jsonResponse(staticParamsForJson(result));
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
   }
@@ -151,7 +152,7 @@ async function handlePagesStaticPathsEndpoint(
     const locales = parseLocales(url.searchParams.get("locales"));
     const defaultLocale = url.searchParams.get("defaultLocale") ?? "";
     const result = await runOutsideWorkStoreScope(() => getStaticPaths({ locales, defaultLocale }));
-    return jsonResponse(result);
+    return jsonResponse(staticPathsForJson(result));
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
   }

@@ -341,6 +341,51 @@ describe("App prerender endpoint helpers", () => {
     });
   });
 
+  // Next.js reads a present undefined optional catch-all as the root path but
+  // a missing one as not provided (build/static-paths/pages.ts and app.ts
+  // validateParams), so JSON must not drop the key.
+  it("sends a present undefined param as null and leaves a missing one out", async () => {
+    const pageRoutes: TestPageRoute[] = [
+      {
+        module: {
+          getStaticPaths: () => ({
+            fallback: false,
+            paths: ["/posts", { params: { slug: undefined }, locale: "fr" }, { params: {} }],
+          }),
+        },
+        pattern: "/posts/:slug*",
+      },
+    ];
+    const pagesResponse = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/pages-static-paths?pattern=/posts/:slug*"),
+      {
+        isPrerenderEnabled: () => true,
+        loadPagesRoutes: async () => pageRoutes,
+        pathname: "/__vinext/prerender/pages-static-paths",
+        staticParamsMap: {},
+      },
+    );
+    await expect(pagesResponse?.json()).resolves.toEqual({
+      fallback: false,
+      paths: ["/posts", { params: { slug: null }, locale: "fr" }, { params: {} }],
+    });
+
+    const appResponse = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/static-params?pattern=/:locale/:slug*"),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        staticParamsMap: {
+          "/:locale/:slug*": () => [{ locale: "en", slug: undefined }, { locale: "fr" }],
+        },
+      },
+    );
+    await expect(appResponse?.json()).resolves.toEqual([
+      { locale: "en", slug: null },
+      { locale: "fr" },
+    ]);
+  });
+
   it("returns no content when the requested prerender function is absent", async () => {
     const staticParamsResponse = await handleAppPrerenderEndpoint(
       new Request("http://localhost/__vinext/prerender/static-params?pattern=/missing"),

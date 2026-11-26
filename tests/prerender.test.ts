@@ -1487,6 +1487,9 @@ describe("prerenderApp — default mode (app-basic)", () => {
       "/metadata-invalid-id-sibling/icon/good": "/metadata-invalid-id-sibling/icon",
       "/metadata-static-params/public-post/opengraph-image":
         "/metadata-static-params/:slug/opengraph-image",
+      // A present undefined optional catch-all is its root path.
+      "/metadata-static-params-optional/opengraph-image":
+        "/metadata-static-params-optional/:path*/opengraph-image",
       "/metadata-storage/force-static/opengraph-image":
         "/metadata-storage/force-static/opengraph-image",
     });
@@ -2413,6 +2416,109 @@ describe("prerenderPages — getStaticPaths dot segments (#4583)", () => {
   }
 });
 
+// Next.js reads an optional catch-all set to undefined, null or false as the
+// route's root path (build/static-paths/pages.ts and app.ts validateParams).
+// Ported from Next.js: test/e2e/dynamic-optional-routing/dynamic-optional-routing.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-optional-routing/dynamic-optional-routing.test.ts
+describe("prerender path discovery — optional catch-all static params", () => {
+  it("warms a Pages optional catch-all's root path for undefined, null and false", async () => {
+    const fixtureDir = path.resolve(
+      import.meta.dirname,
+      "./fixtures/pages-static-paths-optional-catchall",
+    );
+    const pagesBundlePath = await buildPagesFixture(fixtureDir);
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    const manifest = await discoverPrerenderPathManifest({
+      root: fixtureDir,
+      pagesBundlePath,
+      appDir: null,
+      pagesDir: path.join(fixtureDir, "pages"),
+      nextConfig: await resolveNextConfig({}),
+    });
+
+    expect([...(manifest?.pagesPaths ?? [])].sort()).toEqual([
+      "/",
+      "/false",
+      "/false/a",
+      "/null",
+      "/null/a",
+      "/undefined",
+      "/undefined/a",
+    ]);
+  }, 60_000);
+
+  it("fails warm-up discovery for a Pages optional catch-all left out", async () => {
+    const fixtureDir = path.resolve(
+      import.meta.dirname,
+      "./fixtures/pages-static-paths-optional-catchall-missing",
+    );
+    const pagesBundlePath = await buildPagesFixture(fixtureDir);
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+
+    await expect(
+      discoverPrerenderPathManifest({
+        root: fixtureDir,
+        pagesBundlePath,
+        appDir: null,
+        pagesDir: path.join(fixtureDir, "pages"),
+        nextConfig: await resolveNextConfig({}),
+      }),
+    ).rejects.toThrow(
+      "A required parameter (slug) was not provided as an array received undefined in getStaticPaths for /invalid/[[...slug]]",
+    );
+  }, 60_000);
+
+  it("prerenders and warms an App optional catch-all's root path for undefined", async () => {
+    const fixtureDir = path.resolve(
+      import.meta.dirname,
+      "./fixtures/app-static-params-optional-catchall",
+    );
+    const rscBundlePath = await buildAppFixture(fixtureDir);
+    const outDir = tmpDir("vinext-prerender-optional-catchall-");
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { discoverPrerenderPathManifest } =
+        await import("../packages/vinext/src/build/prerender-paths.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const config = await resolveNextConfig({});
+
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath,
+        routes: await appRouter(path.join(fixtureDir, "app")),
+        outDir,
+        config,
+      });
+      expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+      expect(fs.readFileSync(path.join(outDir, "undefined.html"), "utf8")).toContain(
+        "optional route: <!-- -->undefined",
+      );
+      expect(fs.readFileSync(path.join(outDir, "undefined/a.html"), "utf8")).toContain(
+        "optional route: <!-- -->[a]",
+      );
+      // A set without the optional catch-all prerenders none of the route's
+      // paths, as in Next.js (build/static-paths/app.ts hadAllParamsGenerated).
+      expect(fs.existsSync(path.join(outDir, "missing"))).toBe(false);
+
+      const manifest = await discoverPrerenderPathManifest({
+        root: fixtureDir,
+        rscBundlePath,
+        pagesDir: null,
+        nextConfig: config,
+      });
+      expect([...(manifest?.paths ?? [])].sort()).toEqual(["/", "/undefined", "/undefined/a"]);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
 describe("prerenderApp — layout generateStaticParams", () => {
   // Next.js walks every segment of a route's loader tree top-down, passing each
   // parent param set to the next generateStaticParams, layouts included
@@ -2544,7 +2650,7 @@ describe("prerenderApp — layout generateStaticParams", () => {
       expect(result.routes.find((route) => route.route === "/:id/details")).toMatchObject({
         status: "error",
         error: expect.stringContaining(
-          "Parameter id from generateStaticParams for /:id/details must be a string.",
+          "A required parameter (id) was not provided as a string received object in generateStaticParams for /[id]/details",
         ),
       });
       expect(renderedPaths.filter((pathname) => pathname.endsWith("/details"))).toEqual([]);
@@ -2653,7 +2759,7 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
       status: "error",
       fatal: true,
       error: expect.stringContaining(
-        "Parameter id from generateStaticParams for /:id/details must be a string.",
+        "A required parameter (id) was not provided as a string received object in generateStaticParams for /[id]/details",
       ),
     });
     expect(renderedPaths.filter((pathname) => pathname.endsWith("/details"))).toEqual([]);
@@ -2674,7 +2780,7 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
       status: "error",
       fatal: true,
       error: expect.stringContaining(
-        "Parameter id from generateStaticParams for /:id/mid/:slug must be a string.",
+        "A required parameter (id) was not provided as a string received object in generateStaticParams for /[id]/mid/[slug]",
       ),
     });
     expect(renderedPaths.filter((pathname) => pathname.includes("/mid/"))).toEqual([]);
@@ -2886,7 +2992,7 @@ describe("routeStaticParamSets", () => {
 
   it("rejects a set whose value does not fit its segment", () => {
     expect(() => routeStaticParamSets({ pattern: "/:id" }, [{ id: 1 }])).toThrow(
-      "Parameter id from generateStaticParams for /:id must be a string.",
+      "A required parameter (id) was not provided as a string received number in generateStaticParams for /[id]",
     );
   });
 });

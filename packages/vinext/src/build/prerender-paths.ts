@@ -784,17 +784,18 @@ async function collectAppPaths(options: {
             if (!Array.isArray(value)) {
               throw new Error(`generateStaticParams must return an array for ${pattern}.`);
             }
+            // Each set is checked against its route only once composed, by
+            // routeStaticParamSets below, as Next.js validates the composed
+            // route params (build/static-paths/app.ts validateParams). A set
+            // missing a param (here or from a layout) leaves the route
+            // unprerendered instead of failing the build.
             return value.map((entry) => {
               if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
                 throw new Error(
                   `generateStaticParams must return parameter objects for ${pattern}.`,
                 );
               }
-              return validateDiscoveredParams(
-                { ...params, ...(entry as Record<string, unknown>) },
-                pattern,
-                "generateStaticParams",
-              );
+              return entry as Record<string, string | string[]>;
             });
           })();
           void request.catch(() => staticParamsCache.delete(cacheKey));

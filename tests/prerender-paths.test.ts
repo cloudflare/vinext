@@ -2429,7 +2429,9 @@ describe("prerender path manifest", () => {
 
     await expect(
       emitPrerenderPathManifest({ responseVary: "verbatim", root: tmpDir }),
-    ).rejects.toThrow("Parameter id from generateStaticParams for /:id/details must be a string.");
+    ).rejects.toThrow(
+      "A required parameter (id) was not provided as a string received object in generateStaticParams for /[id]/details",
+    );
   });
 
   it("discovers a static child route from parent-layout generateStaticParams", async () => {
@@ -3825,7 +3827,6 @@ describe("prerender path manifest", () => {
     ["a numeric dynamic param", "app/posts/[slug]/page.tsx", [{ slug: 123 }]],
     ["a dot-segment dynamic param", "app/posts/[slug]/page.tsx", [{ slug: ".." }]],
     ["a scalar catch-all param", "app/docs/[...parts]/page.tsx", [{ parts: "a" }]],
-    ["a missing optional catch-all", "app/docs/[[...parts]]/page.tsx", [{}]],
   ])("fails App path discovery for generateStaticParams with %s", async (_name, file, result) => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
