@@ -987,6 +987,44 @@ export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push
     }
   });
 
+  // Next.js's startRouterTransition checks every module for a hook first.
+  it("reports whether any module has a hook right now", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-has-hook-"));
+    try {
+      const code = generateInstrumentationClientInjectModule(["./getter.cjs"], null);
+      const getterImport = 'import * as __vinj_0 from "./getter.cjs";';
+      expect(code).toContain(getterImport);
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      // A CommonJS module that installs its hook late, through a live getter.
+      fs.writeFileSync(
+        entryPath,
+        code.replace(
+          getterImport,
+          `const __vinj_0 = {
+  get onRouterTransitionStart() {
+    if (globalThis.__vinextInjectHook === "throw") throw new Error("getter failed");
+    return globalThis.__vinextInjectHook;
+  },
+};`,
+        ),
+      );
+      const scope = globalThis as { __vinextInjectHook?: unknown };
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        __vinextHasRouterTransitionStart: () => boolean;
+      };
+
+      expect(mod.__vinextHasRouterTransitionStart()).toBe(false);
+      scope.__vinextInjectHook = () => {};
+      expect(mod.__vinextHasRouterTransitionStart()).toBe(true);
+      // A throwing read reaches the fan-out, which logs it.
+      scope.__vinextInjectHook = "throw";
+      expect(mod.__vinextHasRouterTransitionStart()).toBe(true);
+    } finally {
+      delete (globalThis as { __vinextInjectHook?: unknown }).__vinextInjectHook;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   // Ported from Next.js: test/production/app-dir/instrumentation-client-dce/instrumentation-client-dce.test.ts
   // https://github.com/vercel/next.js/blob/v16.4.6/test/production/app-dir/instrumentation-client-dce/instrumentation-client-dce.test.ts
   it("drops the start event copy from builds without the transition events flag", () => {
@@ -1294,6 +1332,32 @@ describe("client instrumentation hook state", () => {
       expect(first[2].timestamp).toBeGreaterThan(0);
       expect(second[2].prefetchIntent).toBe(null);
       expect(second[2].id).not.toBe(first[2].id);
+    });
+
+    it("skips a transition while the inject fan-out has no hook to call", async () => {
+      const state = await import(statePath);
+      const onRouterTransitionStart = vi.fn();
+      const resolveFromRoutes = vi.fn(() => ["/"]);
+      let hasHook = false;
+      state.setClientInstrumentationHooks({
+        onRouterTransitionStart,
+        __vinextHasRouterTransitionStart: () => hasHook,
+      });
+      state.setRouterTransitionFromRoutesResolver(resolveFromRoutes);
+
+      state.notifyAppRouterTransitionStart("/a", "push");
+      expect(onRouterTransitionStart).not.toHaveBeenCalled();
+      expect(resolveFromRoutes).not.toHaveBeenCalled();
+
+      // The skipped transition took no id, as in Next.js.
+      hasHook = true;
+      state.notifyAppRouterTransitionStart("/b", "push");
+      state.notifyAppRouterTransitionStart("/c", "push");
+      const [first, second] = onRouterTransitionStart.mock.calls.map(([, , event]) =>
+        Number.parseInt(String(event.id).split("-")[1], 36),
+      );
+      expect(second).toBe(first + 1);
+      expect(resolveFromRoutes).toHaveBeenCalledTimes(2);
     });
 
     it("logs a failure to build the event like a throwing hook", async () => {

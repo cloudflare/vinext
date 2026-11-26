@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE } from "./instrumentation-client-state.js";
+import {
+  HAS_ROUTER_TRANSITION_START_EXPORT,
+  INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE,
+} from "./instrumentation-client-state.js";
 
 /** Resolve empty-module next to this file (.js in dist, .ts in source). */
 function resolveInstrumentationClientEmptyModule(dir: string): string {
@@ -99,14 +102,32 @@ export function generateInstrumentationClientInjectModule(
     "    : { hooks: namespace, hook: undefined };",
     "}",
     "",
+    "// The user's own module is read directly, without the default fallback.",
+    "function __vinext_read_hook(index) {",
+    "  return index < __vinext_inject_modules.length",
+    "    ? __vinext_inject_hook(__vinext_inject_modules[index])",
+    `    : { hooks: __vinj_${userSlot}, hook: __vinj_${userSlot}.onRouterTransitionStart };`,
+    "}",
+    "",
+    "// Whether any module has a hook now. Next.js checks this before it numbers",
+    "// a transition and builds its start event. A throwing read counts, so the",
+    "// fan-out logs it.",
+    `export function ${HAS_ROUTER_TRANSITION_START_EXPORT}() {`,
+    `  for (let index = 0; index <= __vinext_inject_modules.length; index++) {`,
+    "    try {",
+    '      if (typeof __vinext_read_hook(index).hook === "function") return true;',
+    "    } catch {",
+    "      return true;",
+    "    }",
+    "  }",
+    "  return false;",
+    "}",
+    "",
     "export function onRouterTransitionStart(url, type, event) {",
     `  for (let index = 0; index <= __vinext_inject_modules.length; index++) {`,
     "    try {",
     "      // Every hook read is inside the try, since a getter can throw.",
-    "      const { hooks, hook } =",
-    "        index < __vinext_inject_modules.length",
-    "          ? __vinext_inject_hook(__vinext_inject_modules[index])",
-    `          : { hooks: __vinj_${userSlot}, hook: __vinj_${userSlot}.onRouterTransitionStart };`,
+    "      const { hooks, hook } = __vinext_read_hook(index);",
     "      // Next.js builds the start event per hook, sampling its timestamp",
     "      // then, so one hook's mutation never reaches the next. The flag check",
     "      // drops the event copy from builds without the flag. Reflect.apply",

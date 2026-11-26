@@ -12,6 +12,8 @@ export type ClientInstrumentationHooks = {
     navigationType: RouterTransitionType,
     event: RouterTransitionStartEvent | null,
   ) => void;
+  /** Exported by the generated instrumentationClientInject module. */
+  __vinextHasRouterTransitionStart?: () => boolean;
 };
 
 export const clientInstrumentationHooks = setClientInstrumentationHooks(

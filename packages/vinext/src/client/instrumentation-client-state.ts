@@ -27,6 +27,12 @@ export function getClientInstrumentationHooks(): ClientInstrumentationHooks | nu
   );
 }
 
+/**
+ * Exported by the generated instrumentationClientInject module: whether any
+ * module it fans out to has an onRouterTransitionStart hook right now.
+ */
+export const HAS_ROUTER_TRANSITION_START_EXPORT = "__vinextHasRouterTransitionStart";
+
 /** Logged when one instrumentation-client module's router transition hook throws. */
 export const INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE =
   "An instrumentation-client router transition hook failed";
@@ -77,6 +83,14 @@ export function notifyAppRouterTransitionStart(
 ): void {
   const hooks = getClientInstrumentationHooks();
   if (typeof hooks?.onRouterTransitionStart !== "function") return;
+  // Next.js numbers a transition only when some module has a hook. The
+  // inject fan-out is always a function, so it reports that itself.
+  if (
+    process.env.__NEXT_INSTRUMENTATION_CLIENT_ROUTER_TRANSITION_EVENTS &&
+    hooks[HAS_ROUTER_TRANSITION_START_EXPORT]?.() === false
+  ) {
+    return;
+  }
   // Positive flag check so the event path drops out of builds without the flag.
   const id = process.env.__NEXT_INSTRUMENTATION_CLIENT_ROUTER_TRANSITION_EVENTS
     ? `${Date.now().toString(36)}-${(++nextTransitionId).toString(36)}`
