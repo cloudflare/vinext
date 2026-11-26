@@ -523,6 +523,24 @@ function check(process) {
     expect(client?.code).toContain("this should fail");
   });
 
+  it("folds negated and bare NEXT_RUNTIME conditions", () => {
+    const source = `if (!(process.env.NEXT_RUNTIME === "nodejs")) require("not-nodejs-dep")
+if (process.env.NEXT_RUNTIME) server(); else require("client-dep")
+if (!process.env.NEXT_RUNTIME) require("no-runtime-dep")`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).not.toContain("not-nodejs-dep");
+    expect(server?.code).not.toContain("client-dep");
+    expect(server?.code).not.toContain("no-runtime-dep");
+    expect(server?.code).toContain("server()");
+
+    const client = replaceConsumerEnvironmentConditions(source, { nextRuntime: "" });
+    expect(client?.code).toContain("not-nodejs-dep");
+    expect(client?.code).toContain("client-dep");
+    expect(client?.code).toContain("no-runtime-dep");
+    expect(client?.code).not.toContain("server()");
+  });
+
   it("preserves NEXT_RUNTIME reads on locally bound process", () => {
     const result = replaceConsumerEnvironmentConditions(
       `function check(process) {

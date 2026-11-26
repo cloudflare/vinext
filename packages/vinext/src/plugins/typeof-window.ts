@@ -205,6 +205,12 @@ function evaluateNextRuntimeComparison(
   replacement: string,
   scope: AstScope,
 ): boolean | null {
+  // A bare read is truthy unless the inlined value is "" (the client).
+  if (isNextRuntimeMember(node, scope)) return replacement !== "";
+  if (node.type === "UnaryExpression" && node.operator === "!") {
+    const value = evaluateNextRuntimeComparison(node.argument, replacement, scope);
+    return value === null ? null : !value;
+  }
   if (node.type !== "BinaryExpression") return null;
   if (!["==", "===", "!=", "!=="].includes(String(node.operator))) return null;
 
