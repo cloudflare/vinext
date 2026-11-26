@@ -236,8 +236,11 @@ async function renderAppPageRscRenderStatus(
     // beside it.
     if (!specialError || specialError.fromMetadata === true) return { kind: "unstorable" };
     // As in Next.js's static generation, an HTTP error the document reported
-    // before the shell's can set the status instead.
-    const statusError = staticGenerationStatus.resolveShellSpecialError(specialError);
+    // before the shell's can set the status instead. A document that turned
+    // dynamic isn't a static render, so it keeps the shell error's own.
+    const statusError = isRenderDynamicLatched()
+      ? specialError
+      : staticGenerationStatus.resolveShellSpecialError(specialError);
     const headers = resolveAppPageSpecialErrorStoredHeaders(statusError, options.basePath);
     // A special error's own document renders as the request does, so an RSC
     // miss stores its payload alone and leaves the document to an HTML request.

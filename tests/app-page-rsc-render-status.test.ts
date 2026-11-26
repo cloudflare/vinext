@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import { createAppPageRscRenderStatusResolver } from "../packages/vinext/src/server/app-page-rsc-render-status.js";
 import type { AppPageSsrHandler } from "../packages/vinext/src/server/app-page-stream.js";
+import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
+import { runWithNavigationContext } from "../packages/vinext/src/shims/navigation-state.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 function resolveWithDocument(
   handleSsr: AppPageSsrHandler["handleSsr"],
@@ -201,4 +207,26 @@ describe("createAppPageRscRenderStatusResolver special error that rejects the sh
       expect(result).toEqual({ kind: "special-error", status, ...(headers ? { headers } : {}) });
     },
   );
+
+  it("keeps the shell error's own status when the document turned dynamic", async () => {
+    // SSR runs in a child scope, so its mark reaches the render's latch.
+    const result = await runWithRequestContext(createRequestContext(), () =>
+      createAppPageRscRenderStatusResolver({
+        capturedRscData: Promise.resolve(new ArrayBuffer(0)),
+        getCapturedSpecialError: () => redirectError,
+        getCapturedSpecialErrors: () => [],
+        isForceStatic: false,
+        loadSsrHandler: async () => ({
+          handleSsr: (...args) =>
+            runWithNavigationContext(() => {
+              markDynamicUsage();
+              return shellRejectingAfter(redirectError, notFoundError)(...args);
+            }),
+        }),
+        navigationContext: null,
+        routePattern: "/page",
+      })(),
+    );
+    expect(result).toEqual({ kind: "special-error", status: 404 });
+  });
 });
