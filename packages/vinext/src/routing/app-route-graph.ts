@@ -1611,25 +1611,22 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   }
 
   scan(slotDir);
-  // A page inside one of the slot's own nested slots (e.g. `nested/@a/page`
-  // under `@foo`) fills that nested slot, so it ranks after the slot's own
-  // pages: callers keep the first page they find for a URL.
-  const ordered = [
-    ...results.filter((entry) => !isNestedSlotSubPage(entry)),
-    ...results.filter(isNestedSlotSubPage),
-  ];
+  // Callers keep the first page they find for a URL, so rank the pages that
+  // can share one (Array#sort is stable, keeping folder order within a rank):
+  // 1. `@children` pages: Next.js 16.4.6 Turbopack lets
+  //    `members/@children/page` replace `members/page` for the same URL.
+  // 2. The slot's other own pages.
+  // 3. Pages inside one of the slot's own nested slots (e.g. `nested/@a/page`
+  //    under `@foo`), which fill that nested slot instead.
+  const ordered = results.sort((left, right) => slotSubPageRank(left) - slotSubPageRank(right));
   perMatcher.set(slotDir, ordered);
   return ordered;
 }
 
-/**
- * Whether a slot sub-page lives inside one of the slot's own nested slots
- * (e.g. `nested/@a` under `@foo`). `@children` is transparent, as elsewhere.
- */
-function isNestedSlotSubPage({ relativePath }: SlotSubPageEntry): boolean {
-  return relativePath
-    .split(path.sep)
-    .some((segment) => segment.startsWith("@") && segment !== "@children");
+function slotSubPageRank({ relativePath }: SlotSubPageEntry): number {
+  const segments = relativePath.split(path.sep);
+  if (segments.some((segment) => segment.startsWith("@") && segment !== "@children")) return 2;
+  return segments.includes("@children") ? 0 : 1;
 }
 
 function findSlotConfigLayoutPaths(

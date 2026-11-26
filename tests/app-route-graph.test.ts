@@ -620,6 +620,18 @@ describe("App Router route graph builder", () => {
         canonical(appDir, "nested-parallel-default/@outer/specific/page.tsx"),
       );
     });
+
+    it("lets a slot's @children page replace its direct page at the same URL", async () => {
+      // Next.js 16.4.6 Turbopack renders @team/members/@children/page.tsx for
+      // /children-slot-override/members (and, with strict route matching,
+      // fails the build because @team/members/page.tsx is then unreachable).
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const members = findRoute(graph.routes, "/children-slot-override/members");
+      expect(members.parallelSlots.find((slot) => slot.name === "team")?.pagePath).toBe(
+        canonical(appDir, "children-slot-override/@team/members/@children/page.tsx"),
+      );
+    });
   });
 
   // Regression for https://github.com/cloudflare/vinext/issues/1535

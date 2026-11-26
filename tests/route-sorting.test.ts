@@ -12,9 +12,10 @@
  * extraction, query stripping, trailing slash, catch-all, @slot filtering) are
  * tested in routing.test.ts — not duplicated here.
  */
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import path from "node:path";
 import os from "node:os";
+import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import {
   pagesRouter,
@@ -516,8 +517,24 @@ describe("App Router route sorting (additional)", () => {
         "export default function Page() { return null; }",
       );
 
+      // List @team's folders in reverse, so (b) comes first unless the scan
+      // sorts them.
+      const readdirSync = nodeFs.readdirSync;
+      const readdirSpy = vi.spyOn(nodeFs, "readdirSync").mockImplementation(((
+        dir: nodeFs.PathLike,
+        options?: unknown,
+      ) => {
+        const entries = readdirSync(dir, options as never) as unknown[];
+        return path.basename(String(dir)) === "@team" ? [...entries].reverse() : entries;
+      }) as typeof nodeFs.readdirSync);
+
       invalidateAppRouteCache();
-      const routes = await appRouter(appDir);
+      let routes: Awaited<ReturnType<typeof appRouter>>;
+      try {
+        routes = await appRouter(appDir);
+      } finally {
+        readdirSpy.mockRestore();
+      }
       const membersRoute = routes.find((route) => route.pattern === "/dashboard/members");
 
       expect(membersRoute).toBeDefined();
