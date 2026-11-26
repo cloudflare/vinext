@@ -848,6 +848,26 @@ describe("scanMetadataFiles", () => {
     expect(routes).toHaveLength(0);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/use-cache-metadata-route-handler (custom-font)
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-metadata-route-handler/app/custom-font/opengraph-image.tsx
+  it("orders static metadata routes before dynamic ones that match the same URL", () => {
+    createFile("[slug]/opengraph-image.tsx");
+    createFile("custom-font/opengraph-image.tsx");
+    createFile("[...path]/icon.tsx");
+    createFile("blog/[slug]/icon.tsx");
+    createFile("blog/latest/icon.tsx");
+    createFile("[[...rest]]/twitter-image.tsx");
+    createFile("docs/[...path]/twitter-image.tsx");
+
+    const urls = scanMetadataFiles(tmpDir).map((route) => route.servedUrl);
+    const before = (a: string, b: string) => expect(urls.indexOf(a)).toBeLessThan(urls.indexOf(b));
+
+    before("/custom-font/opengraph-image", "/[slug]/opengraph-image");
+    before("/blog/latest/icon", "/blog/[slug]/icon");
+    before("/blog/[slug]/icon", "/[...path]/icon");
+    before("/docs/[...path]/twitter-image", "/[[...rest]]/twitter-image");
+  });
+
   it("discovers robots.txt at root", () => {
     createFile("robots.txt");
     const routes = scanMetadataFiles(tmpDir);
