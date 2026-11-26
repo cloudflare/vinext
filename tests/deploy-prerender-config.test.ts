@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { toSlash } from "pathslash";
 import { resolveBuildOutputDir } from "../packages/cloudflare/src/build-output.js";
 import type { TPRRouteResult } from "../packages/cloudflare/src/tpr.js";
 
@@ -542,6 +543,7 @@ describe("deploy prerender config wiring", () => {
 export function createBuilder(config) {
   return {
     config: { root: config.root, build: { outDir: "dist" } },
+    environments: {},
     async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
   };
 }
@@ -561,22 +563,30 @@ export function createBuilder(config) {
     },
   );
 
-  it("reads the build output from the build.outDir the build resolved", async () => {
+  it("passes the resolved build and client directories to static export during deploy", async () => {
     writeProject("true");
-    writeFile("next.config.mjs", 'export default { output: "export" };\n');
+    writeFile("next.config.mjs", 'export default { output: "export", distDir: "custom-out" };\n');
+    const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+    fs.writeFileSync(
+      viteConfigPath,
+      fs
+        .readFileSync(viteConfigPath, "utf8")
+        .replace("vinext({ prerender:", 'vinext({ clientOutDir: "configured-client", prerender:'),
+    );
     const viteUrl = pathToFileURL(createRequire(import.meta.url).resolve("vite")).href;
     writeFile(
       "node_modules/vite/package.json",
       JSON.stringify({ name: "vite", type: "module", main: "index.js" }),
     );
-    // A plugin's config hook set build.outDir and root, which the config file
-    // doesn't show. Vite resolves the outDir against the root.
+    // Vite can leave the environment's build.outDir relative to its resolved
+    // root. The build's value takes precedence over the pre-build metadata.
     writeFile(
       "node_modules/vite/index.js",
       `export * from ${JSON.stringify(viteUrl)};
 export function createBuilder(config) {
   return {
     config: { root: config.root + "/site", build: { outDir: "out" } },
+    environments: { client: { config: { build: { outDir: "built-client" } } } },
     async buildApp() { config.__vinextBuildLifecycle.onComplete(); },
   };
 }
@@ -588,9 +598,148 @@ export function createBuilder(config) {
 
     expect(runPrerenderMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        routeRootConfig: expect.objectContaining({ outDir: path.join(tmpDir, "site", "out") }),
+        nextConfig: expect.objectContaining({ output: "export", distDir: "custom-out" }),
+        routeRootConfig: expect.objectContaining({
+          outDir: path.join(tmpDir, "site", "out"),
+          clientOutDir: path.join(tmpDir, "site", "built-client"),
+        }),
       }),
     );
+  });
+
+  it.each([
+    { source: "Vite", vinextClientOption: "", expected: "built-client" },
+    {
+      source: "vinext",
+      vinextClientOption: 'clientOutDir: "metadata-client", ',
+      expected: "metadata-client",
+    },
+  ])(
+    "resolves a --skip-build deploy's explicit $source client directory against the Vite config root",
+    async ({ vinextClientOption, expected }) => {
+      writeProjectWithInlineNextConfig('{ output: "export", distDir: "custom-out" }');
+      const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+      writeFile(
+        "vite.config.ts",
+        fs
+          .readFileSync(viteConfigPath, "utf8")
+          .replace(
+            "export default { plugins:",
+            'export default { root: "site", environments: { client: { build: { outDir: "built-client" } } }, plugins:',
+          )
+          .replace("vinext({ nextConfig:", `vinext({ ${vinextClientOption}nextConfig:`),
+      );
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true });
+
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeRootConfig: expect.objectContaining({
+            clientOutDir: path.join(tmpDir, "site", expected),
+          }),
+        }),
+      );
+    },
+  );
+
+  it("uses Next distDir for a --skip-build static export without a client override", async () => {
+    writeProject(undefined);
+    writeFile("next.config.mjs", 'export default { output: "export", distDir: "custom-out" };\n');
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routeRootConfig: expect.objectContaining({
+          clientOutDir: toSlash(path.join(tmpDir, "custom-out")),
+        }),
+      }),
+    );
+  });
+
+  it("keeps typed Cloudflare Build Output ahead of Next distDir for --skip-build", async () => {
+    writeProjectWithInlineNextConfig('{ output: "export", distDir: "app" }');
+    writeCfBuildOutputScaffolding();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routeRootConfig: expect.objectContaining({
+          clientOutDir: path.join(tmpDir, ".cloudflare/output/v0/workers/default/assets"),
+        }),
+      }),
+    );
+  });
+
+  it.each(["relative", "absolute"])(
+    "uses a %s Next distDir for --skip-build without replaying Vite build hooks",
+    async (kind) => {
+      const expected = path.join(tmpDir, "site", "custom-out");
+      const distDir = kind === "absolute" ? expected : "custom-out";
+      writeProjectWithInlineNextConfig(`{ output: "export", distDir: ${JSON.stringify(distDir)} }`);
+      const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+      writeFile(
+        "vite.config.ts",
+        fs
+          .readFileSync(viteConfigPath, "utf8")
+          .replace("export default { plugins:", 'export default { root: "site", plugins:')
+          .replace(
+            "cloudflare()]",
+            'cloudflare(), { name: "late-root", config() { return { root: "changed-site" }; }, configResolved() { throw new Error("build hooks replayed"); } }]',
+          ),
+      );
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true });
+
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeRootConfig: expect.objectContaining({ clientOutDir: toSlash(expected) }),
+        }),
+      );
+    },
+  );
+
+  it.each([
+    { name: "the default .next", nextConfig: '{ output: "export", distDir: ".next" }' },
+    { name: "a non-export build", nextConfig: '{ distDir: "custom-out" }' },
+  ])("keeps the existing --skip-build client output for $name", async ({ nextConfig }) => {
+    writeProject("true", "{ cdn: staticAssetsAdapter() }");
+    writeFile("next.config.mjs", `export default ${nextConfig};\n`);
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledOnce();
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routeRootConfig: expect.objectContaining({ clientOutDir: undefined }),
+      }),
+    );
+  });
+
+  it.each([
+    { distDir: ".", error: /contains (rscOutDir|the project root)/ },
+    { distDir: "app", error: /overlaps the app directory/ },
+    { distDir: "public", error: /overlaps the public directory/ },
+    { distDir: "dist", error: /contains rscOutDir/ },
+  ])("rejects unsafe --skip-build static export distDir '$distDir'", async ({ distDir, error }) => {
+    writeProjectWithInlineNextConfig(`{ output: "export", distDir: ${JSON.stringify(distDir)} }`);
+    writeFile("public/keep.txt", "public source");
+    const pagePath = path.join(tmpDir, "app", "page.tsx");
+    const pageSource = fs.readFileSync(pagePath, "utf8");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, skipBuild: true })).rejects.toThrow(error);
+
+    expect(runPrerenderMock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.readFileSync(pagePath, "utf8")).toBe(pageSource);
+    expect(fs.readFileSync(path.join(tmpDir, "public", "keep.txt"), "utf8")).toBe("public source");
   });
 
   it.each([

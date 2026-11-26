@@ -270,10 +270,12 @@ describe("runPrerender concurrency", () => {
     }
   });
 
-  it("writes static export pages into a custom client output directory", async () => {
+  it("uses the custom export directory for both routers and the in-process server", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-client-out-"));
     const serverDir = path.join(root, "dist", "server");
+    const clientDir = toSlash(path.join(root, "build", "client"));
     fs.mkdirSync(path.join(root, "app"));
+    fs.mkdirSync(path.join(root, "pages"));
     fs.mkdirSync(serverDir, { recursive: true });
     fs.writeFileSync(path.join(serverDir, "BUILD_ID"), "client-out-build\n");
     fs.writeFileSync(path.join(serverDir, "index.js"), "export {};\n");
@@ -285,11 +287,18 @@ describe("runPrerender concurrency", () => {
 
       await runPrerender({ root, routeRootConfig: { clientOutDir: "build/client" } });
 
-      expect(prerenderAppMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          outDir: toSlash(path.join(root, "build", "client")),
-        }),
+      expect(startProdServerMock).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ clientDir, purpose: "prerender" }),
       );
+      for (const prerender of [prerenderAppMock, prerenderPagesMock]) {
+        expect(prerender).toHaveBeenCalledWith(
+          expect.objectContaining({
+            clientDir,
+            outDir: clientDir,
+            _prodServer: expect.objectContaining({ port: 3000 }),
+          }),
+        );
+      }
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

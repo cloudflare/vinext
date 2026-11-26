@@ -309,6 +309,8 @@ export type ProdServerOptions = {
   host?: string;
   /** Path to the build output directory */
   outDir?: string;
+  /** Directory containing built client assets. Defaults to `<outDir>/client`. */
+  clientDir?: string;
   /** Explicit App Router RSC entry path. Defaults to `<outDir>/server/index.js`. */
   rscEntryPath?: string;
   /** Directory containing server manifests, sidecars, and prerender artifacts. */
@@ -1502,6 +1504,7 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     port = process.env.PORT ? parseInt(process.env.PORT) : 3000,
     host = "0.0.0.0",
     outDir = path.resolve("dist"),
+    clientDir: explicitClientDir,
     rscEntryPath: explicitRscEntryPath,
     serverDir: explicitServerDir,
     serverEntryPath: explicitServerEntryPath,
@@ -1519,7 +1522,7 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   const compress = !noCompression;
   // Always resolve outDir to absolute to ensure dynamic import() works
   const resolvedOutDir = path.resolve(outDir);
-  const clientDir = path.join(resolvedOutDir, "client");
+  const clientDir = path.resolve(resolvedOutDir, explicitClientDir ?? "client");
   const serverDir = explicitServerDir
     ? path.resolve(explicitServerDir)
     : path.join(resolvedOutDir, "server");

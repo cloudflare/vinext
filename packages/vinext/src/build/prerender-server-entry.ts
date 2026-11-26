@@ -9,7 +9,7 @@
  * over IPC. The parent then load-balances per-route fetches across the pool.
  *
  * `VINEXT_PRERENDER`, `NEXT_PHASE`, `VINEXT_PRERENDER_OUTDIR`, and the optional
- * `VINEXT_PRERENDER_RSC_ENTRY_PATH`, `VINEXT_PRERENDER_SERVER_DIR`, and
+ * `VINEXT_PRERENDER_CLIENT_DIR`, `VINEXT_PRERENDER_RSC_ENTRY_PATH`, `VINEXT_PRERENDER_SERVER_DIR`, and
  * `VINEXT_PRERENDER_SERVER_ENTRY_PATH` are passed via the fork env so they are set
  * before any module loads (some server and user modules read the phase at
  * import time).
@@ -24,6 +24,7 @@ const nodeProcess = process;
 
 async function main(): Promise<void> {
   const outDir = process.env.VINEXT_PRERENDER_OUTDIR;
+  const clientDir = process.env.VINEXT_PRERENDER_CLIENT_DIR;
   const rscEntryPath = process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH;
   const serverDir = process.env.VINEXT_PRERENDER_SERVER_DIR;
   const serverEntryPath = process.env.VINEXT_PRERENDER_SERVER_ENTRY_PATH;
@@ -46,6 +47,7 @@ async function main(): Promise<void> {
     port: 0,
     host: "127.0.0.1",
     outDir,
+    clientDir,
     ...(rscEntryPath ? { rscEntryPath } : {}),
     ...(serverDir ? { serverDir } : {}),
     ...(serverEntryPath ? { serverEntryPath } : {}),

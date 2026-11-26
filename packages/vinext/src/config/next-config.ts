@@ -410,6 +410,8 @@ export type NextConfig = {
   reactStrictMode?: boolean | null;
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";
+  /** Destination for the finished static site when output is "export". */
+  distDir?: string;
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
   pageExtensions?: string[];
   /** Turbopack-compatible module resolution options. */
@@ -571,6 +573,7 @@ export type ResolvedNextConfig = {
   skipProxyUrlNormalize: boolean;
   typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
+  distDir?: string;
   pageExtensions: string[];
   resolveExtensions: string[] | null;
   serverResolveExtensions: string[] | null;
@@ -2380,6 +2383,11 @@ export async function resolveNextConfig(
     console.warn(`[vinext] Unknown output mode "${output}", ignoring`);
   }
 
+  const distDir = readOptionalString(config.distDir);
+  if (output === "export" && distDir !== undefined && !distDir.trim()) {
+    throw new Error("[vinext] next.config distDir cannot be empty for a static export.");
+  }
+
   const pageExtensions = normalizePageExtensions(config.pageExtensions);
   const experimentalTurbo = readOptionalRecord(experimental?.turbo);
   const turbopack = readOptionalRecord(config.turbopack);
@@ -2457,6 +2465,7 @@ export async function resolveNextConfig(
         ? { tsconfigPath: config.typescript.tsconfigPath }
         : {},
     output: output === "export" || output === "standalone" ? output : "",
+    distDir,
     pageExtensions,
     resolveExtensions: resolveExtensions ?? webpackProbe.resolveExtensions,
     serverResolveExtensions: resolveExtensions ?? webpackProbe.serverResolveExtensions,

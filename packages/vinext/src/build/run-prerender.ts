@@ -248,6 +248,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
           options.routeRootConfig?.clientOutDir ?? path.join(buildOutDir, "client"),
         )
       : path.join(manifestDir, "prerendered-routes");
+  const clientDir = mode === "export" ? outDir : undefined;
 
   // For hybrid builds (both app/ and pages/ present), start a single shared
   // prod server and pass it to both phases. This avoids spinning up two servers
@@ -265,6 +266,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       // The App Router bundle (dist/server/index.js) handles both App Router and
       // Pages Router routes in a hybrid build, so we only need one server.
       sharedProdServer = await startPrerenderProdServer(buildOutDir, {
+        clientDir,
         rscEntryPath: rscBundlePath,
         serverDir,
       });
@@ -288,6 +290,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         routes,
         metadataRoutes,
         outDir,
+        clientDir,
         skipManifest: true,
         config,
         concurrency: options.concurrency,
@@ -325,6 +328,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         apiRoutes,
         pagesDir,
         outDir,
+        clientDir,
         skipManifest: true,
         config,
         concurrency: options.concurrency,

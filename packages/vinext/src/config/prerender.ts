@@ -1,6 +1,11 @@
+import path from "pathslash";
 import type { PluginOption } from "vite";
+import { assertClientOutDirIsSeparate } from "../build/client-build-config.js";
+import { assertOutputDirIsSafe } from "../build/clean-output.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
+import { findDir } from "../utils/project.js";
 import { isUnknownRecord } from "../utils/record.js";
+import type { ResolvedNextConfig } from "./next-config.js";
 export {
   findVinextCacheConfigInPlugins,
   isConfiguredCdnResponsePolicyHeader,
@@ -56,6 +61,42 @@ export type VinextRouteRootConfig = {
   rscOutDir?: string;
   ssrOutDir?: string;
 };
+
+export function resolveStaticExportDistDir(
+  root: string,
+  { output, distDir }: Pick<ResolvedNextConfig, "output" | "distDir">,
+): string | undefined {
+  return output === "export" && distDir && distDir !== ".next"
+    ? path.resolve(root, distDir)
+    : undefined;
+}
+
+/** Validate an export destination inferred without running the Vite build hooks. */
+export function resolvePrebuiltStaticExportClientDir(options: {
+  projectRoot: string;
+  configRoot: string;
+  nextConfig: ResolvedNextConfig;
+  routeRootConfig: VinextRouteRootConfig;
+  publicDir?: string | false;
+}): string | undefined {
+  const { projectRoot, configRoot, nextConfig, routeRootConfig, publicDir = "public" } = options;
+  const clientOutDir = resolveStaticExportDistDir(configRoot, nextConfig);
+  if (clientOutDir === undefined) return;
+
+  assertClientOutDirIsSeparate(configRoot, { ...routeRootConfig, clientOutDir });
+  for (const root of new Set([projectRoot, configRoot])) {
+    const sourceRoot = path.resolve(root, routeRootConfig.appDir ?? ".");
+    assertOutputDirIsSafe("client output directory", clientOutDir, {
+      root,
+      protectedDirs: {
+        app: findDir(sourceRoot, "app", "src/app"),
+        pages: findDir(sourceRoot, "pages", "src/pages"),
+        public: publicDir && path.resolve(root, publicDir),
+      },
+    });
+  }
+  return clientOutDir;
+}
 
 type VinextPrerenderConfigPlugin = {
   [VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY]?: ResolvedVinextPrerenderConfig | null;

@@ -69,6 +69,7 @@ import {
   resolvePrerenderPoolSize,
   startPrerenderProdServer,
   startPrerenderServerPool,
+  type PrerenderServerOptions,
   type PrerenderProdServer,
   type PrerenderServerPool,
 } from "./prerender-server-pool.js";
@@ -111,11 +112,10 @@ function getErrorMessageWithStack(err: Error): string {
 async function startOptionalPrerenderServerPool(
   outDir: string,
   poolSize: number,
-  rscEntryPath?: string,
-  serverDir?: string,
+  options: PrerenderServerOptions,
 ): Promise<PrerenderServerPool | null> {
   try {
-    return await startPrerenderServerPool(outDir, poolSize, { rscEntryPath, serverDir });
+    return await startPrerenderServerPool(outDir, poolSize, options);
   } catch (e) {
     // The pool is a performance optimization layered over the already-running
     // single prerender server. Startup failure is still before any route has
@@ -243,6 +243,8 @@ type PrerenderOptions = {
   mode: "default" | "export";
   /** Output directory for generated HTML/RSC files. */
   outDir: string;
+  /** Root of the built client assets used by the prerender server. */
+  clientDir?: string;
   /**
    * Directory where `vinext-prerender.json` is written.
    * Defaults to `outDir` when omitted.
@@ -898,6 +900,7 @@ export async function prerenderPages({
       ownedProdServerHandle = await startPrerenderProdServer(
         path.dirname(path.dirname(pagesBundlePath!)),
         {
+          clientDir: options.clientDir,
           serverDir: path.dirname(pagesBundlePath!),
           serverEntryPath: pagesBundlePath,
         },
@@ -1191,12 +1194,10 @@ export async function prerenderPages({
       const poolSize = resolvePrerenderPoolSize(pagesToRender.length, concurrency);
       if (poolSize > 1) {
         const poolOutDir = path.dirname(path.dirname(pagesBundlePath));
-        renderPool = await startOptionalPrerenderServerPool(
-          poolOutDir,
-          poolSize,
-          undefined,
-          path.dirname(pagesBundlePath),
-        );
+        renderPool = await startOptionalPrerenderServerPool(poolOutDir, poolSize, {
+          clientDir: options.clientDir,
+          serverDir: path.dirname(pagesBundlePath),
+        });
         if (renderPool) renderPorts = renderPool.ports;
       }
     }
@@ -1508,6 +1509,7 @@ export async function prerenderApp({
       prodServer = options._prodServer;
     } else {
       ownedProdServerHandle = await startPrerenderProdServer(buildOutDir, {
+        clientDir: options.clientDir,
         rscEntryPath: rscBundlePath,
         serverDir,
       });
@@ -2246,12 +2248,11 @@ export async function prerenderApp({
     if (!options._prodServer && prerenderPoolAvailable()) {
       const poolSize = resolvePrerenderPoolSize(urlsToRender.length, concurrency);
       if (poolSize > 1) {
-        renderPool = await startOptionalPrerenderServerPool(
-          buildOutDir,
-          poolSize,
-          rscBundlePath,
+        renderPool = await startOptionalPrerenderServerPool(buildOutDir, poolSize, {
+          clientDir: options.clientDir,
+          rscEntryPath: rscBundlePath,
           serverDir,
-        );
+        });
         if (renderPool) renderPorts = renderPool.ports;
       }
     }
