@@ -469,6 +469,7 @@ describe("isNextStaticPath", () => {
 async function buildFixtureWithConfig(
   extraConfigJson: string,
   registerCleanup: (cleanup: () => void) => void,
+  prepareFixture?: (fixtureRoot: string) => void,
 ): Promise<{
   fixtureRoot: string;
   outDir: string;
@@ -496,6 +497,7 @@ async function buildFixtureWithConfig(
     `const nextConfig: NextConfig = {\n  ${extraConfigJson}`,
   );
   fs.writeFileSync(nextConfigPath, patched);
+  prepareFixture?.(fixtureRoot);
 
   const outDir = path.join(fixtureRoot, "dist");
 
@@ -752,6 +754,39 @@ describe("assetPrefix end-to-end build", () => {
     } finally {
       server.close();
     }
+  }, 180_000);
+
+  // Next.js: assetPrefix does not apply to files in public/.
+  // https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
+  it("basePath + assetPrefix: CSS urls to public/ files stay under basePath", async () => {
+    const built = await buildFixtureWithConfig(
+      `basePath: "/app",\n  assetPrefix: "https://cdn.example.com",\n  deploymentId: "dpl_123",`,
+      register,
+      (fixtureRoot) => {
+        fs.appendFileSync(
+          path.join(fixtureRoot, "app/nextjs-compat/css-test/global/global.css"),
+          "\n.public-mask {\n  mask: url(/heart-mask.svg);\n}\n",
+        );
+      },
+    );
+
+    const cssUrls: string[] = [];
+    const collect = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) collect(entryPath);
+        else if (entry.isFile() && entry.name.endsWith(".css")) {
+          const css = fs.readFileSync(entryPath, "utf-8");
+          for (const match of css.matchAll(/url\(\s*["']?([^"')]*heart-mask\.svg[^"')]*)/g)) {
+            cssUrls.push(match[1]);
+          }
+        }
+      }
+    };
+    collect(path.join(built.outDir, "client"));
+
+    expect(cssUrls.length).toBeGreaterThan(0);
+    for (const url of cssUrls) expect(url).toBe("/app/heart-mask.svg");
   }, 180_000);
 
   // Ported from Next.js: packages/next/src/server/config.ts:528-531

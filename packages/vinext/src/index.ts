@@ -4262,13 +4262,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? {
                 experimental: {
                   renderBuiltUrl: (filename: string, context) =>
-                    renderVinextBuiltUrl(
-                      filename,
-                      nextConfig.assetPrefix,
-                      nextConfig.deploymentId,
-                      context.hostType,
-                      context.hostId,
-                    ),
+                    // Files in public/ are served from basePath, never from
+                    // assetPrefix (Next.js documents that assetPrefix does
+                    // not affect them). Returning undefined keeps Vite's
+                    // default `base + filename`.
+                    context.type === "public"
+                      ? undefined
+                      : renderVinextBuiltUrl(
+                          filename,
+                          nextConfig.assetPrefix,
+                          nextConfig.deploymentId,
+                          context.hostType,
+                          context.hostId,
+                        ),
                 },
               }
             : {}),
