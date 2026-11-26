@@ -2990,6 +2990,28 @@ describe("routeStaticParamSets", () => {
     ).toThrow('Missing: "b".');
   });
 
+  // Next.js's message for a present undefined required param, which the
+  // discovery endpoints keep through JSON (prerender-static-params-json.ts).
+  it("rejects a required param set to undefined with Next.js's message", () => {
+    expect(() => routeStaticParamSets({ pattern: "/:id" }, [{ id: undefined }])).toThrow(
+      "A required parameter (id) was not provided as a string received undefined in generateStaticParams for /[id]",
+    );
+  });
+
+  // Under partial prerendering Next.js validates an incomplete set up to its
+  // first missing param (build/static-paths/app.ts validateParams).
+  it("validates an incomplete set's params before the missing one under partial prerendering", () => {
+    const route = { pattern: "/:locale/:filterSlugs*" };
+    expect(routeStaticParamSets(route, [{ locale: "en" }], { partialPrerender: true })).toEqual([]);
+    expect(() =>
+      routeStaticParamSets(route, [{ locale: 123 }], { partialPrerender: true }),
+    ).toThrow(
+      "A required parameter (locale) was not provided as a string received number in generateStaticParams for /[locale]/[[...filterSlugs]]",
+    );
+    // Without partial prerendering an incomplete set is never validated.
+    expect(routeStaticParamSets(route, [{ locale: 123 }])).toEqual([]);
+  });
+
   it("rejects a set whose value does not fit its segment", () => {
     expect(() => routeStaticParamSets({ pattern: "/:id" }, [{ id: 1 }])).toThrow(
       "A required parameter (id) was not provided as a string received number in generateStaticParams for /[id]",

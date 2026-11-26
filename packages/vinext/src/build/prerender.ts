@@ -23,6 +23,10 @@ import type { Route } from "../routing/pages-router.js";
 import { appRouteLayoutStaticParamsGroups, type AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
+import {
+  staticParamsFromJson,
+  staticPathsFromJson,
+} from "../server/prerender-static-params-json.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
@@ -707,6 +711,7 @@ export function validateDiscoveredParams(
   value: unknown,
   pattern: string,
   source: "generateStaticParams" | "getStaticPaths",
+  options: { partialPrerender?: boolean } = {},
 ): Record<string, string | string[]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new InvalidStaticParamsError(`${source} must return parameter objects for ${pattern}.`);
@@ -724,6 +729,9 @@ export function validateDiscoveredParams(
       paramValue = [];
       params[name] = paramValue;
     }
+    // Under partial prerendering the params after a missing one are left to
+    // a fallback shell, so Next.js checks only those before it.
+    if (!paramValue && options.partialPrerender) break;
     if (repeat ? !Array.isArray(paramValue) : typeof paramValue !== "string") {
       // Next.js's message (build/static-paths/app.ts and pages.ts validateParams).
       throw new InvalidStaticParamsError(
@@ -759,7 +767,7 @@ export function validateDiscoveredParams(
 export function routeStaticParamSets(
   route: Pick<AppRoute, "pattern">,
   paramSets: readonly unknown[],
-  options: { staticExport?: boolean } = {},
+  options: { partialPrerender?: boolean; staticExport?: boolean } = {},
 ): Record<string, string | string[]>[] {
   const patternParams = getDynamicPatternParams(route.pattern);
   const objects = paramSets.map((value) => {
@@ -778,6 +786,15 @@ export function routeStaticParamSets(
       throw new InvalidStaticParamsError(
         `Page "${route.pattern}" returned incomplete params from "generateStaticParams()". With "output: export", every params object must include all dynamic route parameters. Missing: ${missingParamNames.map((name) => `"${name}"`).join(", ")}. See more info here: https://nextjs.org/docs/messages/generate-static-params`,
       );
+    }
+    // Under partial prerendering Next.js still validates each set up to its
+    // first missing param (build/static-paths/app.ts buildAppStaticPaths).
+    if (options.partialPrerender) {
+      for (const value of objects) {
+        validateDiscoveredParams(value, route.pattern, "generateStaticParams", {
+          partialPrerender: true,
+        });
+      }
     }
     return [];
   }
@@ -1009,7 +1026,7 @@ export async function prerenderPages({
                 return { paths: [], fallback: false };
               }
               if (res.status === 204 || text === "null") return { paths: [], fallback: false };
-              return JSON.parse(text) as {
+              return staticPathsFromJson(JSON.parse(text)) as {
                 paths: Array<StaticPathsEntry>;
                 fallback: unknown;
               };
@@ -1615,7 +1632,7 @@ export async function prerenderApp({
               return null;
             }
             if (res.status === 204 || text === "null") return null;
-            return JSON.parse(text) as Record<string, string | string[]>[];
+            return staticParamsFromJson(JSON.parse(text)) as Record<string, string | string[]>[];
           })();
           // Only cache on success — a rejected or error promise must not poison
           // subsequent lookups for the same route/params combo.
@@ -1758,6 +1775,7 @@ export async function prerenderApp({
             // against the route before building its URL.
             if (paramSets !== null) {
               paramSets = routeStaticParamSets(route, paramSets, {
+                partialPrerender: config.cacheComponents === true,
                 staticExport: mode === "export",
               });
             }
@@ -1772,6 +1790,7 @@ export async function prerenderApp({
               results === null
                 ? null
                 : routeStaticParamSets(route, Array.isArray(results) ? results : [], {
+                    partialPrerender: config.cacheComponents === true,
                     staticExport: mode === "export",
                   });
           }

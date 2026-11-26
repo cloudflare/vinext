@@ -134,7 +134,7 @@ import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 import { readStaticFileSignal } from "./static-file-signal.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
 import { shouldRestoreLocaleRootTrailingSlash } from "./pages-i18n.js";
-import { staticPathsForJson } from "./prerender-static-params-json.js";
+import { staticPathsToJson } from "./prerender-static-params-json.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -2630,7 +2630,7 @@ async function createPagesRouterRequestHandler(
       try {
         const result = await fn({ locales, defaultLocale });
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(staticPathsForJson(result)));
+        res.end(JSON.stringify(staticPathsToJson(result)));
       } catch (e) {
         res.writeHead(500);
         res.end((e as Error).message);

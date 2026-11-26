@@ -54,6 +54,10 @@ import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/con
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import {
+  staticParamsFromJson,
+  staticPathsFromJson,
+} from "../server/prerender-static-params-json.js";
+import {
   normalizeNextDataPagePathname,
   shouldAddTrailingSlashToPagesDataPath,
 } from "../server/pages-data-route.js";
@@ -597,7 +601,10 @@ async function collectPagesPaths(options: {
         continue;
       }
 
-      const pathsResult = validatePagesStaticPathsResult(JSON.parse(text), route.pattern);
+      const pathsResult = validatePagesStaticPathsResult(
+        staticPathsFromJson(JSON.parse(text)),
+        route.pattern,
+      );
       if (pathsResult.fallback !== false) {
         fallbackRoutePatterns.push({ kind: "pages-page", pattern: route.pattern });
       }
@@ -780,7 +787,7 @@ async function collectAppPaths(options: {
               options.retryOptions,
             );
             if (text === null) return null;
-            const value = JSON.parse(text) as unknown;
+            const value = staticParamsFromJson(JSON.parse(text));
             if (!Array.isArray(value)) {
               throw new Error(`generateStaticParams must return an array for ${pattern}.`);
             }
@@ -889,13 +896,19 @@ async function collectAppPaths(options: {
             }
           }
         }
-        if (paramSets !== null) paramSets = routeStaticParamSets(route, paramSets);
+        if (paramSets !== null) {
+          paramSets = routeStaticParamSets(route, paramSets, {
+            partialPrerender: options.cacheComponents && !isRouteHandler,
+          });
+        }
       } else {
         const results = await generateStaticParams({ params: {} });
         paramSets =
           results === null
             ? null
-            : routeStaticParamSets(route, Array.isArray(results) ? results : []);
+            : routeStaticParamSets(route, Array.isArray(results) ? results : [], {
+                partialPrerender: options.cacheComponents && !isRouteHandler,
+              });
       }
 
       if (!paramSets?.length) {
@@ -1045,7 +1058,8 @@ async function collectMetadataRoutePaths(options: {
         if (!Array.isArray(entry.staticParams)) {
           throw new Error(`generateStaticParams must return an array for ${routePattern}.`);
         }
-        for (const params of routeStaticParamSets({ pattern: routePattern }, entry.staticParams)) {
+        const staticParams = staticParamsFromJson(entry.staticParams) as unknown[];
+        for (const params of routeStaticParamSets({ pattern: routePattern }, staticParams)) {
           addMetadataPath(buildUrlFromParams(routePattern, params), route);
         }
         continue;

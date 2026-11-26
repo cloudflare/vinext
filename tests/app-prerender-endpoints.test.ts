@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
+import {
+  staticParamsFromJson,
+  staticPathsFromJson,
+} from "../packages/vinext/src/server/prerender-static-params-json.js";
 import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 
 type TestPageRoute = {
@@ -344,7 +348,7 @@ describe("App prerender endpoint helpers", () => {
   // Next.js reads a present undefined optional catch-all as the root path but
   // a missing one as not provided (build/static-paths/pages.ts and app.ts
   // validateParams), so JSON must not drop the key.
-  it("sends a present undefined param as null and leaves a missing one out", async () => {
+  it("keeps a present undefined param through JSON and leaves a missing one out", async () => {
     const pageRoutes: TestPageRoute[] = [
       {
         module: {
@@ -365,10 +369,15 @@ describe("App prerender endpoint helpers", () => {
         staticParamsMap: {},
       },
     );
-    await expect(pagesResponse?.json()).resolves.toEqual({
+    const pagesResult = staticPathsFromJson(await pagesResponse?.json()) as {
+      paths: [string, { params: object }, { params: object }];
+    };
+    expect(pagesResult).toEqual({
       fallback: false,
-      paths: ["/posts", { params: { slug: null }, locale: "fr" }, { params: {} }],
+      paths: ["/posts", { params: { slug: undefined }, locale: "fr" }, { params: {} }],
     });
+    expect(pagesResult.paths[1].params).toHaveProperty("slug");
+    expect(pagesResult.paths[2].params).not.toHaveProperty("slug");
 
     const appResponse = await handleAppPrerenderEndpoint(
       new Request("http://localhost/__vinext/prerender/static-params?pattern=/:locale/:slug*"),
@@ -380,10 +389,10 @@ describe("App prerender endpoint helpers", () => {
         },
       },
     );
-    await expect(appResponse?.json()).resolves.toEqual([
-      { locale: "en", slug: null },
-      { locale: "fr" },
-    ]);
+    const appResult = staticParamsFromJson(await appResponse?.json()) as object[];
+    expect(appResult).toEqual([{ locale: "en", slug: undefined }, { locale: "fr" }]);
+    expect(appResult[0]).toHaveProperty("slug");
+    expect(appResult[1]).not.toHaveProperty("slug");
   });
 
   it("returns no content when the requested prerender function is absent", async () => {
