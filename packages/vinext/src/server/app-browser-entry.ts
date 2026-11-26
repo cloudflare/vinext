@@ -2126,7 +2126,7 @@ async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
   // Fetch the RouteManifest chunk alongside bootstrap and hydration rather than
   // in the entry chunk. Navigations and prefetches wait for it before reading it.
-  const routeManifestLoad = loadNavigationRuntimeRouteManifest();
+  void loadNavigationRuntimeRouteManifest();
 
   if (hasServerActions) registerServerActionCallback();
   installAppNavigationFailureListeners();
@@ -2154,13 +2154,6 @@ async function main(): Promise<void> {
   // The recovery path reloads the document, which resets the "starting" claim;
   // this module instance is intentionally not eligible to retry bootstrap.
   if (rscStream === null) return;
-  // experimental.instrumentationClientRouterTransitionEvents: a transition
-  // reports the committed tree's slot and interception routes from the
-  // manifest, synchronously as it starts, so the manifest loads before
-  // hydration makes anything able to navigate.
-  if (process.env.__NEXT_INSTRUMENTATION_CLIENT_ROUTER_TRANSITION_EVENTS) {
-    await routeManifestLoad;
-  }
   bootstrapHydration(rscStream, devErrorOverlay, initialRscBootstrap);
 }
 

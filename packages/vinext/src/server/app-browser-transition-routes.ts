@@ -109,6 +109,9 @@ function resolveSlotSourcePath(
  * `.../default`, an intercepted slot reports the intercepting page's
  * directory, and a URL that matched no route reports `/_not-found`.
  *
+ * The route manifest loads alongside hydration, not before it. A transition
+ * that starts before it arrives reports an active slot as its slot directory.
+ *
  * Ref: packages/next/src/client/components/router-transition.ts
  * (getActiveRoutePaths)
  */
