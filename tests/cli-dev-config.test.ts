@@ -52,7 +52,10 @@ describe("createDevServerLifecyclePlugin", () => {
         configFile: false,
         plugins: [
           lateUserConfigPlugin,
-          createDevServerLifecyclePlugin({ hostname: "127.0.0.1", port: 4000 }, () => true),
+          createDevServerLifecyclePlugin(
+            { hostname: "127.0.0.1", port: 4000, devLock: true },
+            () => true,
+          ),
         ],
       },
       "serve",
