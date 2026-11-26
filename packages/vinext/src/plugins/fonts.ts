@@ -593,7 +593,9 @@ async function downloadGoogleFont(
  *
  * String literals (single-quoted, double-quoted, and backtick template
  * literals including `${...}` interpolations) are fully skipped so that brace
- * characters inside string values do not affect the depth count.
+ * characters inside string values do not affect the depth count. Line and
+ * block comments are skipped too: an apostrophe in a comment (`// the font's
+ * fallback`) must not open a string that swallows the rest of the object.
  */
 export function _findBalancedObject(code: string, searchStart: number): [number, number] | null {
   let i = searchStart;
@@ -609,7 +611,16 @@ export function _findBalancedObject(code: string, searchStart: number): [number,
   let depth = 0;
   while (i < code.length) {
     const ch = code[i];
-    if (ch === '"' || ch === "'") {
+    if (ch === "/" && code[i + 1] === "/") {
+      // Skip a line comment up to (not including) the newline.
+      i += 2;
+      while (i < code.length && code[i] !== "\n" && code[i] !== "\r") i++;
+    } else if (ch === "/" && code[i + 1] === "*") {
+      // Skip a block comment. An unterminated one leaves the object unbalanced.
+      const close = code.indexOf("*/", i + 2);
+      if (close === -1) return null;
+      i = close + 2;
+    } else if (ch === '"' || ch === "'") {
       // Skip a single- or double-quoted string literal, respecting backslash escapes.
       const quote = ch;
       i++;

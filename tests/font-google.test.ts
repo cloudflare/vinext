@@ -1084,6 +1084,36 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
+  it("self-hosts font calls whose option comments contain quotes or braces", async () => {
+    // Regression: an apostrophe in a comment opened a "string" that ran past the
+    // closing brace, so the call fell back to a fonts.googleapis.com <link>.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-comment-quotes");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  // the font's fallback }`,
+        `  subsets: ["latin"],`,
+        `  /* next/font's { default */`,
+        `  display: 'swap',`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      expect(result.code).not.toMatch(/,\s*,/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("self-hosts font calls with nested-brace options (e.g. axes: { wght: 400 })", async () => {
     // Regression: namedCallRe used \{[^}]*\} which stopped at the first '}'
     // inside a nested object, so calls with nested braces were silently skipped.
