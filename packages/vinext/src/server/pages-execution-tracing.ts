@@ -105,3 +105,35 @@ export function createFindPageComponentsSpanDescriptor(routePattern: string) {
 export function traceFindPageComponents<T>(routePattern: string, callback: () => T): T {
   return frameworkTracer.trace(createFindPageComponentsSpanDescriptor(routePattern), callback);
 }
+
+// Next.js 16.4 traces loading the page's own module inside
+// `findPageComponents` (`loadRouteModule` in server/load-components.ts) and
+// the route module's request preparation (`RouteModule.prepare` in
+// server/route-modules/route-module.ts) on every request.
+const LOAD_ROUTE_MODULE_SPAN = {
+  name: "load route module",
+  type: "LoadComponents.loadRouteModule",
+} as const;
+
+const PREPARE_ROUTE_MODULE_SPAN = {
+  name: "prepare route module",
+  type: "RouteModule.prepare",
+} as const;
+
+export function createLoadRouteModuleSpanDescriptor() {
+  return LOAD_ROUTE_MODULE_SPAN;
+}
+
+export function createPrepareRouteModuleSpanDescriptor() {
+  return PREPARE_ROUTE_MODULE_SPAN;
+}
+
+/** Resolve the page's own module, beneath its `findPageComponents` span. */
+export function traceLoadRouteModule<T>(callback: () => T): T {
+  return frameworkTracer.trace(LOAD_ROUTE_MODULE_SPAN, callback);
+}
+
+/** Set up the matched route's request context (pathname, query, params). */
+export function tracePrepareRouteModule<T>(callback: () => T): T {
+  return frameworkTracer.trace(PREPARE_ROUTE_MODULE_SPAN, callback);
+}

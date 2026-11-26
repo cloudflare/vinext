@@ -651,6 +651,98 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  it("traces App route module loading and preparation like Next.js", async () => {
+    const handler = createHandler({ ensureRouteLoaded: vi.fn() });
+    capturedNotFoundSpans.length = 0;
+    captureNotFoundSpans = true;
+    try {
+      const response = await handler(new Request("https://example.test/docs/about"), null, false);
+      expect(response.status).toBe(200);
+      await response.text();
+    } finally {
+      captureNotFoundSpans = false;
+      activeCapturedSpan = undefined;
+    }
+
+    expect(
+      capturedNotFoundSpans
+        .filter(({ descriptor }) =>
+          [
+            "LoadComponents.loadRouteModule",
+            "NextNodeServer.findPageComponents",
+            "RouteModule.prepare",
+          ].includes(descriptor.type),
+        )
+        .map(({ descriptor, parentType }) => [descriptor.name, descriptor.type, parentType]),
+    ).toEqual([
+      ["resolve page components", "NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+      ["load route module", "LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["prepare route module", "RouteModule.prepare", "BaseServer.handleRequest"],
+    ]);
+  });
+
+  it("traces App route module loading and preparation in the split response stage", async () => {
+    const handler = createHandler({ ensureRouteLoaded: vi.fn() });
+    capturedNotFoundSpans.length = 0;
+    captureNotFoundSpans = true;
+    try {
+      const response = await handler.handleResponseStage(
+        new Request("https://example.test/docs/about"),
+        null,
+        {
+          kind: "app-page",
+          buildId: "build-id",
+          cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
+          bypassInterceptionContextCache: false,
+          cachePathname: "/about",
+          canUseCanonicalLoadingShell: false,
+          canonicalPathname: "/about",
+          cleanPathname: "/about",
+          draftModeCookie: null,
+          interceptionContext: null,
+          interceptionId: null,
+          isRscRequest: false,
+          matchKind: "resolved",
+          middlewareCookieOverlay: null,
+          mountedSlotsHeader: null,
+          params: {},
+          protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+          requestOrigin: "https://example.test",
+          renderMode: "navigation",
+          resolvedUrl: "/about",
+          routePattern: "/about",
+          routePathname: "/about",
+          scriptNonce: null,
+        },
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    } finally {
+      captureNotFoundSpans = false;
+      activeCapturedSpan = undefined;
+    }
+
+    // The split stage runs beneath the request span of the stage that
+    // dispatched it, so its spans have no parent here.
+    expect(
+      capturedNotFoundSpans
+        .filter(({ descriptor }) =>
+          [
+            "LoadComponents.loadRouteModule",
+            "NextNodeServer.findPageComponents",
+            "RouteModule.prepare",
+          ].includes(descriptor.type),
+        )
+        .map(({ descriptor, parentType }) => [descriptor.type, parentType]),
+    ).toEqual([
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", undefined],
+    ]);
+  });
+
   it("establishes the Cache Components request work unit in the split response stage", async () => {
     let workUnitType: string | undefined;
     const handler = createHandler({

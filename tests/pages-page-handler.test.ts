@@ -46,6 +46,7 @@ import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -173,6 +174,57 @@ describe("shouldEmitPagesClientTraceMetadata", () => {
     const app = Object.assign(() => null, { getInitialProps: async () => ({}) });
     expect(shouldEmitPagesClientTraceMetadata(makePageModule({ default: page }), null)).toBe(true);
     expect(shouldEmitPagesClientTraceMetadata(makePageModule(), app)).toBe(true);
+  });
+});
+
+let captureRouteModuleSpans = false;
+const capturedRouteModuleSpans: Array<[string, string | undefined]> = [];
+let activeRouteModuleSpanType: string | undefined;
+registerFrameworkTracingIntegration({
+  id: "pages-page-handler-route-module-test",
+  enterSpan(descriptor, callback) {
+    if (!captureRouteModuleSpans) return callback({ setAttribute() {} });
+    const parentType = activeRouteModuleSpanType;
+    capturedRouteModuleSpans.push([descriptor.type, parentType]);
+    activeRouteModuleSpanType = descriptor.type;
+    try {
+      return callback({ setAttribute() {} });
+    } finally {
+      activeRouteModuleSpanType = parentType;
+    }
+  },
+});
+
+describe("createPagesPageHandler — route module spans", () => {
+  // Ported from Next.js: test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  it("traces loading the page module and preparing the route like Next.js", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [makeRoute("/", makePageModule())] }),
+    );
+    capturedRouteModuleSpans.length = 0;
+    captureRouteModuleSpans = true;
+    try {
+      const response = await handler(makeRequest(), "/", null, null, null);
+      expect(response.status).toBe(200);
+      await response.text();
+    } finally {
+      captureRouteModuleSpans = false;
+    }
+
+    expect(
+      capturedRouteModuleSpans.filter(([type]) =>
+        [
+          "LoadComponents.loadRouteModule",
+          "NextNodeServer.findPageComponents",
+          "RouteModule.prepare",
+        ].includes(type),
+      ),
+    ).toEqual([
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", undefined],
+    ]);
   });
 });
 

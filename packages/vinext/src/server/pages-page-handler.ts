@@ -38,7 +38,12 @@ import {
   applyPagesPrerenderRevalidateHeader,
   renderPagesPageResponse,
 } from "./pages-page-response.js";
-import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
+import {
+  tracePagesDocumentStream,
+  traceFindPageComponents,
+  traceLoadRouteModule,
+  tracePrepareRouteModule,
+} from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
@@ -698,7 +703,9 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
-    const pageModule = traceFindPageComponents(route.pattern, () => route.module);
+    const pageModule = traceFindPageComponents(route.pattern, () =>
+      traceLoadRouteModule(() => route.module),
+    );
     const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
     const pagesReadiness = buildPagesReadinessNextData({
       pageModule,
@@ -925,10 +932,12 @@ export function createPagesPageHandler(
           }
         }
 
-        applySSRContext({
-          isPreview: previewData !== false,
-          nextData: pagesNextData,
-        });
+        tracePrepareRouteModule(() =>
+          applySSRContext({
+            isPreview: previewData !== false,
+            nextData: pagesNextData,
+          }),
+        );
 
         const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {

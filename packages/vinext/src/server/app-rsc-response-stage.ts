@@ -43,7 +43,11 @@ import { traceAppPageRender } from "./app-page-tracing.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { stripInheritedResponseStageCookies } from "./response-stage-policy.js";
-import { traceFindPageComponents } from "./pages-execution-tracing.js";
+import {
+  traceFindPageComponents,
+  traceLoadRouteModule,
+  tracePrepareRouteModule,
+} from "./pages-execution-tracing.js";
 import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import {
   cloneRequestWithHeaders,
@@ -217,7 +221,9 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   const route = match?.route ?? null;
   if (route) {
     if (options.ensureRouteLoaded) {
-      await traceFindPageComponents(route.pattern, () => options.ensureRouteLoaded!(route));
+      await traceFindPageComponents(route.pattern, () =>
+        traceLoadRouteModule(() => options.ensureRouteLoaded!(route)),
+      );
     }
     if (
       (props.kind === "app-page" && route.routeHandler) ||
@@ -361,13 +367,16 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
         }
         const searchParams = new URL(props.resolvedUrl, request.url).searchParams;
         const renderParams = props.params;
-        options.setNavigationContext({
-          pathname: props.canonicalPathname,
-          searchParams,
-          params: renderParams,
+        const rootParams = tracePrepareRouteModule(() => {
+          options.setNavigationContext({
+            pathname: props.canonicalPathname,
+            searchParams,
+            params: renderParams,
+          });
+          const matchedRootParams = pickRootParams(renderParams, route.rootParamNames);
+          setRootParams(matchedRootParams);
+          return matchedRootParams;
         });
-        const rootParams = pickRootParams(renderParams, route.rootParamNames);
-        setRootParams(rootParams);
 
         if (props.kind === "app-route-handler") {
           setCurrentFetchSoftTags(

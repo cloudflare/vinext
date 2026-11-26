@@ -106,6 +106,8 @@ import {
   tracePagesDocument,
   tracePagesDocumentStream,
   traceFindPageComponents,
+  traceLoadRouteModule,
+  tracePrepareRouteModule,
 } from "./pages-execution-tracing.js";
 import { logRequestError } from "./request-error-log.js";
 import type { FontOwners } from "vinext/shims/font-utils";
@@ -924,7 +926,9 @@ export function createSSRHandler(
         // beneath one findPageComponents span before data methods run.
         const { pageModule, AppComponent, appFilePath, DocumentComponent } =
           await traceFindPageComponents(route.pattern, async () => {
-            const pageModule = await importModule(runner, route.filePath);
+            const pageModule = await traceLoadRouteModule(() =>
+              importModule(runner, route.filePath),
+            );
             const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
             const appModule = appFilePath ? await importModule(runner, appFilePath) : null;
             const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
@@ -990,20 +994,22 @@ export function createSSRHandler(
                 pagesNextData,
               )
             : true;
-        if (typeof routerShim.setSSRContext === "function") {
-          routerShim.setSSRContext({
-            pathname: patternToNextFormat(route.pattern),
-            query,
-            asPath: requestAsPath,
-            navigationIsReady,
-            nextData: pagesNextData,
-            locale: locale ?? currentDefaultLocale,
-            locales: i18nConfig?.locales,
-            defaultLocale: currentDefaultLocale,
-            domainLocales,
-            isPreview: requestPreviewData !== false,
-          });
-        }
+        tracePrepareRouteModule(() => {
+          if (typeof routerShim.setSSRContext === "function") {
+            routerShim.setSSRContext({
+              pathname: patternToNextFormat(route.pattern),
+              query,
+              asPath: requestAsPath,
+              navigationIsReady,
+              nextData: pagesNextData,
+              locale: locale ?? currentDefaultLocale,
+              locales: i18nConfig?.locales,
+              defaultLocale: currentDefaultLocale,
+              domainLocales,
+              isPreview: requestPreviewData !== false,
+            });
+          }
+        });
         // Mark end of compile phase: everything from here is rendering.
         _compileEnd = now();
 
@@ -1951,7 +1957,9 @@ async function renderErrorPage(
       const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
       const { errorModule, AppComponent, appAssetPath, DocumentComponent } =
         await traceFindPageComponents(errorPage, async () => {
-          const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
+          const errorModule = await traceLoadRouteModule(() =>
+            importModule(runner, errorAssetPath ?? "next/error"),
+          );
           const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
           const appModule = appAssetPath ? await importModule(runner, appAssetPath) : null;
           const docFilePath = findFileWithExts(pagesDir, "_document", matcher);

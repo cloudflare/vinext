@@ -11,7 +11,11 @@ import {
   normalizePathnameForRouteMatchStrict,
 } from "../routing/utils.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
-import { traceFindPageComponents } from "./pages-execution-tracing.js";
+import {
+  traceFindPageComponents,
+  traceLoadRouteModule,
+  tracePrepareRouteModule,
+} from "./pages-execution-tracing.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
   getActiveDraftModeState,
@@ -3244,7 +3248,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
     // branch and any downstream synchronous module reads.
     if (options.ensureRouteLoaded) {
-      await traceFindPageComponents(route.pattern, () => options.ensureRouteLoaded!(route));
+      await traceFindPageComponents(route.pattern, () =>
+        traceLoadRouteModule(() => options.ensureRouteLoaded!(route)),
+      );
     }
     const resolvedSearchParams = getResolvedSearchParams();
     const isRouteTreePrefetch = isRouteTreePrefetchRequest(request) && !route.routeHandler;
@@ -3319,13 +3325,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         params,
       );
     }
-    options.setNavigationContext({
-      pathname: canonicalPathname,
-      searchParams: resolvedSearchParams,
-      params: renderParams,
+    const rootParams = tracePrepareRouteModule(() => {
+      options.setNavigationContext({
+        pathname: canonicalPathname,
+        searchParams: resolvedSearchParams,
+        params: renderParams,
+      });
+      const matchedRootParams = pickRootParams(renderParams, route.rootParamNames);
+      setRootParams(matchedRootParams);
+      return matchedRootParams;
     });
-    const rootParams = pickRootParams(renderParams, route.rootParamNames);
-    setRootParams(rootParams);
 
     if (route.routeHandler) {
       // Next.js edge route handlers run through web/adapter.ts, which strips

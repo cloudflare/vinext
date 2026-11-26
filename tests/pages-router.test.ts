@@ -1352,6 +1352,35 @@ describe("Pages Router integration", () => {
     ).toEqual(["/gssp-throw", "/_error"]);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  it("traces loading the page module and preparing the route in dev", async () => {
+    capturedFrameworkSpans.length = 0;
+    captureFrameworkSpans = true;
+    try {
+      const res = await fetch(`${baseUrl}/posts/42`);
+      expect(res.status).toBe(200);
+      await res.text();
+    } finally {
+      captureFrameworkSpans = false;
+    }
+    expect(
+      capturedFrameworkSpans
+        .map(({ type }) => type)
+        .filter((type) =>
+          [
+            "LoadComponents.loadRouteModule",
+            "NextNodeServer.findPageComponents",
+            "RouteModule.prepare",
+          ].includes(type),
+        ),
+    ).toEqual([
+      "NextNodeServer.findPageComponents",
+      "LoadComponents.loadRouteModule",
+      "RouteModule.prepare",
+    ]);
+  });
+
   it("renders dynamic routes with params", async () => {
     const res = await fetch(`${baseUrl}/posts/42`);
     expect(res.status).toBe(200);
