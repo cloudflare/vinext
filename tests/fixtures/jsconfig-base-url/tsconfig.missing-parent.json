@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.not-created.json",
+  "compilerOptions": {
+    "baseUrl": "."
+  }
+}

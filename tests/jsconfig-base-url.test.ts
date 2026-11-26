@@ -12,7 +12,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import { afterAll, describe, expect, it, vi } from "vite-plus/test";
+import { loadTsconfigBaseUrl } from "../packages/vinext/src/config/tsconfig-paths.js";
 import { createTsconfigBaseUrlPlugin } from "../packages/vinext/src/plugins/tsconfig-base-url.js";
 import { buildPagesFixture, fetchHtml, startFixtureServer } from "./helpers.js";
 
@@ -85,8 +87,13 @@ describe("jsconfig.json baseUrl", () => {
     expect(entry).not.toContain("Custom base world");
   }, 120_000);
 
-  // Like Vite's own tsconfig.json handling, a dev server picks up a baseUrl
-  // edit without a restart.
+  // A missing relative parent is watched too, so creating it restarts dev.
+  it("watches a missing relative extends parent", () => {
+    const { watchFiles } = loadTsconfigBaseUrl(FIXTURE, "tsconfig.missing-parent.json");
+    expect(watchFiles).toContain(toSlash(path.join(FIXTURE, "tsconfig.not-created.json")));
+  });
+
+  // The dev server restarts on a config edit, re-reading baseUrl.
   it("applies a jsconfig.json baseUrl edit in dev", async () => {
     const jsconfigPath = path.join(FIXTURE, "jsconfig.json");
     const original = fs.readFileSync(jsconfigPath, "utf-8");

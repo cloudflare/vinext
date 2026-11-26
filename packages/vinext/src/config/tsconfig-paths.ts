@@ -35,12 +35,14 @@ type TsconfigPathResolution = {
   baseUrl: string | null;
 };
 
-function resolveTsconfigPathCandidate(candidate: string): string | null {
-  const candidates = candidate.endsWith(".json")
+function tsconfigPathCandidates(candidate: string): string[] {
+  return candidate.endsWith(".json")
     ? [candidate]
     : [candidate, `${candidate}.json`, path.join(candidate, "tsconfig.json")];
+}
 
-  for (const item of candidates) {
+function resolveTsconfigPathCandidate(candidate: string): string | null {
+  for (const item of tsconfigPathCandidates(candidate)) {
     if (fs.existsSync(item) && fs.statSync(item).isFile()) {
       return item;
     }
@@ -65,9 +67,13 @@ function normalizeExtends(extendsField: unknown): string[] {
   return [];
 }
 
+function isRelativeExtends(specifier: string): boolean {
+  return specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\");
+}
+
 function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
   const fromDir = path.dirname(configPath);
-  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
+  if (isRelativeExtends(specifier)) {
     return resolveTsconfigPathCandidate(path.resolve(fromDir, specifier));
   }
 
@@ -125,7 +131,8 @@ function emptyResolution(): TsconfigPathResolution {
 function loadResolutionFromTsconfigFile(
   configPath: string,
   activeConfigs: Set<string>,
-  // Collects every config file read, for watching.
+  // Collects every config file read (and missing relative parents), for
+  // watching.
   readConfigs?: Set<string>,
 ): TsconfigPathResolution {
   // `activeConfigs` holds only the configs on the current `extends` chain, so
@@ -161,6 +168,11 @@ function readResolutionFromTsconfigFile(
 
   for (const extendsSpecifier of extendsList) {
     const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
+    if (!extendedPath && readConfigs && isRelativeExtends(extendsSpecifier)) {
+      // Watch a missing relative parent too, so creating it is picked up.
+      const missing = path.resolve(path.dirname(configPath), extendsSpecifier);
+      for (const candidate of tsconfigPathCandidates(missing)) readConfigs.add(candidate);
+    }
     if (extendedPath) {
       const parent = loadResolutionFromTsconfigFile(extendedPath, activeConfigs, readConfigs);
       resolution = {
@@ -229,7 +241,8 @@ type TsconfigBaseUrlConfig = { configPath: string; baseUrl: string };
 
 export type TsconfigBaseUrlLoad = {
   config: TsconfigBaseUrlConfig | null;
-  // The candidate configs and every config the selected one extends.
+  // The candidate configs and every config the selected one extends, including
+  // missing relative parents.
   watchFiles: string[];
 };
 
