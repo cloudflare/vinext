@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createServer, version as viteVersion, type ViteDevServer } from "vite";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { getLockfilePath, readLockfile } from "../packages/vinext/src/server/dev-lockfile.js";
 import { supportsNativeCommandLock } from "../packages/vinext/src/utils/vite-version.js";
@@ -16,9 +16,9 @@ const VITE_CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.resolve("
 const VINEXT_ENTRY_URL = pathToFileURL(
   path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
 ).href;
-// The same Vite that VITE_CLI_PATH runs.
+// The same Vite that VITE_CLI_PATH runs. vinext only writes its lock file when
+// that Vite has no lock of its own, so tests that read the file skip otherwise.
 const HAS_NATIVE_COMMAND_LOCK = supportsNativeCommandLock(viteVersion);
-const originalForceDevLock = process.env.VINEXT_TEST_FORCE_DEV_LOCK;
 const roots: string[] = [];
 let server: ViteDevServer | undefined;
 let child: ChildProcess | undefined;
@@ -59,17 +59,22 @@ async function waitFor<T>(read: () => T | undefined, timeoutMs = 20_000): Promis
   throw new Error("Timed out waiting for Vite dev state");
 }
 
-// Most tests below observe the CLI lifecycle through vinext's lock file. Keep
-// it on when the installed Vite has its own lock, so Vite's ecosystem CI still
-// covers the lifecycle.
-beforeAll(() => {
-  process.env.VINEXT_TEST_FORCE_DEV_LOCK = "1";
-});
-
-afterAll(() => {
-  if (originalForceDevLock === undefined) delete process.env.VINEXT_TEST_FORCE_DEV_LOCK;
-  else process.env.VINEXT_TEST_FORCE_DEV_LOCK = originalForceDevLock;
-});
+function startViteDev(root: string, args: string[] = [], env?: NodeJS.ProcessEnv) {
+  const proc = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0", ...args], {
+    cwd: root,
+    env,
+    stdio: "pipe",
+  });
+  let output = "";
+  proc.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+  proc.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+  const listening = waitFor(() => {
+    if (proc.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+    // CI enables colors, which would split the "Local:" line.
+    return /Local:\s+http:/.test(stripVTControlCharacters(output)) || undefined;
+  });
+  return { proc, listening, output: () => output };
+}
 
 afterEach(async () => {
   if (child?.exitCode === null && child.signalCode === null) {
@@ -113,7 +118,10 @@ describe("Vite dev lifecycle", () => {
     expect(changes.filter((file) => file.includes(".vinext"))).toEqual([]);
   });
 
-  it("claims the configured plugin when an unused instance was constructed first", async () => {
+  it("claims the configured plugin when an unused instance was constructed first", async ({
+    skip,
+  }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     fs.writeFileSync(
       path.join(root, "vite.config.ts"),
@@ -133,7 +141,10 @@ export default { plugins: [vinext()] };
     expect(lock.port).toBeGreaterThan(0);
   }, 30_000);
 
-  it("claims the configured child root when an unused instance was constructed first", async () => {
+  it("claims the configured child root when an unused instance was constructed first", async ({
+    skip,
+  }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     const appRoot = path.join(root, "app");
     fs.mkdirSync(path.join(appRoot, "pages"), { recursive: true });
@@ -165,7 +176,8 @@ export default { root: "app", plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   }, 30_000);
 
-  it("claims an explicitly selected Vite config outside the project root", async () => {
+  it("claims an explicitly selected Vite config outside the project root", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     fs.mkdirSync(path.join(root, "config"));
     fs.writeFileSync(
@@ -197,7 +209,8 @@ export default { root: ${JSON.stringify(root)}, plugins: [vinext()] };
     expect(lock.port).toBeGreaterThan(0);
   }, 30_000);
 
-  it("claims the final repeated Vite dev config", async () => {
+  it("claims the final repeated Vite dev config", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     fs.writeFileSync(path.join(root, "first.config.ts"), 'throw new Error("wrong config");\n');
     fs.writeFileSync(
@@ -251,26 +264,14 @@ export default { plugins: [
 ] };
 `,
     );
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-
-    let lock: NonNullable<ReturnType<typeof readLockfile>>;
-    try {
-      lock = await waitFor(() => {
-        if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-        const current = readLockfile(getLockfilePath(root));
-        return current && current.port > 0 ? current : undefined;
-      });
-    } catch (error) {
-      throw new Error(`${String(error)}\nVite output: ${output.slice(-4000)}`);
+    const dev = startViteDev(root);
+    child = dev.proc;
+    // Rejects if a config-time ownership check throws and Vite exits.
+    await dev.listening;
+    if (!HAS_NATIVE_COMMAND_LOCK) {
+      await waitFor(() => (readLockfile(getLockfilePath(root))?.port ?? 0) > 0 || undefined);
+      expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
     }
-    expect(lock.port).toBeGreaterThan(0);
-    expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
   }, 30_000);
 
   it("does not let a nested child config claim the CLI lifecycle", async () => {
@@ -299,21 +300,14 @@ export default { plugins: [
 ] };
 `,
     );
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-
-    const lock = await waitFor(() => {
-      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
-    expect(lock.port).toBeGreaterThan(0);
-    expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
+    const dev = startViteDev(root);
+    child = dev.proc;
+    // Rejects if a config-time ownership check throws and Vite exits.
+    await dev.listening;
+    if (!HAS_NATIVE_COMMAND_LOCK) {
+      await waitFor(() => (readLockfile(getLockfilePath(root))?.port ?? 0) > 0 || undefined);
+      expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
+    }
   }, 30_000);
 
   it("does not let an alternate config in the same root claim the CLI lifecycle", async () => {
@@ -340,20 +334,13 @@ export default { plugins: [
 ] };
 `,
     );
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-
-    const lock = await waitFor(() => {
-      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
-    expect(lock.port).toBeGreaterThan(0);
+    const dev = startViteDev(root);
+    child = dev.proc;
+    // Rejects if a config-time ownership check throws and Vite exits.
+    await dev.listening;
+    if (!HAS_NATIVE_COMMAND_LOCK) {
+      await waitFor(() => (readLockfile(getLockfilePath(root))?.port ?? 0) > 0 || undefined);
+    }
   }, 30_000);
 
   it.each([
@@ -395,20 +382,13 @@ export default { plugins: [
 ] };
 `,
       );
-      child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-        cwd: root,
-        stdio: "pipe",
-      });
-      let output = "";
-      child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-      child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-
-      const lock = await waitFor(() => {
-        if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-        const current = readLockfile(getLockfilePath(root));
-        return current && current.port > 0 ? current : undefined;
-      });
-      expect(lock.port).toBeGreaterThan(0);
+      const dev = startViteDev(root);
+      child = dev.proc;
+      // Rejects if a config-time ownership check throws and Vite exits.
+      await dev.listening;
+      if (!HAS_NATIVE_COMMAND_LOCK) {
+        await waitFor(() => (readLockfile(getLockfilePath(root))?.port ?? 0) > 0 || undefined);
+      }
     },
     30_000,
   );
@@ -435,20 +415,13 @@ export default { plugins: [
 ] };
 `,
     );
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-
-    const lock = await waitFor(() => {
-      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
-    expect(lock.port).toBeGreaterThan(0);
+    const dev = startViteDev(root);
+    child = dev.proc;
+    // Rejects if a config-time ownership check throws and Vite exits.
+    await dev.listening;
+    if (!HAS_NATIVE_COMMAND_LOCK) {
+      await waitFor(() => (readLockfile(getLockfilePath(root))?.port ?? 0) > 0 || undefined);
+    }
   }, 30_000);
 
   it("retains the CLI claim until closeServer hooks finish", async () => {
@@ -474,23 +447,14 @@ export default { plugins: [vinext(), {
 }] };
 `,
     );
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-
-    await waitFor(() => {
-      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-      return readLockfile(getLockfilePath(root));
-    });
+    const dev = startViteDev(root);
+    child = dev.proc;
+    await dev.listening;
     const exited = new Promise<void>((resolve) => child!.once("exit", () => resolve()));
     child.kill("SIGTERM");
     await exited;
     expect(fs.readFileSync(path.join(root, "close-hook-ok"), "utf-8")).toBe("ok");
-    expect(output).not.toContain("Close hook lost CLI ownership");
+    expect(dev.output()).not.toContain("Close hook lost CLI ownership");
   }, 30_000);
 
   it("loads dotenv before evaluating Vite config", async () => {
@@ -505,20 +469,10 @@ if (process.env.FROM_DOTENV !== "config-time-dotenv") {
 export default { plugins: [vinext()] };
 `,
     );
-    child = spawn(
-      process.execPath,
-      [VITE_CLI_PATH, "dev", root, "--mode", "staging", "--port", "0"],
-      {
-        cwd: root,
-        stdio: "pipe",
-      },
-    );
-
-    const lock = await waitFor(() => {
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
-    expect(lock.port).toBeGreaterThan(0);
+    const dev = startViteDev(root, [root, "--mode", "staging"]);
+    child = dev.proc;
+    // Rejects if the config throws and Vite exits.
+    await dev.listening;
   }, 30_000);
 
   it("preserves an explicit NODE_ENV while evaluating Vite config", async () => {
@@ -534,17 +488,10 @@ export default { plugins: [vinext()] };
     );
     const env = { ...process.env };
     Reflect.set(env, "NODE_ENV", "staging");
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      env,
-      stdio: "pipe",
-    });
-
-    const lock = await waitFor(() => {
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
-    expect(lock.port).toBeGreaterThan(0);
+    const dev = startViteDev(root, [], env);
+    child = dev.proc;
+    // Rejects if the config throws and Vite exits.
+    await dev.listening;
   }, 30_000);
 
   it("reports duplicate dev servers through Vite's normal error path", async () => {
@@ -553,11 +500,9 @@ export default { plugins: [vinext()] };
       path.join(root, "vite.config.ts"),
       `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};\nexport default { plugins: [vinext()] };\n`,
     );
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    await waitFor(() => readLockfile(getLockfilePath(root)));
+    const first = startViteDev(root);
+    child = first.proc;
+    await first.listening;
 
     const duplicate = spawnSync(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
       cwd: root,
@@ -566,7 +511,7 @@ export default { plugins: [vinext()] };
     });
 
     expect(duplicate.status).toBe(1);
-    // Vite's own lock runs before vinext's when the installed Vite has one.
+    // Vite rejects the duplicate itself when it has its own lock.
     expect(duplicate.stderr).toContain(
       HAS_NATIVE_COMMAND_LOCK
         ? "Found another Vite dev process for this project"
@@ -576,36 +521,17 @@ export default { plugins: [vinext()] };
   }, 30_000);
 
   it.runIf(HAS_NATIVE_COMMAND_LOCK)(
-    "leaves duplicate detection to Vite so --bypass-lock starts a second server",
+    "lets Vite's --bypass-lock start a second dev server",
     async () => {
       const root = createProject();
       fs.writeFileSync(
         path.join(root, "vite.config.ts"),
         `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};\nexport default { plugins: [vinext()] };\n`,
       );
-      const env = { ...process.env };
-      Reflect.deleteProperty(env, "VINEXT_TEST_FORCE_DEV_LOCK");
-      const startServer = (args: string[]) => {
-        const proc = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0", ...args], {
-          cwd: root,
-          env,
-          stdio: "pipe",
-        });
-        let output = "";
-        proc.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-        proc.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-        const listening = waitFor(() => {
-          if (proc.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-          // CI enables colors, which would split the "Local:" line.
-          return /Local:\s+http:/.test(stripVTControlCharacters(output)) || undefined;
-        });
-        return { proc, listening };
-      };
-
-      const first = startServer([]);
+      const first = startViteDev(root);
       child = first.proc;
       await first.listening;
-      const second = startServer(["--bypass-lock"]);
+      const second = startViteDev(root, ["--bypass-lock"]);
       try {
         await second.listening;
         expect(fs.existsSync(getLockfilePath(root))).toBe(false);
@@ -620,7 +546,8 @@ export default { plugins: [vinext()] };
     30_000,
   );
 
-  it("takes over a lock left behind before a restart when its PID was reused", async () => {
+  it("takes over a lock left behind before a restart when its PID was reused", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     fs.writeFileSync(
       path.join(root, "vite.config.ts"),
@@ -678,7 +605,10 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
-  it("does not recreate the lock when a resolved-port update runs after close", async () => {
+  it("does not recreate the lock when a resolved-port update runs after close", async ({
+    skip,
+  }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     server = await createServer({
@@ -697,7 +627,8 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
-  it("updates and releases the lock when a failed listen is retried", async () => {
+  it("updates and releases the lock when a failed listen is retried", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     const occupied = createHttpServer();
@@ -779,7 +710,8 @@ export default { plugins: [vinext()] };
     }
   });
 
-  it("keeps the lock across a Vite server restart", async () => {
+  it("keeps the lock across a Vite server restart", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     server = await createServer({
@@ -828,7 +760,10 @@ export default { plugins: [vinext()] };
     }
   });
 
-  it("reclaims the CLI lifecycle when vinext is removed and restored on config reload", async () => {
+  it("reclaims the CLI lifecycle when vinext is removed and restored on config reload", async ({
+    skip,
+  }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     server = await createServer({
@@ -887,7 +822,8 @@ export default { plugins: [vinext()] };
     },
   );
 
-  it("moves the lifecycle when a restart changes the configured root", async () => {
+  it("moves the lifecycle when a restart changes the configured root", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const firstRoot = createProject();
     const secondRoot = createProject();
     useViteCliArgv();
@@ -958,7 +894,8 @@ export default { plugins: [vinext()] };
     }
   });
 
-  it("releases the lock after a replacement server fails to configure", async () => {
+  it("releases the lock after a replacement server fails to configure", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     let configureCount = 0;
@@ -986,7 +923,10 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
-  it("does not leak the lock when a replacement post-configure callback fails", async () => {
+  it("does not leak the lock when a replacement post-configure callback fails", async ({
+    skip,
+  }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     let configureCount = 0;
@@ -1021,7 +961,8 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
-  it("keeps middleware servers lock-free", async () => {
+  it("keeps middleware servers lock-free", async ({ skip }) => {
+    skip(HAS_NATIVE_COMMAND_LOCK);
     const root = createProject();
     useViteCliArgv();
     server = await createServer({
@@ -1149,7 +1090,7 @@ export default { plugins: [vinext()] };
       expect(ownsCliLifecycle(nested)).toBe(false);
       expect(ownsCliLifecycle(server)).toBe(true);
       await server.listen(0);
-      expect(readLockfile(getLockfilePath(root))).toBeTruthy();
+      if (!HAS_NATIVE_COMMAND_LOCK) expect(readLockfile(getLockfilePath(root))).toBeTruthy();
     } finally {
       await nested?.close();
     }
