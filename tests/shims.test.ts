@@ -29655,8 +29655,13 @@ describe("next/image enhancements", () => {
       height: 600,
       loader: ({ src, width, quality }) => `https://cdn.example.com${src}?w=${width}&q=${quality}`,
     });
-    // Custom loader bypasses the /_next/image endpoint
-    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=800&q=75");
+    // Custom loader bypasses the /_next/image endpoint. Like Next.js, it builds
+    // every srcSet width (src is the largest) and gets the quality prop as
+    // written, undefined when unset.
+    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=1920&q=undefined");
+    expect(result.props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=828&q=undefined 1x, https://cdn.example.com/photo.jpg?w=1920&q=undefined 2x",
+    );
     expect(result.props.src).not.toContain("/_next/image");
   });
 
@@ -29811,7 +29816,7 @@ describe("next/image component rendering", () => {
           `https://cdn.example.com${src}?w=${width}&q=${quality}`,
       }),
     );
-    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=800&amp;q=75"');
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=1920&amp;q=undefined"');
   });
 
   it("renders with custom sizes attribute", async () => {
