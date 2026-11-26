@@ -123,6 +123,14 @@ describe("pagesRouter - route discovery", () => {
     expect(routes.filter((r) => r.filePath.endsWith(".d.ts"))).toEqual([]);
   });
 
+  // Webpack only skips declaration files when `ts` is a page extension
+  // (createPagesMapping), so an explicit `d.ts` page extension still routes them.
+  it("routes TypeScript declaration files when `ts` is not a page extension", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR, ["d.ts"]);
+
+    expect(routes.map((r) => r.pattern)).toContain("/declaration-file");
+  });
+
   it("ignores _app.tsx and _document.tsx", async () => {
     const routes = await pagesRouter(FIXTURE_DIR);
     const patterns = routes.map((r) => r.pattern);

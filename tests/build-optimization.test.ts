@@ -1153,7 +1153,7 @@ describe("optimizeDeps.exclude for vinext", () => {
 
       expect(workerEnvConfig.optimizeDeps.entries).toContain("already-present.ts");
       expect(workerEnvConfig.optimizeDeps.entries).toEqual(
-        expect.arrayContaining(["pages/**/*.{tsx,jsx,js}", "pages/**/!(*.d).ts"]),
+        expect.arrayContaining(["pages/**/*.{tsx,jsx,js}", "pages/**/!(.*|*.d).ts"]),
       );
       expect(workerEnvConfig.optimizeDeps.include).toContain("already-included");
       expect(workerEnvConfig.optimizeDeps.include).toContain("react");

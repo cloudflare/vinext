@@ -169,15 +169,27 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
 }
 
 /**
+ * Whether TypeScript declaration files are skipped as route candidates for the
+ * given (normalized, undotted) page extensions.
+ *
+ * Next.js skips them in webpack only when `ts` is a page extension
+ * (`build/route-discovery.ts` `createPagesMapping`), and always in Turbopack
+ * (`pages_structure.rs` / `app_structure.rs`). vinext skips them where both
+ * bundlers do, so an explicit `pageExtensions: ["d.ts"]` still routes them.
+ */
+export function skipsDeclarationFiles(extensions: readonly string[]): boolean {
+  return extensions.includes("ts");
+}
+
+/**
  * Use function-form exclude for Node < 22.14 compatibility.
  *
  * Yields forward-slash relative paths: node's glob emits native (backslash)
  * separators on Windows, so each match goes through `toSlash` — this is the
  * boundary where external fs output enters the canonical forward-slash space.
  *
- * TypeScript declaration files are never route files, matching Next.js
- * (`build/route-discovery.ts` `createPagesMapping`, and Turbopack's
- * `pages_structure.rs` / `app_structure.rs`).
+ * TypeScript declaration files are not route files when `ts` is a page
+ * extension (see `skipsDeclarationFiles`).
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -186,11 +198,12 @@ export async function* scanWithExtensions(
   exclude?: (name: string) => boolean,
 ): AsyncGenerator<string> {
   const pattern = includeDotDirectoryMatches(buildExtensionGlob(stem, extensions));
+  const skipDeclarations = skipsDeclarationFiles(extensions);
   for await (const file of glob(pattern, {
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
-    if (file.endsWith(".d.ts")) continue;
+    if (skipDeclarations && file.endsWith(".d.ts")) continue;
     yield toSlash(file);
   }
 }

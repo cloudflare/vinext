@@ -54,6 +54,7 @@ import {
   buildViteResolveExtensions,
   normalizeViteResolveExtensions,
   createValidFileMatcher,
+  skipsDeclarationFiles,
   findFileWithExts,
 } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -1061,13 +1062,15 @@ const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
 
 // optimizeDeps.entries globs for the route source files under `dir`.
 //
-// TypeScript declaration files are never route modules (see
-// `scanWithExtensions`), and the dependency scan can't parse every one of them
-// as a module, so `.ts` leaves skip `*.d.ts`. A negated `!**/*.d.ts` entry
-// would also prune directories named `*.d.ts`: tinyglobby expands ignores to
-// their `/**` descendants.
-function routeSourceOptimizeEntries(dir: string): string[] {
-  return [`${dir}/**/*.{tsx,jsx,js}`, `${dir}/**/!(*.d).ts`];
+// When `ts` is a page extension, TypeScript declaration files are not route
+// modules (see `skipsDeclarationFiles`), and the dependency scan can't parse
+// every one of them as a module, so `.ts` leaves skip `*.d.ts`. A negated
+// `!**/*.d.ts` entry would also prune directories named `*.d.ts`: tinyglobby
+// expands ignores to their `/**` descendants. The leading negative extglob
+// bypasses picomatch's dotfile guard, so it rejects `.*` basenames itself.
+function routeSourceOptimizeEntries(dir: string, pageExtensions: readonly string[]): string[] {
+  if (!skipsDeclarationFiles(pageExtensions)) return [`${dir}/**/*.{tsx,ts,jsx,js}`];
+  return [`${dir}/**/*.{tsx,jsx,js}`, `${dir}/**/!(.*|*.d).ts`];
 }
 
 function resolveTsconfigPathCandidate(candidate: string): string | null {
@@ -4469,7 +4472,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         pagesOptimizeEntries = !hasAppDir
           ? [
               ...(hasPagesDir
-                ? routeSourceOptimizeEntries(toRelativeFileEntry(root, pagesDir))
+                ? routeSourceOptimizeEntries(
+                    toRelativeFileEntry(root, pagesDir),
+                    fileMatcher.extensions,
+                  )
                 : []),
               ...[instrumentationPath, instrumentationClientPath].flatMap((entry) =>
                 entry ? [toRelativeFileEntry(root, entry)] : [],
@@ -4497,7 +4503,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // "Invalid hook call" from duplicate React instances).
           // The entries must be relative to the project root.
           const relAppDir = path.relative(root, appDir);
-          const appEntries = routeSourceOptimizeEntries(relAppDir);
+          const appEntries = routeSourceOptimizeEntries(relAppDir, fileMatcher.extensions);
           const explicitInstrumentationEntries = [
             instrumentationPath,
             instrumentationClientPath,
@@ -4509,7 +4515,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const ssrAndClientOptimizeEntries = hasPagesDir
             ? [
                 ...optimizeEntries,
-                ...routeSourceOptimizeEntries(toRelativeFileEntry(root, pagesDir)),
+                ...routeSourceOptimizeEntries(
+                  toRelativeFileEntry(root, pagesDir),
+                  fileMatcher.extensions,
+                ),
               ]
             : optimizeEntries;
           const additionalRscOptimizeIncludes: string[] = [];

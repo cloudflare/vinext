@@ -230,7 +230,7 @@ describe("optimizeDeps: JSX in plain .js files", () => {
         const clientOptimizeDeps = config.environments?.client?.optimizeDeps;
         expect(clientOptimizeDeps, `${label} client optimizeDeps`).toBeDefined();
         expect(clientOptimizeDeps?.entries).toEqual(
-          expect.arrayContaining(["pages/**/*.{tsx,jsx,js}", "pages/**/!(*.d).ts"]),
+          expect.arrayContaining(["pages/**/*.{tsx,jsx,js}", "pages/**/!(.*|*.d).ts"]),
         );
         expect(clientOptimizeDeps?.include).toEqual(
           expect.arrayContaining([

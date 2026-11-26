@@ -821,8 +821,11 @@ describe("Pages Router integration", () => {
     expect(entries).toBeDefined();
     expect(Array.isArray(entries)).toBe(true);
 
+    // `ts` is a page extension here, so `.ts` leaves skip declaration files.
+    expect(entries).toEqual(
+      expect.arrayContaining(["pages/**/*.{tsx,jsx,js}", "pages/**/!(.*|*.d).ts"]),
+    );
     const glob = (entries as string[]).join(",");
-    expect(glob).toMatch(/pages\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
     expect(glob).toContain("instrumentation.ts");
     expect(glob).toContain("instrumentation-client.ts");
   });

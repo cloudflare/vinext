@@ -2320,7 +2320,7 @@ describe("App Router integration", () => {
     // modules (Next.js build/route-discovery.ts).
     for (const entries of [rscEntries, ssrEntries, clientEntries]) {
       expect(entries).toEqual(
-        expect.arrayContaining(["app/**/*.{tsx,jsx,js}", "app/**/!(*.d).ts"]),
+        expect.arrayContaining(["app/**/*.{tsx,jsx,js}", "app/**/!(.*|*.d).ts"]),
       );
     }
     expect(rscGlob).toContain("instrumentation.ts");
@@ -2332,11 +2332,11 @@ describe("App Router integration", () => {
     // Pages Router modules render in ssr and hydrate in client, never in rsc.
     for (const entries of [ssrEntries, clientEntries]) {
       expect(entries).toEqual(
-        expect.arrayContaining(["pages/**/*.{tsx,jsx,js}", "pages/**/!(*.d).ts"]),
+        expect.arrayContaining(["pages/**/*.{tsx,jsx,js}", "pages/**/!(.*|*.d).ts"]),
       );
     }
     expect(rscEntries).not.toContain("pages/**/*.{tsx,jsx,js}");
-    expect(rscEntries).not.toContain("pages/**/!(*.d).ts");
+    expect(rscEntries).not.toContain("pages/**/!(.*|*.d).ts");
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {
