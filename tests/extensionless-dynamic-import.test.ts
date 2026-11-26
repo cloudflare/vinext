@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "vite";
 import { createExtensionlessDynamicImportPlugin } from "../packages/vinext/src/plugins/extensionless-dynamic-import.js";
+import { exactRegExpLiteral } from "../packages/vinext/src/utils/regex.js";
 
 const tempDirs: string[] = [];
 
@@ -46,6 +47,18 @@ function createPackageFixture(
   }
   return { root, packageRoot, importer: path.join(root, "entry.ts") };
 }
+
+// Exact tsconfig `paths` keys match before an optional query/hash; they are
+// still literal aliases, so template imports next to them keep transforming.
+describe("exactRegExpLiteral", () => {
+  it("reads both exact alias forms and rejects other patterns", () => {
+    expect(exactRegExpLiteral(/^fake-lib$/)).toBe("fake-lib");
+    expect(exactRegExpLiteral(/^@lib\/typed(?=[?#]|$)/)).toBe("@lib/typed");
+    expect(exactRegExpLiteral(/^a.b$/)).toBeNull();
+    expect(exactRegExpLiteral(/^ab(?=x)/)).toBeNull();
+    expect(exactRegExpLiteral(/^ab(?=[?#]|$)/i)).toBeNull();
+  });
+});
 
 describe("vinext:extensionless-dynamic-import", () => {
   it("expands extensionless relative template imports through import.meta.glob", () => {
