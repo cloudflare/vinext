@@ -1,10 +1,13 @@
-import { LinkAccordion } from "../components/link-accordion";
+import Link from "next/link";
 
 export default function Home() {
   return (
     <div id="home">
       <h1>Home</h1>
-      <LinkAccordion href="/destination">Destination page</LinkAccordion>
+      {/* Not prefetched, so the navigation itself has to reach the network. */}
+      <Link href="/destination" prefetch={false}>
+        Destination page
+      </Link>
     </div>
   );
 }

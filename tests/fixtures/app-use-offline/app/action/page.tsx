@@ -1,4 +1,4 @@
-import { SaveButton } from "../../components/save-button";
+import { SaveButton } from "./save-button";
 
 export default function ActionPage() {
   return (

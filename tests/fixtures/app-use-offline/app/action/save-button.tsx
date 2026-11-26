@@ -1,6 +1,6 @@
 "use client";
 import { useState, useTransition } from "react";
-import { save } from "../app/action/actions";
+import { save } from "./actions";
 
 export function SaveButton() {
   const [result, setResult] = useState<string>("none");

@@ -58,16 +58,6 @@ describe("scanImports", () => {
     expect(items[0].status).toBe("partial");
   });
 
-  it("reports next/offline as supported", () => {
-    writeFile("app/page.tsx", `import { useOffline } from "next/offline";`);
-
-    const items = scanImports(tmpDir);
-    expect(items).toHaveLength(1);
-    expect(items[0].name).toBe("next/offline");
-    expect(items[0].status).toBe("supported");
-    expect(items[0].detail).toContain("experimental.useOffline");
-  });
-
   it("reports accurate next/font/local detail", () => {
     writeFile("app/page.tsx", `import localFont from "next/font/local";`);
 

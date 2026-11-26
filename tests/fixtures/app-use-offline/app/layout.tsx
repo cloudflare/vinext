@@ -1,4 +1,4 @@
-import { OfflineStatus } from "../components/offline-status";
+import { OfflineStatus } from "./offline-status";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
