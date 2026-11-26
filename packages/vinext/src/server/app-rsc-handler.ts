@@ -2609,13 +2609,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const isFinalRouteMatch = isInterceptionMatch || requestsLiteralRoutePattern;
   const preActionMatchIsFinal =
     preActionMatch !== null && (isFinalRouteMatch || !preActionMatch.route.isDynamic);
-  // Next.js prepares the matched route module once per request, at the start
-  // of its handler (`RouteModule.prepare`), before handling a Server Action or
-  // a prefetch.
-  let routeModulePrepared = false;
-  const prepareRouteModule = <T>(callback: () => T): T => {
-    if (routeModulePrepared) return callback();
-    routeModulePrepared = true;
+  // Next.js prepares the matched route module once, at the start of its
+  // handler (`RouteModule.prepare`), before handling a Server Action or a
+  // prefetch. Routing that resumes after a miss prepares the route it lands on.
+  let preparedRoute: TRoute | null = null;
+  const prepareRouteModule = <T>(route: TRoute, callback: () => T): T => {
+    if (preparedRoute === route) return callback();
+    preparedRoute = route;
     return tracePrepareRouteModule(callback);
   };
   // The route whose modules this request already resolved, so the page render
@@ -2636,7 +2636,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const prepareActionRoute = async (routeMatch: AppRscRouteMatch<TRoute> | null) => {
     if (!routeMatch) return;
     await loadRouteModule(routeMatch.route);
-    prepareRouteModule(() =>
+    prepareRouteModule(routeMatch.route, () =>
       setRootParams(pickRootParams(routeMatch.params, routeMatch.route.rootParamNames)),
     );
   };
@@ -2647,12 +2647,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible || !isPostRequest || !actionId) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
+    await prepareActionRoute(routeMatch);
     if (!options.handleServerActionRequest) {
       return markServerActionResponse(
         respondServerActionNotFound(actionId, options.clearRequestContext),
       );
     }
-    await prepareActionRoute(routeMatch);
     const sourceConfigHeaders = new Headers();
     await applyAppRscConfigHeaders(sourceConfigHeaders, request, {
       basePath: options.basePath,
@@ -2689,13 +2689,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | ProgressiveActionFormStateResult | null> => {
     if (!filesystemRouteEligible || !isProgressiveActionRequest) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
+    await prepareActionRoute(routeMatch);
     if (!options.handleProgressiveActionRequest) {
       return unrenderedRouteMatch?.route.__loadPage &&
         !unrenderedRouteMatch.route.__loadRouteHandler
         ? markServerActionResponse(respondServerActionNotFound(null, options.clearRequestContext))
         : null;
     }
-    await prepareActionRoute(routeMatch);
     const progressiveActionResult = await options.handleProgressiveActionRequest({
       actionId,
       cleanPathname,
@@ -3281,7 +3281,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // A tree prefetch answers from the matched route alone, so reading its
     // query is all it prepares, before its params are admitted.
     const resolvedSearchParams = isRouteTreePrefetch
-      ? prepareRouteModule(getResolvedSearchParams)
+      ? prepareRouteModule(route, getResolvedSearchParams)
       : getResolvedSearchParams();
     // Next.js rejects a dynamicParams = false miss while routing, outside draft
     // mode, so a fallback rewrite can claim the URL's route tree. Without one
@@ -3367,7 +3367,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // A response stage prepares the route module it renders.
     const rootParams = matchedResponseStage
       ? setMatchedRouteContext()
-      : prepareRouteModule(setMatchedRouteContext);
+      : prepareRouteModule(route, setMatchedRouteContext);
 
     if (route.routeHandler) {
       // Next.js edge route handlers run through web/adapter.ts, which strips

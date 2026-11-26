@@ -863,6 +863,39 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each([
+    [
+      "header-based",
+      { "next-action": "action-id", "content-type": "text/plain" },
+      { handleServerActionRequest: undefined },
+    ],
+    [
+      "progressive",
+      { "content-type": "multipart/form-data; boundary=vinext" },
+      { handleProgressiveActionRequest: undefined },
+    ],
+  ])(
+    "prepares the page of a %s Server Action in a build without Server Actions",
+    async (_kind, headers, noActions) => {
+      const handler = createHandler({ ensureRouteLoaded: vi.fn(), ...noActions });
+      const spans = await captureRouteModuleSpans(async () => {
+        const response = await handler(
+          new Request("https://example.test/docs/about", { method: "POST", headers }),
+          null,
+          false,
+        );
+        expect(response.status).toBe(404);
+        await response.text();
+      });
+
+      expect(spans).toEqual([
+        ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+        ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+        ["RouteModule.prepare", "BaseServer.handleRequest"],
+      ]);
+    },
+  );
+
   it("leaves preparing the route module to the response stage it dispatches", async () => {
     const responseHandler = createHandler({ ensureRouteLoaded: vi.fn() });
     // The request stage holds no route modules.
@@ -5814,6 +5847,37 @@ describe("createAppRscHandler", () => {
         expect(body).not.toContain('"products"');
         expect(isDynamicParamsMiss).toHaveBeenCalledTimes(2);
         expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      });
+
+      it("prepares the fallback route that claims a rejected route-tree prefetch", async () => {
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites,
+          ensureRouteLoaded: vi.fn(),
+          isDynamicParamsMiss: async (missRoute: TestRoute) => missRoute === localizedRoute,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+        const headers = createRscRequestHeaders();
+        headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+        const url = await createRscRequestUrl("/docs/fr/products/rejected", headers);
+
+        const spans = await captureRouteModuleSpans(async () => {
+          const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+          expect(tree.status).toBe(200);
+          await tree.text();
+        });
+
+        // The rejected route, then the fallback route that answers.
+        expect(spans.map(([type]) => type)).toEqual([
+          "NextNodeServer.findPageComponents",
+          "LoadComponents.loadRouteModule",
+          "RouteModule.prepare",
+          "NextNodeServer.findPageComponents",
+          "LoadComponents.loadRouteModule",
+          "RouteModule.prepare",
+        ]);
       });
 
       it("resumes routing after the dispatch rejects the params", async () => {
