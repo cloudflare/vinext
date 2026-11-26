@@ -541,6 +541,29 @@ if (!process.env.NEXT_RUNTIME) require("no-runtime-dep")`;
     expect(client?.code).not.toContain("server()");
   });
 
+  it("keeps bare NEXT_RUNTIME reads whose value is used", () => {
+    const source = `const runtime = process.env.NEXT_RUNTIME ?? "fallback"
+const name = process.env.NEXT_RUNTIME || "none"
+const either = process.env.NEXT_RUNTIME && "set"`;
+
+    for (const nextRuntime of ["nodejs", ""]) {
+      const result = replaceConsumerEnvironmentConditions(source, { nextRuntime });
+      expect(result?.code ?? source).toBe(source);
+    }
+  });
+
+  it("folds NEXT_RUNTIME conditions composed with boolean literals", () => {
+    const source = `if (process.env.NEXT_RUNTIME === "nodejs" && true) server(); else require("not-nodejs-dep")
+if (false || process.env.NEXT_RUNTIME === "edge") require("edge-dep")
+const literalOnly = true && false`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).toContain("server()");
+    expect(server?.code).not.toContain("not-nodejs-dep");
+    expect(server?.code).not.toContain("edge-dep");
+    expect(server?.code).toContain("const literalOnly = true && false");
+  });
+
   it("preserves NEXT_RUNTIME reads on locally bound process", () => {
     const result = replaceConsumerEnvironmentConditions(
       `function check(process) {
