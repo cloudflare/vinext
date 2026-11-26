@@ -29,6 +29,7 @@ function createResolvedBaseUrlPlugin() {
       config: { configPath: path.join(FIXTURE, "jsconfig.json"), baseUrl: FIXTURE },
       watchFiles: [],
     }),
+    pathAliasesChanged: () => false,
   });
   (plugin.configResolved as (config: object) => void)({
     root: FIXTURE,
@@ -107,6 +108,27 @@ describe("jsconfig.json baseUrl", () => {
       await expect
         .poll(async () => (await fetchHtml(baseUrl, "/hello")).html, { timeout: 15_000 })
         .toContain("Custom base world");
+    } finally {
+      fs.writeFileSync(jsconfigPath, original);
+      await server.close();
+    }
+  }, 60_000);
+
+  // vinext materializes `paths` aliases at startup, so a paths-only edit
+  // restarts dev too, and the restart must not reuse cached aliases.
+  it("applies a jsconfig.json paths edit in dev", async () => {
+    const jsconfigPath = path.join(FIXTURE, "jsconfig.json");
+    const original = fs.readFileSync(jsconfigPath, "utf-8");
+    const writeJsconfig = (compilerOptions: object) =>
+      fs.writeFileSync(jsconfigPath, JSON.stringify({ compilerOptions }, null, 2) + "\n");
+    const { server, baseUrl } = await startFixtureServer(FIXTURE);
+    const hello = async () => (await fetchHtml(baseUrl, "/hello")).html;
+    try {
+      expect(await hello()).toContain("Tilde import");
+      writeJsconfig({ baseUrl: ".", paths: { "components/*": ["custom-base/components/*"] } });
+      await expect.poll(hello, { timeout: 15_000 }).toContain("Custom base world");
+      writeJsconfig({ baseUrl: "." });
+      await expect.poll(hello, { timeout: 15_000 }).toContain("Tilde import");
     } finally {
       fs.writeFileSync(jsconfigPath, original);
       await server.close();

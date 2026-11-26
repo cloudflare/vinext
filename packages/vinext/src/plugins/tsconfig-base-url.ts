@@ -8,6 +8,11 @@ type TsconfigBaseUrlPluginOptions = {
    * or null before vinext's config hook has run.
    */
   load: () => TsconfigBaseUrlLoad | null;
+  /**
+   * Re-read the `paths` aliases vinext materialized at startup (which resolve
+   * against baseUrl) and report whether they changed.
+   */
+  pathAliasesChanged: () => boolean;
 };
 
 // Non-relative specifiers, as TypeScript resolves them through `baseUrl`:
@@ -64,8 +69,8 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
     // vinext derives `baseUrl` and the `paths` aliases (which resolve against
     // it) at startup, and Vite only refreshes its own cache for
     // `tsconfig.json`. When an edit to a candidate config or one it extends
-    // changes the selected baseUrl, restart the server so all of them are
-    // read again.
+    // changes the selected baseUrl or the aliases, restart the server so all
+    // of them are read again.
     configureServer(server) {
       const watched = new Set(loaded?.watchFiles);
       server.watcher.add([...watched]);
@@ -75,9 +80,12 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
         const added = (next?.watchFiles ?? []).filter((watchFile) => !watched.has(watchFile));
         for (const watchFile of added) watched.add(watchFile);
         if (added.length > 0) server.watcher.add(added);
-        if (sameBaseUrlConfig(loaded?.config ?? null, next?.config ?? null)) return;
+        const aliasesChanged = options.pathAliasesChanged();
+        if (!aliasesChanged && sameBaseUrlConfig(loaded?.config ?? null, next?.config ?? null)) {
+          return;
+        }
         loaded = next;
-        server.config.logger.info(`${path.basename(file)} changed baseUrl, restarting server...`, {
+        server.config.logger.info(`${path.basename(file)} changed, restarting server...`, {
           clear: server.config.clearScreen,
           timestamp: true,
         });

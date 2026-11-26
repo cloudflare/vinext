@@ -1373,10 +1373,12 @@ function sortTsconfigAliasesBySpecificity(aliases: Record<string, string>): Reco
 function resolveTsconfigAliases(
   projectRoot: string,
   configuredPath?: string,
+  // Re-read the config files instead of using (and then replace) the cache.
+  fresh = false,
 ): ResolvedTsconfigPathAliases {
   const configPath = configuredPath ? path.resolve(projectRoot, configuredPath) : undefined;
   const cacheKey = configPath ?? projectRoot;
-  if (_tsconfigAliasCache.has(cacheKey)) {
+  if (!fresh && _tsconfigAliasCache.has(cacheKey)) {
     return _tsconfigAliasCache.get(cacheKey)!;
   }
 
@@ -2062,6 +2064,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesTsconfigExactAliases: Record<string, string> = {};
   // The config whose explicit baseUrl Next.js resolves bare imports against.
   let loadBaseUrlConfig: (() => TsconfigBaseUrlLoad) | null = null;
+  let tsconfigPathAliasesChanged: (() => boolean) | null = null;
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let buildEmptyOutDir: boolean | undefined;
@@ -2896,7 +2899,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Vite 8+ supports this natively via resolve.tsconfigPaths, which only
     // reads tsconfig.json; this covers baseUrl from jsconfig.json or a custom
     // typescript.tsconfigPath.
-    createTsconfigBaseUrlPlugin({ load: () => loadBaseUrlConfig?.() ?? null }),
+    createTsconfigBaseUrlPlugin({
+      load: () => loadBaseUrlConfig?.() ?? null,
+      pathAliasesChanged: () => tsconfigPathAliasesChanged?.() ?? false,
+    }),
     createStyledJsxPlugin(earlyBaseDir),
     // Compile MDX to JSX before @vitejs/plugin-react handles the generated
     // component and injects Fast Refresh registration in dev.
@@ -3318,6 +3324,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // configured tsconfigPath. Whether Vite's native resolver already reads
         // this config is decided from the final config (see the plugin).
         loadBaseUrlConfig = () => loadTsconfigBaseUrl(root, configuredTsconfigPath);
+        // Refreshes the alias cache, so a dev restart reads the edited paths.
+        const tsconfigAliasesSnapshot = JSON.stringify(resolvedTsconfigAliases);
+        tsconfigPathAliasesChanged = () =>
+          JSON.stringify(resolveTsconfigAliases(root, configuredTsconfigPath, true)) !==
+          tsconfigAliasesSnapshot;
 
         // tsconfig-derived alias entries carry a customResolver, which Vite 8
         // reports as deprecated during config resolution. Filter that warning
