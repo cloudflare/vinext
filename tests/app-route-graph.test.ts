@@ -637,9 +637,40 @@ describe("App Router route graph builder", () => {
       expect(realMembers.pagePath).toBe(
         canonical(appDir, "children-slot-override-page/members/page.tsx"),
       );
-      expect(realMembers.parallelSlots.find((slot) => slot.name === "team")?.pagePath).toBe(
+      const realMembersTeam = realMembers.parallelSlots.find((slot) => slot.name === "team");
+      expect(realMembersTeam?.pagePath).toBe(
         canonical(appDir, "children-slot-override-page/@team/members/@children/page.tsx"),
       );
+      // useSelectedLayoutSegments("team") in Next.js 16.4.6 Turbopack shows the
+      // @children directory as its virtual (__SLOT__) segment, never as @children.
+      expect(realMembersTeam?.routeSegments).toEqual(["members", "(__SLOT__)"]);
+    });
+
+    it("keeps a slot's direct page over an @children page inside a route group", async () => {
+      // Next.js 16.4.6 renders @team/admins/page.tsx for /children-slot-override-page/admins
+      // with both Turbopack and webpack: a route group's subtree never replaces
+      // the page before it, even when it holds an @children page.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const admins = findRoute(graph.routes, "/children-slot-override-page/admins");
+      const team = admins.parallelSlots.find((slot) => slot.name === "team");
+      expect(team?.pagePath).toBe(
+        canonical(appDir, "children-slot-override-page/@team/admins/page.tsx"),
+      );
+      expect(team?.routeSegments).toEqual(["admins"]);
+    });
+
+    it("shows a mirrored @children slot page as the (__SLOT__) segment", async () => {
+      // The layout-only owner has no page, so the slot page comes from the
+      // pattern-compatible mirror @team/[id]/@children/page.tsx.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const members = findRoute(graph.routes, "/children-slot-mirror/members");
+      const team = members.parallelSlots.find((slot) => slot.name === "team");
+      expect(team?.pagePath).toBe(
+        canonical(appDir, "children-slot-mirror/@team/[id]/@children/page.tsx"),
+      );
+      expect(team?.routeSegments).toEqual(["[id]", "(__SLOT__)"]);
     });
   });
 

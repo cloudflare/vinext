@@ -1234,7 +1234,7 @@ function discoverSlotSubRoutes(
               slot.ownerDir,
               configLayoutPaths,
             ),
-            routeSegments: rawSegments,
+            routeSegments: toSlotRouteSegments(rawSegments),
           },
           subPage,
           matcher,
@@ -1448,7 +1448,7 @@ function discoverSlotSubRoutes(
               slot.ownerDir,
               configLayoutPaths,
             ),
-            routeSegments: subPage ? rawSegments : null,
+            routeSegments: subPage ? toSlotRouteSegments(rawSegments) : null,
           },
           subPage ?? null,
           matcher,
@@ -1589,44 +1589,59 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
     // Sorted in Turbopack's folder order so the first page found for a URL
     // doesn't depend on the filesystem's listing order. Turbopack also takes
     // the first route group by name: @team/(a)/members over @team/(b)/members.
-    const entries = fs
+    const subDirs = fs
       .readdirSync(dir, { withFileTypes: true })
-      .sort((a, b) => compareFolderNames(a.name, b.name));
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      // Skip intercepting route directories
-      if (matchInterceptConvention(entry.name)) continue;
-      // Skip private folders (prefixed with _)
-      if (entry.name.startsWith("_")) continue;
-
-      const subDir = path.join(dir, entry.name);
-      const page = findFile(subDir, "page", matcher);
-      if (page) {
-        const relativePath = path.relative(slotDir, subDir);
-        results.push({ relativePath, pagePath: page });
-      }
-      // Continue scanning deeper for nested sub-pages
-      scan(subDir);
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          // Skip intercepting route directories and private folders
+          !matchInterceptConvention(entry.name) &&
+          !entry.name.startsWith("_"),
+      )
+      .map((entry) => entry.name)
+      .sort(compareFolderNames);
+    // Callers keep the first page they find for a URL. Next.js 16.4.6
+    // Turbopack lets a directory's `@children` subtree replace the
+    // directory's own page and route groups (it is inserted by its key), so
+    // `members/@children/page` wins over `members/page`. A route group never
+    // replaces the page before it, so `members/page` still wins over
+    // `members/(g)/@children/page`.
+    if (subDirs.includes("@children")) scan(path.join(dir, "@children"));
+    if (dir !== slotDir) {
+      const page = findFile(dir, "page", matcher);
+      if (page) results.push({ relativePath: path.relative(slotDir, dir), pagePath: page });
+    }
+    for (const name of subDirs) {
+      if (name !== "@children") scan(path.join(dir, name));
     }
   }
 
   scan(slotDir);
-  // Callers keep the first page they find for a URL, so rank the pages that
-  // can share one (Array#sort is stable, keeping folder order within a rank):
-  // 1. `@children` pages: Next.js 16.4.6 Turbopack lets
-  //    `members/@children/page` replace `members/page` for the same URL.
-  // 2. The slot's other own pages.
-  // 3. Pages inside one of the slot's own nested slots (e.g. `nested/@a/page`
-  //    under `@foo`), which fill that nested slot instead.
-  const ordered = results.sort((left, right) => slotSubPageRank(left) - slotSubPageRank(right));
+  // Pages inside one of the slot's own nested slots (e.g. `nested/@a/page`
+  // under `@foo`) fill that nested slot instead, so they go last (Array#sort
+  // is stable, keeping the scan order otherwise).
+  const ordered = results.sort(
+    (left, right) => Number(isNestedSlotSubPage(left)) - Number(isNestedSlotSubPage(right)),
+  );
   perMatcher.set(slotDir, ordered);
   return ordered;
 }
 
-function slotSubPageRank({ relativePath }: SlotSubPageEntry): number {
-  const segments = relativePath.split(path.sep);
-  if (segments.some((segment) => segment.startsWith("@") && segment !== "@children")) return 2;
-  return segments.includes("@children") ? 0 : 1;
+function isNestedSlotSubPage({ relativePath }: SlotSubPageEntry): boolean {
+  return relativePath
+    .split(path.sep)
+    .some((segment) => segment.startsWith("@") && segment !== "@children");
+}
+
+/**
+ * A slot sub-page's segments as its slot's `routeSegments`. Next.js renders
+ * an `@children` directory as the virtual `(__SLOT__)` segment of the
+ * loader tree (`useSelectedLayoutSegments` returns it in Next.js 16.4.6
+ * Turbopack), so it isn't exposed as an `@children` segment. Keeping it as a
+ * segment keeps the tree positions of the slot's layouts and boundaries.
+ */
+function toSlotRouteSegments(rawSegments: readonly string[]): string[] {
+  return rawSegments.map((segment) => (segment === "@children" ? "(__SLOT__)" : segment));
 }
 
 function findSlotConfigLayoutPaths(
@@ -2370,7 +2385,7 @@ function discoverInheritedParallelSlots(
               configLayoutPaths,
             ),
             layoutIndex: slotLayoutIdx,
-            routeSegments: mirror?.segments ?? null,
+            routeSegments: mirror ? toSlotRouteSegments(mirror.segments) : null,
             slotPatternParts,
             slotParamNames,
             // defaultPath, loadingPath, errorPath, interceptingRoutes remain
