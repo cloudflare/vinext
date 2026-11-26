@@ -8571,7 +8571,9 @@ describe("query-free App page ISR entries", () => {
   // carry its own navigation context.
   it.each([
     { name: "a notFound() that rejects the shell with its status", status: 404, suspense: false },
-    { name: "a notFound() inside Suspense as a 200", status: 200, suspense: true },
+    // As in Next.js's static generation, one a Suspense boundary caught sets
+    // the status too.
+    { name: "a notFound() inside Suspense with its status", status: 404, suspense: true },
   ])("stores $name after the request context is cleared", async ({ status, suspense }) => {
     const { cache, isrGet, isrSet } = createCache();
     let navigation: NavigationContext | null = null;
@@ -8650,11 +8652,9 @@ describe("query-free App page ISR entries", () => {
     expect(shellRenders).toEqual(
       shellRenders.map(() => ({ cleared: true, pathname: "/posts/hello" })),
     );
-    // A special error that rejects the shell leaves its document to an HTML
-    // request; the Suspense case's 200 document is stored beside its payload.
-    expect([...cache.keys()]).toEqual(
-      suspense ? ["rsc:/posts/hello", "html:/posts/hello"] : ["rsc:/posts/hello"],
-    );
+    // A special error leaves its document to an HTML request, whether it
+    // rejected the shell or a Suspense boundary caught it.
+    expect([...cache.keys()]).toEqual(["rsc:/posts/hello"]);
     const stored = cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue;
     expect(stored.status).toBe(status);
     expect(new TextDecoder().decode(stored.rscData)).toBe(body);
