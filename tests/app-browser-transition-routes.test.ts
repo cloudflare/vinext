@@ -11,6 +11,11 @@ import {
   type BrowserRouteManifest,
 } from "../packages/vinext/src/routing/browser-route-manifest.js";
 import { resolveRouterTransitionFromRoutes } from "../packages/vinext/src/server/app-browser-transition-routes.js";
+import {
+  AppElementsWire,
+  type AppElementsInterception,
+  type AppElementsSlotBinding,
+} from "../packages/vinext/src/server/app-elements.js";
 
 // The transition-events pages, scanned as their own app/ root.
 const APP_DIR = path.resolve(
@@ -25,31 +30,150 @@ beforeAll(async () => {
   manifest = decodeBrowserRouteManifest(toBrowserRouteManifestWire(graph.routeManifest));
 });
 
-function page(routePath: string) {
-  return { interception: null, routeId: `route:${routePath}`, slotBindings: [] };
+type CommittedTree = {
+  interception?: AppElementsInterception | null;
+  interceptionContext?: string | null;
+  slotBindings?: readonly AppElementsSlotBinding[];
+  /** The committed source page, as the server renders it; null on a route miss. */
+  sourcePage: string | null;
+  wholeInterceptionSource?: string | null;
+};
+
+// A committed router state, holding the metadata of the payload it rendered.
+function committed(tree: CommittedTree) {
+  const interception = tree.interception ?? null;
+  const slotBindings = tree.slotBindings ?? [];
+  return {
+    elements: AppElementsWire.createMetadataEntries({
+      interception,
+      interceptionContext: tree.interceptionContext ?? null,
+      layoutIds: [...new Set(slotBindings.flatMap((binding) => binding.ownerLayoutId ?? []))],
+      rootLayoutTreePath: "/",
+      routeId: "route:/ignored",
+      slotBindings,
+      sourcePage: tree.sourcePage,
+      wholeInterceptionSource: tree.wholeInterceptionSource ?? null,
+    }),
+    interception,
+    slotBindings,
+  };
+}
+
+function page(sourcePage: string) {
+  return committed({ sourcePage });
 }
 
 describe("resolveRouterTransitionFromRoutes", () => {
   it("reports route patterns, without route groups", () => {
-    expect(resolveRouterTransitionFromRoutes(page("/"), manifest)).toEqual(["/"]);
-    expect(resolveRouterTransitionFromRoutes(page("/blog/hello"), manifest)).toEqual([
+    expect(resolveRouterTransitionFromRoutes(page("/page"), manifest)).toEqual(["/"]);
+    expect(resolveRouterTransitionFromRoutes(page("/blog/[slug]/page"), manifest)).toEqual([
       "/blog/[slug]",
     ]);
-    expect(resolveRouterTransitionFromRoutes(page("/about"), manifest)).toEqual(["/about"]);
-    expect(resolveRouterTransitionFromRoutes(page("/docs/a/b"), manifest)).toEqual([
+    expect(resolveRouterTransitionFromRoutes(page("/(marketing)/about/page"), manifest)).toEqual([
+      "/about",
+    ]);
+    expect(resolveRouterTransitionFromRoutes(page("/docs/[...slug]/page"), manifest)).toEqual([
       "/docs/[...slug]",
     ]);
-    expect(resolveRouterTransitionFromRoutes(page("/shop"), manifest)).toEqual([
+    expect(resolveRouterTransitionFromRoutes(page("/shop/[[...slug]]/page"), manifest)).toEqual([
       "/shop/[[...slug]]",
     ]);
+  });
+
+  it("reports /_not-found for a URL that matched no route", () => {
+    expect(resolveRouterTransitionFromRoutes(committed({ sourcePage: null }), manifest)).toEqual([
+      "/_not-found",
+    ]);
+  });
+
+  it("reports a sibling intercept's own page as the primary route", () => {
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          interceptionContext: "/gallery",
+          slotBindings: [
+            {
+              activeRouteId: "route:/gallery/photos/1",
+              ownerLayoutId: "layout:/gallery",
+              slotId: "slot:__vinext_sibling_intercept:/gallery",
+              state: "active",
+            },
+          ],
+          sourcePage: "/gallery/(.)photos/[id]/page",
+        }),
+        manifest,
+      ),
+    ).toEqual(["/gallery/(.)photos/[id]"]);
+  });
+
+  it("reports the children default of a synthetic parallel sub-route", () => {
+    // /dashboard/settings matched only @analytics/settings, so the children
+    // render /dashboard/default, as Next.js's __DEFAULT__ segment reports it.
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          slotBindings: [
+            {
+              ownerLayoutId: "layout:/dashboard",
+              slotId: "slot:children:/dashboard",
+              state: "default",
+            },
+            {
+              activeRouteId: "route:/dashboard/settings",
+              ownerLayoutId: "layout:/dashboard",
+              slotId: "slot:analytics:/dashboard",
+              state: "active",
+            },
+          ],
+          sourcePage: "/dashboard/settings/page",
+        }),
+        manifest,
+      )[0],
+    ).toBe("/dashboard/default");
+    // Active children render the page itself.
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          slotBindings: [
+            {
+              activeRouteId: "route:/dashboard",
+              ownerLayoutId: "layout:/dashboard",
+              slotId: "slot:children:/dashboard",
+              state: "active",
+            },
+          ],
+          sourcePage: "/dashboard/page",
+        }),
+        manifest,
+      ),
+    ).toEqual(["/dashboard"]);
+  });
+
+  it("reports a whole intercepting route as the owner's default and the intercepted slot", () => {
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          interceptionContext: "/gallery",
+          slotBindings: [
+            {
+              activeRouteId: "route:/gallery/photos/1",
+              ownerLayoutId: "layout:/gallery",
+              slotId: "slot:modal:/gallery",
+              state: "active",
+            },
+          ],
+          sourcePage: "/gallery/(.)photos/[id]/page",
+          wholeInterceptionSource: "/gallery",
+        }),
+        manifest,
+      ),
+    ).toEqual(["/gallery/default", "/gallery/@modal/(.)photos/[id]"]);
   });
 
   it("puts the primary route first, then each slot", () => {
     expect(
       resolveRouterTransitionFromRoutes(
-        {
-          interception: null,
-          routeId: "route:/dashboard",
+        committed({
           slotBindings: [
             {
               activeRouteId: "route:/dashboard",
@@ -58,7 +182,8 @@ describe("resolveRouterTransitionFromRoutes", () => {
               state: "active",
             },
           ],
-        },
+          sourcePage: "/dashboard/page",
+        }),
         manifest,
       ),
     ).toEqual(["/dashboard", "/dashboard/@analytics"]);
@@ -67,13 +192,12 @@ describe("resolveRouterTransitionFromRoutes", () => {
   it("reports a slot showing its default as @slot/default", () => {
     expect(
       resolveRouterTransitionFromRoutes(
-        {
-          interception: null,
-          routeId: "route:/gallery",
+        committed({
           slotBindings: [
             { ownerLayoutId: "layout:/gallery", slotId: "slot:modal:/gallery", state: "default" },
           ],
-        },
+          sourcePage: "/gallery/page",
+        }),
         manifest,
       ),
     ).toEqual(["/gallery", "/gallery/@modal/default"]);
@@ -95,25 +219,30 @@ describe("resolveRouterTransitionFromRoutes", () => {
     };
     const expected = ["/gallery", "/gallery/@modal/(.)photos/[id]"];
 
+    const interceptionId = "interception:slot:modal:/gallery:/gallery->/gallery/photos/:id";
+
     expect(
       resolveRouterTransitionFromRoutes(
-        {
+        committed({
           interception,
-          routeId: "route:/gallery",
-          slotBindings: [
-            {
-              ...binding,
-              interceptionId: "interception:slot:modal:/gallery:/gallery->/gallery/photos/:id",
-            },
-          ],
-        },
+          slotBindings: [{ ...binding, interceptionId }],
+          sourcePage: "/gallery/page",
+        }),
         manifest,
       ),
     ).toEqual(expected);
     // Without the binding's interception id, the target URL selects it.
     expect(
       resolveRouterTransitionFromRoutes(
-        { interception, routeId: "route:/gallery", slotBindings: [binding] },
+        committed({ interception, slotBindings: [binding], sourcePage: "/gallery/page" }),
+        manifest,
+      ),
+    ).toEqual(expected);
+    // A merge keeps the intercepted slot after an ordinary payload clears the
+    // latest interception; its binding still names the interception.
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({ slotBindings: [{ ...binding, interceptionId }], sourcePage: "/gallery/page" }),
         manifest,
       ),
     ).toEqual(expected);

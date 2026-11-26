@@ -1,34 +1,28 @@
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { rendersSiblingIntercept } from "./app-browser-state.js";
 import {
   AppElementsWire,
+  type AppElements,
   type AppElementsInterception,
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import { matchOptimisticRouteManifestRoute } from "./app-optimistic-routing.js";
 
 // Synthetic slot of an interception marker without an @slot wrapper. Its page
-// renders as the owner's children, so Next.js reports it as the primary route.
+// renders as the owner's children, which the committed source page reports.
 // Matches SIBLING_INTERCEPT_SLOT_NAME in routing/app-route-graph.ts.
 const SIBLING_INTERCEPT_SLOT_NAME = "__vinext_sibling_intercept";
 
 type TransitionRouteState = Readonly<{
+  elements: AppElements;
   interception: AppElementsInterception | null;
-  routeId: string;
   slotBindings: readonly AppElementsSlotBinding[];
 }>;
 
 function isRouteGroupSegment(segment: string): boolean {
   return segment.startsWith("(") && segment.endsWith(")");
-}
-
-/** A manifest pattern part in source form: `:id` → `[id]`, `:slug+` → `[...slug]`. */
-function toSourceSegment(part: string): string {
-  if (!part.startsWith(":")) return part;
-  if (part.endsWith("+")) return `[...${part.slice(1, -1)}]`;
-  if (part.endsWith("*")) return `[[...${part.slice(1, -1)}]]`;
-  return `[${part.slice(1)}]`;
 }
 
 function joinSourcePath(segments: readonly string[]): string {
@@ -51,29 +45,38 @@ function matchManifestRoute(
   );
 }
 
-function resolveRouteSourcePath(
-  routePath: string,
-  routeManifest: BrowserRouteManifest | null,
-): string {
-  const route = matchManifestRoute(routePath, routeManifest);
-  if (route === null) return routePath;
-  return joinSourcePath(route.patternParts.map(toSourceSegment));
-}
-
 function resolveInterceptionSourcePagePath(
-  interception: AppElementsInterception,
-  interceptionId: string | null | undefined,
+  binding: AppElementsSlotBinding,
+  interception: AppElementsInterception | null,
   routeManifest: BrowserRouteManifest | null,
 ): string | null {
   if (routeManifest === null) return null;
   const graph = routeManifest.segmentGraph;
-  const byId = interceptionId ? graph.interceptions.get(interceptionId) : undefined;
+  // A merge can keep an intercepted slot from an earlier payload, so the
+  // binding's own interception id decides, not only the latest interception.
+  const byId = binding.interceptionId ? graph.interceptions.get(binding.interceptionId) : undefined;
   if (byId?.sourcePagePath) return byId.sourcePagePath;
+  if (interception === null || interception.slotId !== binding.slotId) return null;
   const targetParts = splitPathnameForRouteMatch(interception.targetMatchedUrl);
   const match = graph.interceptionsBySlotId
     .get(interception.slotId)
     ?.find((candidate) => matchRoutePattern(targetParts, candidate.targetPatternParts) !== null);
   return match?.sourcePagePath ?? null;
+}
+
+function treePathSegments(treePath: string): string[] {
+  return treePath.split("/").filter(Boolean);
+}
+
+/** The committed source page's directory segments, or null on a route miss. */
+function sourcePageDirectory(sourcePage: string | null): string[] | null {
+  if (sourcePage === null) return null;
+  const segments = sourcePage.split("/").filter(Boolean);
+  return segments.at(-1) === "page" ? segments.slice(0, -1) : segments;
+}
+
+function startsWithSegments(segments: readonly string[], prefix: readonly string[]): boolean {
+  return prefix.every((segment, index) => segments[index] === segment);
 }
 
 function resolveSlotSourcePath(
@@ -102,8 +105,9 @@ function resolveSlotSourcePath(
  * The source route patterns of the committed App Router tree, as Next.js
  * reports them in `RouterTransitionStartEvent.fromRoutes`: the primary
  * (children) route first, then one entry per parallel slot, sorted. Route
- * groups are omitted, a slot showing its default reports `@slot/default`, and
- * an intercepted slot reports the intercepting page's directory.
+ * groups are omitted, a slot or children showing its default reports
+ * `.../default`, an intercepted slot reports the intercepting page's
+ * directory, and a URL that matched no route reports `/_not-found`.
  *
  * Ref: packages/next/src/client/components/router-transition.ts
  * (getActiveRoutePaths)
@@ -112,20 +116,54 @@ export function resolveRouterTransitionFromRoutes(
   state: TransitionRouteState,
   routeManifest: BrowserRouteManifest | null,
 ): string[] {
-  const interception = state.interception;
-  const interceptionSlot =
-    interception === null ? null : AppElementsWire.parseElementKey(interception.slotId);
-  const siblingInterceptPath =
-    interception !== null &&
-    interceptionSlot?.kind === "slot" &&
-    interceptionSlot.name === SIBLING_INTERCEPT_SLOT_NAME
-      ? resolveInterceptionSourcePagePath(interception, null, routeManifest)
-      : null;
+  const metadata = AppElementsWire.readMetadata(state.elements);
+  const sourceSegments = sourcePageDirectory(metadata.sourcePage);
+  // A render of a whole intercepting route shows the owner's default as its
+  // children and the intercepting page in its one active slot. Its source page
+  // is the intercepting page's, without the slot's own segment.
+  const wholeInterceptedSlot =
+    metadata.wholeInterceptionSource === null
+      ? null
+      : (state.slotBindings.find((binding) => {
+          const slot = AppElementsWire.parseElementKey(binding.slotId);
+          return slot?.kind === "slot" && slot.name !== "children" && binding.state === "active";
+        }) ?? null);
 
-  const primaryRoutePath = routePathFromId(interception?.sourceRouteId ?? state.routeId);
-  const primary =
-    siblingInterceptPath ??
-    (primaryRoutePath === null ? null : resolveRouteSourcePath(primaryRoutePath, routeManifest));
+  let primary: string;
+  let wholeInterceptedSlotPath: string | null = null;
+  if (sourceSegments === null) {
+    primary = "/_not-found";
+  } else if (wholeInterceptedSlot !== null) {
+    const slot = AppElementsWire.parseElementKey(wholeInterceptedSlot.slotId);
+    const ownerSegments = slot?.kind === "slot" ? treePathSegments(slot.treePath) : [];
+    primary = joinSourcePath([...ownerSegments, "default"]);
+    if (slot?.kind === "slot") {
+      wholeInterceptedSlotPath = joinSourcePath([
+        ...ownerSegments,
+        `@${slot.name}`,
+        ...sourceSegments.slice(ownerSegments.length),
+      ]);
+    }
+  } else {
+    // The deepest children slot above the page decides whether the children
+    // render its page or its default, as a synthetic parallel sub-route's do.
+    let children: { binding: AppElementsSlotBinding; owner: string[] } | null = null;
+    if (!rendersSiblingIntercept(metadata)) {
+      for (const binding of state.slotBindings) {
+        const slot = AppElementsWire.parseElementKey(binding.slotId);
+        if (slot?.kind !== "slot" || slot.name !== "children") continue;
+        const owner = treePathSegments(slot.treePath);
+        if (!startsWithSegments(sourceSegments, owner)) continue;
+        if (children === null || owner.length > children.owner.length) {
+          children = { binding, owner };
+        }
+      }
+    }
+    primary =
+      children !== null && children.binding.state !== "active"
+        ? joinSourcePath([...children.owner, "default"])
+        : joinSourcePath(sourceSegments);
+  }
 
   const slots: string[] = [];
   for (const binding of state.slotBindings) {
@@ -137,16 +175,18 @@ export function resolveRouterTransitionFromRoutes(
     ) {
       continue;
     }
-    if (interception !== null && interception.slotId === binding.slotId) {
-      const intercepted = resolveInterceptionSourcePagePath(
-        interception,
-        binding.interceptionId,
-        routeManifest,
-      );
-      if (intercepted !== null) {
-        slots.push(intercepted);
-        continue;
-      }
+    if (binding === wholeInterceptedSlot && wholeInterceptedSlotPath !== null) {
+      slots.push(wholeInterceptedSlotPath);
+      continue;
+    }
+    const intercepted = resolveInterceptionSourcePagePath(
+      binding,
+      state.interception,
+      routeManifest,
+    );
+    if (intercepted !== null) {
+      slots.push(intercepted);
+      continue;
     }
     slots.push(
       resolveSlotSourcePath(binding, [...slot.treePath.split("/"), `@${slot.name}`], routeManifest),
@@ -154,5 +194,5 @@ export function resolveRouterTransitionFromRoutes(
   }
 
   slots.sort((left, right) => left.localeCompare(right));
-  return primary === null ? slots : [primary, ...slots];
+  return [primary, ...slots];
 }
