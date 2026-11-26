@@ -2344,11 +2344,15 @@ function discoverInheritedParallelSlots(
     const slotLayoutIdx = Math.max(lvlLayoutIdx, 0);
     const segmentsBelow = segments.slice(segmentIndex);
     const isActiveUrlLevel = dir === routeDir || segmentsBelow.every(isInvisibleSegment);
+    // An ancestor slot with only nested pages (no page, default or
+    // interception at its root) is still part of a descendant route when one
+    // of those pages mirrors it, e.g. @slot/specific/page.tsx for /specific.
+    // It's dropped below when nothing mirrors the route.
     const slotsAtLevel = discoverParallelSlots(
       dir,
       appDir,
       matcher,
-      includeNestedOnlySlots && isActiveUrlLevel,
+      isActiveUrlLevel ? includeNestedOnlySlots : true,
     );
 
     for (const slot of slotsAtLevel) {
@@ -2365,6 +2369,9 @@ function discoverInheritedParallelSlots(
         // pattern-compatible matches (e.g. slot's [name] for route's [id]) so
         // the runtime can extract slot-specific params via slotPatternParts.
         const mirror = findMirroredSlotPage(slot.ownerDir, segmentsBelow, matcher);
+        const isNestedOnlySlot =
+          !slot.hasPage && !slot.defaultPath && slot.interceptingRoutes.length === 0;
+        if (isNestedOnlySlot && !mirror) continue;
         let slotPatternParts: string[] | undefined;
         let slotParamNames: string[] | undefined;
         if (mirror) {
