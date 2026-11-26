@@ -182,20 +182,43 @@ describe("installSocketErrorBackstop listeners", () => {
     path.resolve(import.meta.dirname, "../packages/vinext/src/server/socket-error-backstop.ts"),
   ).href;
 
-  function runWithBackstop(install: string, env: Record<string, string> = {}) {
+  // Node strips the types but doesn't map the source's `.js` specifiers to
+  // their `.ts` files, so a resolve hook does.
+  function spawnWithBackstop(body: string, env: Record<string, string> = {}) {
     const script = `
-      import { installSocketErrorBackstop } from ${JSON.stringify(backstopUrl)};
-      ${install}
-      process.on("unhandledRejection", () => console.log("app handler saw rejection"));
-      void Promise.reject(new Error("floating rejection"));
-      setTimeout(() => { throw new Error("uncaught throw"); }, 10);
-      setTimeout(() => console.log("still running"), 50);
+      import { existsSync } from "node:fs";
+      import { registerHooks } from "node:module";
+      import { fileURLToPath } from "node:url";
+      registerHooks({
+        resolve(specifier, context, nextResolve) {
+          if (specifier.endsWith(".js") && context.parentURL?.endsWith(".ts")) {
+            const ts = new URL(specifier.slice(0, -3) + ".ts", context.parentURL);
+            if (existsSync(fileURLToPath(ts))) return nextResolve(ts.href, context);
+          }
+          return nextResolve(specifier, context);
+        },
+      });
+      const { installSocketErrorBackstop } = await import(${JSON.stringify(backstopUrl)});
+      ${body}
     `;
     return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
       encoding: "utf8",
       env: { ...process.env, VITEST: "", NODE_ENV: "production", ...env },
       timeout: 10_000,
     });
+  }
+
+  function runWithBackstop(install: string, env: Record<string, string> = {}) {
+    return spawnWithBackstop(
+      `
+      ${install}
+      process.on("unhandledRejection", () => console.log("app handler saw rejection"));
+      void Promise.reject(new Error("floating rejection"));
+      setTimeout(() => { throw new Error("uncaught throw"); }, 10);
+      setTimeout(() => console.log("still running"), 50);
+    `,
+      env,
+    );
   }
 
   // Next.js's router server logs uncaught exceptions and unhandled rejections
@@ -247,25 +270,61 @@ describe("installSocketErrorBackstop listeners", () => {
     expect(result.stderr).toContain("[vinext] uncaughtException: Error: uncaught throw");
   });
 
-  function runSignalWithBackstop(trigger: string) {
-    // The digest unauthorized() throws (shims/navigation-errors.ts).
-    const script = `
-      import { installSocketErrorBackstop } from ${JSON.stringify(backstopUrl)};
+  // NEXT_HTTP_ERROR_FALLBACK;401 is the digest unauthorized() throws
+  // (shims/navigation-errors.ts).
+  // A build keeps NODE_ENV=test for its prerender workers.
+  it("logs and keeps rendering during prerender with NODE_ENV=test", () => {
+    const result = runWithBackstop("installSocketErrorBackstop();", {
+      NODE_ENV: "test",
+      VINEXT_PRERENDER: "1",
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("still running");
+    expect(result.stderr).toContain("[vinext] unhandledRejection: Error: floating rejection");
+  });
+
+  // Next.js's export worker and router server register a no-op
+  // `rejectionHandled` listener, so a late-awaited rejection prints no
+  // PromiseRejectionHandledWarning.
+  it("doesn't warn when a rejection is handled late", () => {
+    const result = spawnWithBackstop(
+      `
+      installSocketErrorBackstop();
+      const preloaded = Promise.reject(new Error("preloaded rejection"));
+      setTimeout(() => preloaded.catch(() => console.log("handled late")), 10);
+      setTimeout(() => console.log("still running"), 50);
+    `,
+      { VINEXT_PRERENDER: "1" },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("handled late");
+    expect(result.stderr).not.toContain("PromiseRejectionHandledWarning");
+  });
+
+  function runSignalWithBackstop(trigger: string, digest = "NEXT_HTTP_ERROR_FALLBACK;401") {
+    return spawnWithBackstop(
+      `
       const unauthorized = () => {
-        throw Object.assign(new Error("NEXT_UNAUTHORIZED"), {
-          digest: "NEXT_HTTP_ERROR_FALLBACK;401",
-        });
+        throw Object.assign(new Error("NEXT_UNAUTHORIZED"), { digest: ${JSON.stringify(digest)} });
       };
       installSocketErrorBackstop();
       ${trigger}
       setTimeout(() => console.log("still running"), 50);
-    `;
-    return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
-      encoding: "utf8",
-      env: { ...process.env, VITEST: "", NODE_ENV: "production", VINEXT_PRERENDER: "1" },
-      timeout: 10_000,
-    });
+    `,
+      { VINEXT_PRERENDER: "1" },
+    );
   }
+
+  // Like Next.js's isNextRouterError, only a valid signal digest is ignored.
+  it("logs an unhandled rejection whose digest only looks like a signal", () => {
+    const result = runSignalWithBackstop(
+      "void Promise.resolve().then(() => unauthorized());",
+      "NEXT_HTTP_ERROR_FALLBACK;500",
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("still running");
+    expect(result.stderr).toContain("[vinext] unhandledRejection: Error: NEXT_UNAUTHORIZED");
+  });
 
   it("ignores an unhandled navigation signal during prerender", () => {
     const result = runSignalWithBackstop("void Promise.resolve().then(() => unauthorized());");

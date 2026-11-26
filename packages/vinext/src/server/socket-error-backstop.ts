@@ -73,8 +73,9 @@
  * peer-disconnect errors during test runs should surface normally.
  * `process.env.VITEST === "true"` is set by Vitest in every worker;
  * `NODE_ENV === "test"` covers other test runners that follow the
- * standard convention, except for a running server, which installs the
- * listener whatever NODE_ENV is, as Next.js's router server does.
+ * standard convention, except for a running server or a prerender, which
+ * install the listener whatever NODE_ENV is, as Next.js's router server and
+ * export worker do.
  *
  * **Listener ordering.** `index.ts` is imported synchronously at the
  * top of every user's `vite.config.ts`, so vinext's listener registers
@@ -95,6 +96,8 @@
  * Set `VINEXT_DEBUG_SOCKET_ERRORS=1` to log a one-line marker each
  * time the listener absorbs an error.
  */
+import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
+
 const SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.socketErrorBackstop");
 const RUNNING_SERVER_FLAG = Symbol.for("vinext.socketErrorBackstop.runningServer");
 
@@ -223,22 +226,17 @@ export function isCancelledRequestBodyEnqueueError(err: unknown): boolean {
 }
 
 /**
- * Pure predicate: Next.js's `isDynamicUsageError`, the errors its export
- * worker never logs: a navigation signal (`redirect()`, `notFound()`,
- * `forbidden()`, `unauthorized()`), dynamic server usage, or a bailout to
- * client rendering. Matched by digest, without imports, because this module
- * loads with the Vite plugin.
+ * Next.js's `isDynamicUsageError`, the errors its export worker never logs:
+ * a valid navigation signal (`redirect()`, `notFound()`, `forbidden()`,
+ * `unauthorized()`), dynamic server usage, or a bailout to client rendering.
+ * Navigation digests are validated in full, as Next.js's `isNextRouterError`
+ * does, so an arbitrary digest prefix can't hide a real error.
  */
 function isFrameworkSignalError(err: unknown): boolean {
+  if (isValidNavigationSignalError(err)) return true;
   if (err === null || typeof err !== "object" || !("digest" in err)) return false;
-  const digest = String((err as { digest: unknown }).digest);
-  return (
-    digest === "NEXT_NOT_FOUND" ||
-    digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
-    digest.startsWith("NEXT_REDIRECT;") ||
-    digest === "DYNAMIC_SERVER_USAGE" ||
-    digest === "BAILOUT_TO_CLIENT_SIDE_RENDERING"
-  );
+  const digest = (err as { digest: unknown }).digest;
+  return digest === "DYNAMIC_SERVER_USAGE" || digest === "BAILOUT_TO_CLIENT_SIDE_RENDERING";
 }
 
 /**
@@ -261,10 +259,17 @@ export function installSocketErrorBackstop(options: { runningServer?: boolean } 
   if (options.runningServer) proc[RUNNING_SERVER_FLAG] = true;
   if (proc[SOCKET_BACKSTOP_FLAG]) return;
   if (process.env.VITEST === "true") return;
-  // A running server installs it whatever NODE_ENV is, as `next start` and
-  // `next dev` install their handlers. A test runner that sets NODE_ENV=test
-  // (Jest) can still start one as a separate process.
-  if (process.env.NODE_ENV === "test" && !options.runningServer) return;
+  // A running server or a prerender installs it whatever NODE_ENV is, as
+  // `next start`, `next dev` and Next.js's export worker install their
+  // handlers. A test runner that sets NODE_ENV=test (Jest) can still start one
+  // as a separate process, and a build keeps NODE_ENV=test for its workers.
+  if (
+    process.env.NODE_ENV === "test" &&
+    !options.runningServer &&
+    process.env.VINEXT_PRERENDER !== "1"
+  ) {
+    return;
+  }
   proc[SOCKET_BACKSTOP_FLAG] = true;
 
   const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
@@ -320,6 +325,11 @@ export function installSocketErrorBackstop(options: { runningServer?: boolean } 
     }
     throw err;
   });
+  // A rejection handled after its `unhandledRejection` turn, such as a
+  // preloaded promise awaited later, is expected, so Node's
+  // PromiseRejectionHandledWarning is suppressed, as Next.js's router server
+  // and export worker suppress it.
+  process.on("rejectionHandled", () => {});
   process.on("unhandledRejection", (reason: unknown) => {
     if (absorbBenignAssetImport(reason, "unhandledRejection")) return;
     if (process.env.VINEXT_PRERENDER === "1") {
