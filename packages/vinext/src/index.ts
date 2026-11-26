@@ -399,6 +399,7 @@ import {
   commonJsEsmFacadeOptimizeDepsPlugin,
   stripEsmCommonJsExportFacade,
 } from "./plugins/commonjs-esm-facade.js";
+import { commonJsProloguePlugin } from "./plugins/commonjs-prologue.js";
 import { COMMONJS_SYNTAX_CODE_FILTER } from "./plugins/commonjs-syntax.js";
 import {
   createRequireConditionResolutionPlugin,
@@ -2921,6 +2922,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // files actually loaded through a bundled SSR graph are converted on
     // demand instead of requiring Vite's environment-wide dependency crawl.
     commonJsPlugin,
+    // Keep a converted module's hashbang and directives ahead of the blocks
+    // vite-plugin-commonjs prepends. Runs right after it.
+    commonJsProloguePlugin,
     {
       name: "vinext:global-not-found-css-isolation",
       apply: "build",
@@ -4451,8 +4455,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // vite-plugin-commonjs's pre-bundle plugin runs in this optimizer.
             // The alias plugin would inline excluded shims into App Router deps.
             plugins: hasAppDir
-              ? [commonJsEsmFacadeOptimizeDepsPlugin]
-              : [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
+              ? [commonJsProloguePlugin, commonJsEsmFacadeOptimizeDepsPlugin]
+              : [
+                  depOptimizeAliasPlugin,
+                  commonJsProloguePlugin,
+                  commonJsEsmFacadeOptimizeDepsPlugin,
+                ],
           },
         };
         pagesOptimizeEntries = !hasAppDir
