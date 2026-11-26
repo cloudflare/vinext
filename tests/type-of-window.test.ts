@@ -5,6 +5,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createBuilder, parseAst, type ESTree, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
@@ -562,6 +563,40 @@ const literalOnly = true && false`;
     expect(server?.code).not.toContain("not-nodejs-dep");
     expect(server?.code).not.toContain("edge-dep");
     expect(server?.code).toContain("const literalOnly = true && false");
+  });
+
+  it("keeps the var bindings a discarded NEXT_RUNTIME branch hoists", () => {
+    // After DefinePlugin replacement the edge branch never runs, so edgeOnly
+    // is declared but undefined.
+    const source = `function main(server) {
+  if (process.env.NEXT_RUNTIME === "edge") { var edgeOnly = 1; var [a, { b }] = [2, {}] }
+  if (process.env.NEXT_RUNTIME === "edge") var unbraced = 1
+  if (process.env.NEXT_RUNTIME === "nodejs") server(); else { var nodejsElse = 1 }
+  return [typeof edgeOnly, a, b, unbraced, nodejsElse, server()]
+}`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).not.toContain("= 1");
+    const main = vm.runInNewContext(`${server!.code}\nmain`) as (server: () => string) => unknown;
+    expect(main(() => "server")).toEqual([
+      "undefined",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "server",
+    ]);
+  });
+
+  it("keeps a selected NEXT_RUNTIME statement out of the directive prologue", () => {
+    const source = `function sloppy() { if (process.env.NEXT_RUNTIME === "nodejs") "use strict"; return this }`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).not.toContain("process.env");
+    const context = vm.createContext();
+    const sloppy = vm.runInContext(`${server!.code}\nsloppy`, context) as () => unknown;
+    // Still sloppy: `this` is the global object, not undefined.
+    expect(sloppy.call(undefined)).toBe(vm.runInContext("globalThis", context));
   });
 
   it("preserves NEXT_RUNTIME reads on locally bound process", () => {

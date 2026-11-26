@@ -9,7 +9,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { buildAppFixture, buildPagesFixture, startFixtureServer } from "./helpers.js";
 
 const PAGES_FIXTURE = path.resolve(
@@ -29,7 +29,18 @@ async function readBundleDir(entry: string): Promise<string> {
   return sources.join("\n");
 }
 
+// Only register()'s branches assign the marker; the minifier may quote it
+// with backticks.
+const SELECTED_BRANCH = /instrumentationFinished\s*=\s*["'`]nodejs["'`]/;
+const DISCARDED_BRANCH = /instrumentationFinished\s*=\s*["'`]edge["'`]/;
+
 describe("instrumentation register() with unreachable NEXT_RUNTIME branches", () => {
+  // Both fixtures' register() sets the same global, and dev servers share this
+  // process's globals, so each test starts without it.
+  beforeEach(() => {
+    delete (globalThis as { instrumentationFinished?: unknown }).instrumentationFinished;
+  });
+
   it("runs the nodejs branch in Pages Router dev", async () => {
     const { server, baseUrl } = await startFixtureServer(PAGES_FIXTURE, { appDir: null });
     try {
@@ -54,7 +65,8 @@ describe("instrumentation register() with unreachable NEXT_RUNTIME branches", ()
     const entry = await buildPagesFixture(PAGES_FIXTURE);
     try {
       const bundle = await readBundleDir(entry);
-      expect(bundle).toContain("instrumentationFinished");
+      expect(bundle).toMatch(SELECTED_BRANCH);
+      expect(bundle).not.toMatch(DISCARDED_BRANCH);
       expect(bundle).not.toContain("this should fail");
     } finally {
       await fs.rm(path.dirname(path.dirname(entry)), { recursive: true, force: true });
@@ -65,7 +77,8 @@ describe("instrumentation register() with unreachable NEXT_RUNTIME branches", ()
     const entry = await buildAppFixture(APP_FIXTURE);
     try {
       const bundle = await readBundleDir(entry);
-      expect(bundle).toContain("instrumentationFinished");
+      expect(bundle).toMatch(SELECTED_BRANCH);
+      expect(bundle).not.toMatch(DISCARDED_BRANCH);
       expect(bundle).not.toContain("this should fail");
     } finally {
       await fs.rm(path.dirname(path.dirname(entry)), { recursive: true, force: true });

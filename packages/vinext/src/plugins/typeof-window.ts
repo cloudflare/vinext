@@ -309,6 +309,14 @@ function evaluateConsumerCondition(
   return result === null ? null : { value: result, effects: [], environment: true };
 }
 
+/** A `var` declaration of the bindings a discarded branch hoists, or "". */
+function hoistedVarDeclaration(discarded: ESTree.Node | null | undefined): string {
+  if (!discarded) return "";
+  const scope = createAstScope(null);
+  collectVarScopeBindings(discarded, scope, false);
+  return scope.bindings.size === 0 ? "" : `var ${[...scope.bindings].join(", ")}; `;
+}
+
 /** Like {@link evaluateConsumerCondition}, but only results the environment decided. */
 function evaluateEnvironmentCondition(
   node: ESTree.Node,
@@ -438,11 +446,14 @@ export function replaceConsumerEnvironmentConditions(
       const result = evaluateEnvironmentCondition(node.test, replacements, scope, true);
       if (result !== null) {
         const selected = result.value ? node.consequent : node.alternate;
+        // A discarded branch's `var` bindings are hoisted out of it, so they
+        // stay declared.
+        const hoisted = hoistedVarDeclaration(result.value ? node.alternate : node.consequent);
         if (result.effects.length > 0) {
           const effects = result.effects;
           for (const effect of effects) visit(effect, scope);
           if (selected) visit(selected, scope);
-          overwriteGap(node.start, effects[0].start, "{ (");
+          overwriteGap(node.start, effects[0].start, `{ ${hoisted}(`);
           for (let index = 1; index < effects.length; index++) {
             overwriteGap(effects[index - 1].end, effects[index].start, "); (");
           }
@@ -453,12 +464,19 @@ export function replaceConsumerEnvironmentConditions(
           } else {
             overwriteGap(lastEffect.end, node.end, "); }");
           }
-        } else if (selected) {
+        } else if (selected?.type === "BlockStatement" && hoisted === "") {
           output.remove(node.start, selected.start);
           output.remove(selected.end, node.end);
           visit(selected, scope);
+        } else if (selected) {
+          // A block keeps a selected statement such as a string expression
+          // out of its parent's directive prologue. The selected branch is
+          // folded first, so the closing brace outlasts its own edits.
+          visit(selected, scope);
+          overwriteGap(node.start, selected.start, `{ ${hoisted}`);
+          overwriteGap(selected.end, node.end, " }");
         } else {
-          output.overwrite(node.start, node.end, ";");
+          output.overwrite(node.start, node.end, hoisted === "" ? ";" : hoisted.trimEnd());
         }
         changed = true;
         return;
