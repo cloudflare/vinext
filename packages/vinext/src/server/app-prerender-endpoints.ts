@@ -5,7 +5,11 @@ import {
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
-import { staticParamsToJson, staticPathsToJson } from "./prerender-static-params-json.js";
+import {
+  paramsFromJson,
+  staticParamsToJson,
+  staticPathsToJson,
+} from "./prerender-static-params-json.js";
 import type { RootParams } from "vinext/shims/root-params";
 import {
   runInWorkStoreScope,
@@ -176,7 +180,7 @@ function jsonNullResponse(): Response {
 function parseParentParams(raw: string | null): RootParams {
   if (!raw) return {};
 
-  const value = JSON.parse(raw);
+  const value = paramsFromJson(JSON.parse(raw));
   if (!isPlainObject(value)) return {};
 
   const params: RootParams = {};

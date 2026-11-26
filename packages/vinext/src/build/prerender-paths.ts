@@ -54,6 +54,7 @@ import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/con
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import {
+  paramsToJson,
   staticParamsFromJson,
   staticPathsFromJson,
 } from "../server/prerender-static-params-json.js";
@@ -772,13 +773,15 @@ async function collectAppPaths(options: {
         // Under Cache Components every empty result is rejected below, so a
         // composed resolver must not pass parents through one.
         const rejectEmptyResults = requireNonEmptyStaticParams;
-        const cacheKey = `${pattern}\0${JSON.stringify(params)}\0${rejectEmptyResults}`;
+        // Keeps a parent's own undefined param, which Next.js passes through.
+        const parentParamsJson = JSON.stringify(paramsToJson(params));
+        const cacheKey = `${pattern}\0${parentParamsJson}\0${rejectEmptyResults}`;
         let request = staticParamsCache.get(cacheKey);
         if (request === undefined) {
           request = (async () => {
             const search = new URLSearchParams({ pattern });
             if (Object.keys(params).length > 0) {
-              search.set("parentParams", JSON.stringify(params));
+              search.set("parentParams", parentParamsJson);
             }
             if (rejectEmptyResults) search.set("rejectEmptyResults", "1");
             const text = await fetchDiscoveryEndpoint(

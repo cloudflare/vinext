@@ -24,6 +24,7 @@ import { appRouteLayoutStaticParamsGroups, type AppRoute } from "../routing/app-
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import {
+  paramsToJson,
   staticParamsFromJson,
   staticPathsFromJson,
 } from "../server/prerender-static-params-json.js";
@@ -1599,13 +1600,15 @@ export async function prerenderApp({
     staticParamsMap = new Proxy({} as typeof staticParamsMap, {
       get(_target, pattern: string) {
         return async ({ params }: { params: Record<string, string | string[]> }) => {
-          const cacheKey = `${pattern}\0${JSON.stringify(params)}`;
+          // Keeps a parent's own undefined param, which Next.js passes through.
+          const parentParamsJson = JSON.stringify(paramsToJson(params));
+          const cacheKey = `${pattern}\0${parentParamsJson}`;
           const cached = staticParamsCache.get(cacheKey);
           if (cached !== undefined) return cached;
           const request = (async () => {
             const search = new URLSearchParams({ pattern });
             if (Object.keys(params).length > 0) {
-              search.set("parentParams", JSON.stringify(params));
+              search.set("parentParams", parentParamsJson);
             }
             // Next.js fails an export on any empty generateStaticParams result,
             // so a composed resolver must not pass parents through one.

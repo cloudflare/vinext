@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
 import {
+  paramsToJson,
   staticParamsFromJson,
   staticPathsFromJson,
 } from "../packages/vinext/src/server/prerender-static-params-json.js";
@@ -393,6 +394,41 @@ describe("App prerender endpoint helpers", () => {
     expect(appResult).toEqual([{ locale: "en", slug: undefined }, { locale: "fr" }]);
     expect(appResult[0]).toHaveProperty("slug");
     expect(appResult[1]).not.toHaveProperty("slug");
+  });
+
+  it("never reads a user's object param value as an undefined param", async () => {
+    // An object is never a valid param value, so Next.js rejects it; it must
+    // not turn into a valid root path on the way through JSON.
+    const value = { __vinextParam: "undefined" };
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/static-params?pattern=/:slug*"),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        staticParamsMap: { "/:slug*": () => [{ slug: value }] },
+      },
+    );
+    expect(staticParamsFromJson(await response?.json())).toEqual([{ slug: value }]);
+  });
+
+  // Next.js passes a layout's own undefined param to the child
+  // generateStaticParams (build/static-paths/app.ts generateRouteStaticParams).
+  it("passes a parent's own undefined param to generateStaticParams", async () => {
+    const generateStaticParams = vi.fn((_input: { params: object }) => []);
+    const search = new URLSearchParams({
+      pattern: "/:locale/:slug",
+      parentParams: JSON.stringify(paramsToJson({ locale: undefined })),
+    });
+    await handleAppPrerenderEndpoint(
+      new Request(`http://localhost/__vinext/prerender/static-params?${search}`),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        staticParamsMap: { "/:locale/:slug": generateStaticParams },
+      },
+    );
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: { locale: undefined } });
+    expect(generateStaticParams.mock.calls[0]?.[0]).toHaveProperty("params.locale");
   });
 
   it("returns no content when the requested prerender function is absent", async () => {
