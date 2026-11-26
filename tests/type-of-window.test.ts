@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { createBuilder, parseAst, type ESTree } from "vite";
+import { createBuilder, parseAst, type ESTree, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { forEachAstChild } from "../packages/vinext/src/plugins/ast-utils.js";
 import {
@@ -493,6 +493,74 @@ function check(process) {
     expect(result?.code).not.toContain("globalBrowserOnly");
     expect(result?.code).toContain("if (process.browser) localBrowserOnly()");
     expect(result?.code).toContain("console.log(process.browser)");
+  });
+
+  // Ported from Next.js: test/e2e/instrumentation-hook/instrumentation-hook.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/instrumentation-hook/instrumentation-hook.test.ts
+  // Every fixture's register() ends in `else { await require('this should fail') }`.
+  it("folds process.env.NEXT_RUNTIME comparisons before require() hoisting", () => {
+    const source = `export async function register() {
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    console.log('edge')
+  } else if (process.env['NEXT_RUNTIME'] == 'nodejs') {
+    console.log('nodejs')
+  } else {
+    await require('this should fail')
+  }
+  const kind = process.env?.NEXT_RUNTIME !== '' ? 'server' : require('client-only-dep')
+}`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).toContain("console.log('nodejs')");
+    expect(server?.code).toContain("'server'");
+    expect(server?.code).not.toContain("console.log('edge')");
+    expect(server?.code).not.toContain("this should fail");
+    expect(server?.code).not.toContain("client-only-dep");
+
+    const client = replaceConsumerEnvironmentConditions(source, { nextRuntime: "" });
+    expect(client?.code).toContain("client-only-dep");
+    expect(client?.code).not.toContain("console.log('nodejs')");
+    expect(client?.code).toContain("this should fail");
+  });
+
+  it("preserves NEXT_RUNTIME reads on locally bound process", () => {
+    const result = replaceConsumerEnvironmentConditions(
+      `function check(process) {
+  if (process.env.NEXT_RUNTIME === "edge") require("local-edge")
+}
+if (process.env.NEXT_RUNTIME === "edge") require("global-edge")`,
+      { nextRuntime: "nodejs" },
+    );
+
+    expect(result?.code).toContain('require("local-edge")');
+    expect(result?.code).not.toContain("global-edge");
+  });
+
+  it("folds NEXT_RUNTIME before vite-plugin-commonjs hoists require() calls", async () => {
+    const plugins = (vinext() as Plugin[]).flat(Infinity) as Plugin[];
+    const foldIndex = plugins.findIndex((plugin) => plugin?.name === "vinext:next-runtime-fold");
+    const commonjsIndex = plugins.findIndex((plugin) => plugin?.name === "vite-plugin-commonjs");
+    expect(foldIndex).toBeGreaterThanOrEqual(0);
+    expect(commonjsIndex).toBeGreaterThan(foldIndex);
+    const fold = plugins[foldIndex];
+    expect(fold.enforce).toBe("pre");
+
+    const handler = (fold.transform as { handler: unknown }).handler as (
+      this: unknown,
+      code: string,
+      id: string,
+    ) => { code: string } | null;
+    const source = `if (process.env.NEXT_RUNTIME === "nodejs") server(); else require("edge-only")`;
+    const run = (consumer: "client" | "server") =>
+      handler.call(
+        { environment: { name: consumer === "client" ? "client" : "ssr", config: { consumer } } },
+        source,
+        "/app/instrumentation.ts",
+      );
+
+    expect(run("server")?.code).not.toContain("edge-only");
+    expect(run("client")?.code).toContain("edge-only");
+    expect(run("client")?.code).not.toContain("server()");
   });
 
   it("removes nested dead branches in the selected branch", () => {

@@ -2896,6 +2896,32 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     mdxProxyPlugin,
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
+    // Next.js inlines `process.env.NEXT_RUNTIME` with webpack's DefinePlugin,
+    // which skips dependencies in branches the constant makes unreachable, so
+    // `if (process.env.NEXT_RUNTIME === "nodejs") ... else require("x")` never
+    // resolves `x`. vite-plugin-commonjs hoists every require() to a top-level
+    // import before Vite's define runs, so fold those comparisons first. The
+    // values match the `process.env.NEXT_RUNTIME` defines set above and in
+    // `vinext:compiler-define-server`.
+    {
+      name: "vinext:next-runtime-fold",
+      enforce: "pre",
+      transform: {
+        filter: {
+          id: { include: /\.[cm]?[jt]sx?(?:\?|$)/, exclude: /\/node_modules\// },
+          code: /\bNEXT_RUNTIME\b/,
+        },
+        handler(code, id) {
+          const isClient =
+            this.environment.name === "client" || this.environment.config.consumer === "client";
+          return replaceConsumerEnvironmentConditions(
+            code,
+            { nextRuntime: isClient ? "" : "nodejs" },
+            id,
+          );
+        },
+      },
+    },
     // Next.js ignores requests without any statically known path component
     // during graph analysis and leaves a deterministic runtime failure.
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),

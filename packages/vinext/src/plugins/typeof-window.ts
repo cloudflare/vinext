@@ -50,6 +50,13 @@ const NON_IMPORTING_IMPORT_META_RE = /\s*\.\s*(?:url|env)\b/y;
 export type ConsumerEnvironmentReplacements = {
   typeofWindow?: WindowType;
   processBrowser?: boolean;
+  /**
+   * Compile-time `process.env.NEXT_RUNTIME` value (`""` for client bundles,
+   * `"nodejs"` for server bundles). Folding its comparisons before
+   * vite-plugin-commonjs hoists `require()` calls keeps requires in dead
+   * runtime branches out of the module graph, as webpack's DefinePlugin does.
+   */
+  nextRuntime?: string;
   pruneUnreachableImports?: boolean;
   /**
    * Return null without walking the AST when folding cannot change the module's
@@ -175,6 +182,43 @@ function evaluateProcessBrowserCondition(
   return node.operator === "==" || node.operator === "===" ? equal : !equal;
 }
 
+function isNextRuntimeMember(node: ESTree.Node, scope: AstScope): boolean {
+  const candidate = node.type === "ChainExpression" ? node.expression : node;
+  if (candidate.type !== "MemberExpression") return false;
+  const env =
+    candidate.object.type === "ChainExpression" ? candidate.object.expression : candidate.object;
+  if (env.type !== "MemberExpression") return false;
+  return (
+    (candidate.computed
+      ? stringLiteralValue(candidate.property) === "NEXT_RUNTIME"
+      : isIdentifierNamed(candidate.property, "NEXT_RUNTIME")) &&
+    (env.computed
+      ? stringLiteralValue(env.property) === "env"
+      : isIdentifierNamed(env.property, "env")) &&
+    isIdentifierNamed(env.object, "process") &&
+    !hasAstBinding(scope, "process")
+  );
+}
+
+function evaluateNextRuntimeComparison(
+  node: ESTree.Node,
+  replacement: string,
+  scope: AstScope,
+): boolean | null {
+  if (node.type !== "BinaryExpression") return null;
+  if (!["==", "===", "!=", "!=="].includes(String(node.operator))) return null;
+
+  const comparedValue = isNextRuntimeMember(node.left, scope)
+    ? stringLiteralValue(node.right)
+    : isNextRuntimeMember(node.right, scope)
+      ? stringLiteralValue(node.left)
+      : null;
+  if (comparedValue === null) return null;
+
+  const equal = replacement === comparedValue;
+  return node.operator === "==" || node.operator === "===" ? equal : !equal;
+}
+
 type EvaluatedCondition = {
   value: boolean;
   effects: ESTree.Node[];
@@ -222,6 +266,10 @@ function evaluateConsumerCondition(
   }
   if (replacements.typeofWindow !== undefined) {
     const result = evaluateTypeofWindowComparison(node, replacements.typeofWindow, scope);
+    if (result !== null) return { value: result, effects: [] };
+  }
+  if (replacements.nextRuntime !== undefined) {
+    const result = evaluateNextRuntimeComparison(node, replacements.nextRuntime, scope);
     if (result !== null) return { value: result, effects: [] };
   }
   if (replacements.processBrowser === undefined) return null;
@@ -274,7 +322,9 @@ export function replaceConsumerEnvironmentConditions(
   const mayContainProcessBrowser =
     replacements.processBrowser !== undefined &&
     ((/\bprocess\b/.test(code) && /\bbrowser\b/.test(code)) || sourceEscapePattern.test(code));
-  if (!mayContainTypeofWindow && !mayContainProcessBrowser) return null;
+  const mayContainNextRuntime =
+    replacements.nextRuntime !== undefined && /\bNEXT_RUNTIME\b/.test(code);
+  if (!mayContainTypeofWindow && !mayContainProcessBrowser && !mayContainNextRuntime) return null;
 
   const extension = path.extname(stripViteModuleQuery(id));
   const lang =
