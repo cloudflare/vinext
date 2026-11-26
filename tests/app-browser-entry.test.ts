@@ -95,6 +95,7 @@ import {
   type AppElementsInterception,
   type AppElementsSlotBinding,
 } from "../packages/vinext/src/server/app-elements.js";
+import { createMountedSlotToken } from "../packages/vinext/src/server/app-mounted-slots-header.js";
 import {
   createClientNavigationRenderSnapshot,
   type ClientNavigationRenderSnapshot,
@@ -10980,7 +10981,15 @@ describe("mounted slot helpers", () => {
       "slot:a:/": React.createElement("div", null, "a"),
     });
 
-    expect(getMountedSlotIdsHeader(elements)).toBe("slot:a:/ slot:z:/");
+    // Each id carries the hash of its slot shell's identity.
+    const identities = AppElementsWire.readMetadata(elements).bfcacheSegmentIdentities;
+    expect(getMountedSlotIdsHeader(elements)).toBe(
+      [
+        createMountedSlotToken("slot:a:/", identities["slot:a:/"]),
+        createMountedSlotToken("slot:z:/", identities["slot:z:/"]),
+      ].join(" "),
+    );
+    expect(identities["slot:a:/"]).toBeDefined();
   });
 
   it("returns null when there are no mounted slots", () => {

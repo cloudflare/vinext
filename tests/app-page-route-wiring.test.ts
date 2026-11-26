@@ -48,6 +48,12 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import {
+  createMountedSlotToken,
+  normalizeMountedSlotsHeader,
+  parseMountedSlotsHeader,
+  type MountedSlots,
+} from "../packages/vinext/src/server/app-mounted-slots-header.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
 import {
@@ -1332,7 +1338,7 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      mountedSlotIds: new Set(["slot:sidebar:/"]),
+      mountedSlots: new Map([["slot:sidebar:/", null]]),
       route: {
         error: null,
         errors: [null],
@@ -1378,7 +1384,7 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      mountedSlotIds: new Set(["slot:sidebar:/"]),
+      mountedSlots: new Map([["slot:sidebar:/", null]]),
       route: {
         error: null,
         errors: [null],
@@ -4901,7 +4907,7 @@ describe("app page route wiring helpers", () => {
     const DefaultPage = () => createElement("p", null, "default-slot");
     const elements = buildAppPageElements({
       isRscRequest: true,
-      mountedSlotIds: new Set(["slot:team:/"]),
+      mountedSlots: new Map([["slot:team:/", null]]),
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
@@ -4941,11 +4947,11 @@ describe("app page route wiring helpers", () => {
     expect(elements["slot:team:/"]).toBeUndefined();
   });
 
-  it("renders slot default.tsx on RSC request when slot is not in mountedSlotIds (first entry)", () => {
+  it("renders slot default.tsx on RSC request when slot is not in mountedSlots (first entry)", () => {
     const DefaultPage = () => createElement("p", null, "default-slot");
     const elements = buildAppPageElements({
       isRscRequest: true,
-      mountedSlotIds: new Set([]),
+      mountedSlots: new Map(),
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
@@ -4983,6 +4989,62 @@ describe("app page route wiring helpers", () => {
     // yet (first navigation into this layout), default.tsx must render so the
     // initial slot content is populated.
     expect(elements["slot:team:/"]).toBeDefined();
+  });
+
+  it("omits a mounted default-only slot only while its owner renders for the same params", () => {
+    const AsideDefault = () => createElement("p", null, "aside-default");
+    const OwnerLayout = ({ children }: { children?: React.ReactNode }) =>
+      createElement("section", null, children);
+    const build = (id: string, mountedSlots: MountedSlots | null) =>
+      buildAppPageElements({
+        isRscRequest: true,
+        mountedSlots,
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { id },
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 1],
+          layouts: [{ default: RootLayout }, { default: OwnerLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments: ["[id]"],
+          slots: {
+            aside: {
+              default: { default: AsideDefault },
+              error: null,
+              layout: null,
+              layoutIndex: 1,
+              loading: null,
+              name: "aside",
+              page: null,
+              routeSegments: [],
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: `/${id}`,
+        rootNotFoundModule: null,
+      });
+    const slotId = "slot:aside:/[id]";
+    const mounted = build("1", null);
+    expect(mounted[slotId]).toBeDefined();
+    const identities = mounted[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] as Record<string, string>;
+    const mountedSlots = parseMountedSlotsHeader(
+      normalizeMountedSlotsHeader(createMountedSlotToken(slotId, identities[slotId])),
+    );
+
+    // Next.js keeps what the slot shows while its layout renders for the same
+    // params, and renders its default afresh for others.
+    expect(build("1", mountedSlots)[slotId]).toBeUndefined();
+    expect(build("2", mountedSlots)[slotId]).toBeDefined();
+    // A token without the shell's identity keeps the slot as before.
+    expect(build("2", new Map([[slotId, null]]))[slotId]).toBeUndefined();
   });
 
   it("renders slot default.tsx without its slot layout on hard navigation", async () => {
