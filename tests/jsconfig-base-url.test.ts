@@ -19,6 +19,21 @@ import { buildPagesFixture, fetchHtml, startFixtureServer } from "./helpers.js";
 const FIXTURE = path.resolve(import.meta.dirname, "fixtures/jsconfig-base-url");
 const buildDirs: string[] = [];
 
+// The plugin for FIXTURE's jsconfig.json baseUrl, which the native resolver
+// (reading tsconfig.json) doesn't handle.
+function createResolvedBaseUrlPlugin() {
+  const plugin = createTsconfigBaseUrlPlugin({
+    getBaseUrlConfig: () => ({ configPath: path.join(FIXTURE, "jsconfig.json"), baseUrl: FIXTURE }),
+  });
+  (plugin.configResolved as (config: object) => void)({
+    root: FIXTURE,
+    resolve: { tsconfigPaths: true },
+  });
+  return plugin.resolveId as {
+    handler: (this: unknown, id: string, importer: string, options: object) => Promise<unknown>;
+  };
+}
+
 afterAll(() => {
   for (const dir of buildDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -70,10 +85,7 @@ describe("jsconfig.json baseUrl", () => {
   // Turbopack excludes `.json` from baseUrl resolution, keeping the query and
   // fragment apart from the request path.
   it("leaves .json requests with a query or hash to standard resolution", async () => {
-    const plugin = createTsconfigBaseUrlPlugin({ getBaseUrl: () => FIXTURE });
-    const resolveId = plugin.resolveId as {
-      handler: (this: unknown, id: string, importer: string, options: object) => Promise<unknown>;
-    };
+    const resolveId = createResolvedBaseUrlPlugin();
     const resolve = vi.fn(async (id: string) => ({ id }));
     const importer = path.join(FIXTURE, "pages/hello.js");
     for (const id of ["data.json?raw", "data.json#part"]) {
@@ -85,10 +97,7 @@ describe("jsconfig.json baseUrl", () => {
   // Like tsconfig `paths` in Next.js webpack, dependencies keep standard
   // resolution. The importer is a native path (backslashes on Windows).
   it("leaves imports from node_modules to standard resolution", async () => {
-    const plugin = createTsconfigBaseUrlPlugin({ getBaseUrl: () => FIXTURE });
-    const resolveId = plugin.resolveId as {
-      handler: (this: unknown, id: string, importer: string, options: object) => Promise<unknown>;
-    };
+    const resolveId = createResolvedBaseUrlPlugin();
     const resolve = vi.fn(async (id: string) => ({ id }));
     const importer = path.join(FIXTURE, "node_modules", "pkg", "index.js");
     expect(await resolveId.handler.call({ resolve }, "components/world", importer, {})).toBeNull();
@@ -103,9 +112,8 @@ describe("jsconfig.json baseUrl", () => {
       {
         prependPlugins: [
           {
-            // As if set in vite.config: ahead of vinext's own pre config hook.
+            // A normal plugin's config hook runs after vinext's pre one.
             name: "test:vite-tsconfig",
-            enforce: "pre",
             config: () => ({ tsconfig: "tsconfig.vite.json" }),
           },
         ],

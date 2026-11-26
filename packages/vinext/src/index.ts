@@ -281,7 +281,7 @@ import {
 import { createNextIntlCatalogPlugin } from "./plugins/next-intl-catalog.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import { createTsconfigBaseUrlPlugin } from "./plugins/tsconfig-base-url.js";
-import { loadTsconfigBaseUrl } from "./config/tsconfig-paths.js";
+import { loadTsconfigBaseUrl, type TsconfigBaseUrlConfig } from "./config/tsconfig-paths.js";
 import {
   generateInstrumentationClientInjectModule,
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
@@ -2060,8 +2060,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesTsconfigExactAliases: Record<string, string> = {};
-  // An explicit baseUrl that Vite's native resolve.tsconfigPaths doesn't read.
-  let unhandledTsconfigBaseUrl: string | null = null;
+  // The config whose explicit baseUrl Next.js resolves bare imports against.
+  let tsconfigBaseUrlConfig: TsconfigBaseUrlConfig | null = null;
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let buildEmptyOutDir: boolean | undefined;
@@ -2896,7 +2896,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Vite 8+ supports this natively via resolve.tsconfigPaths, which only
     // reads tsconfig.json; this covers baseUrl from jsconfig.json or a custom
     // typescript.tsconfigPath.
-    createTsconfigBaseUrlPlugin({ getBaseUrl: () => unhandledTsconfigBaseUrl }),
+    createTsconfigBaseUrlPlugin({ getBaseUrlConfig: () => tsconfigBaseUrlConfig }),
     createStyledJsxPlugin(earlyBaseDir),
     // Compile MDX to JSX before @vitejs/plugin-react handles the generated
     // component and injects Fast Refresh registration in dev.
@@ -3314,18 +3314,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // an explicit user resolve.tsconfigPaths value remains untouched.
         const shouldAutoEnableNativeTsconfigPaths =
           userResolve?.tsconfigPaths === undefined && configuredTsconfigPath === undefined;
-        // The native resolver reads Vite's top-level `tsconfig` option, else
-        // discovers tsconfig.json. Next.js also reads jsconfig.json
-        // (build/load-jsconfig.ts) and the configured tsconfigPath.
-        const baseUrlConfig = loadTsconfigBaseUrl(root, configuredTsconfigPath);
-        const nativeTsconfigPath = config.tsconfig
-          ? path.resolve(root, config.tsconfig)
-          : path.join(root, "tsconfig.json");
-        const nativeReadsBaseUrlConfig =
-          (userResolve?.tsconfigPaths ?? shouldAutoEnableNativeTsconfigPaths) &&
-          baseUrlConfig?.configPath === nativeTsconfigPath;
-        unhandledTsconfigBaseUrl =
-          baseUrlConfig && !nativeReadsBaseUrlConfig ? baseUrlConfig.baseUrl : null;
+        // Next.js also reads jsconfig.json (build/load-jsconfig.ts) and the
+        // configured tsconfigPath. Whether Vite's native resolver already reads
+        // this config is decided from the final config (see the plugin).
+        tsconfigBaseUrlConfig = loadTsconfigBaseUrl(root, configuredTsconfigPath);
 
         // tsconfig-derived alias entries carry a customResolver, which Vite 8
         // reports as deprecated during config resolution. Filter that warning

@@ -228,10 +228,12 @@ export function loadTsconfigResolutionForRoot(projectRoot: string): TsconfigPath
  * `jsconfig.json` (Next.js build/load-jsconfig.ts). Returns null when no config
  * file sets `baseUrl`.
  */
+export type TsconfigBaseUrlConfig = { configPath: string; baseUrl: string };
+
 export function loadTsconfigBaseUrl(
   projectRoot: string,
   configuredPath?: string,
-): { configPath: string; baseUrl: string } | null {
+): TsconfigBaseUrlConfig | null {
   const candidates = configuredPath
     ? [path.resolve(projectRoot, configuredPath)]
     : TSCONFIG_FILES.map((name) => path.join(projectRoot, name));

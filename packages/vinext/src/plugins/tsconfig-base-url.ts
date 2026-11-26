@@ -1,13 +1,10 @@
 import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
+import type { TsconfigBaseUrlConfig } from "../config/tsconfig-paths.js";
 
 type TsconfigBaseUrlPluginOptions = {
-  /**
-   * The explicit `compilerOptions.baseUrl` to resolve bare imports against,
-   * or null when Vite's native `resolve.tsconfigPaths` already reads the
-   * config file that sets it (or none does).
-   */
-  getBaseUrl: () => string | null;
+  /** The config whose explicit `compilerOptions.baseUrl` Next.js applies. */
+  getBaseUrlConfig: () => TsconfigBaseUrlConfig | null;
 };
 
 // Non-relative specifiers, as TypeScript resolves them through `baseUrl`:
@@ -34,13 +31,27 @@ function isJsonRequest(id: string): boolean {
  * standard resolution, like tsconfig `paths` in Next.js webpack.
  */
 export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOptions): Plugin {
+  // The baseUrl to apply, or null when Vite's native resolve.tsconfigPaths
+  // already reads the config that sets it (or none does).
+  let baseUrl: string | null = null;
   return {
     name: "vinext:tsconfig-base-url",
     enforce: "pre",
+    // Decided from the final config: any plugin's config hook can set Vite's
+    // top-level `tsconfig` (the file the native resolver reads, else it
+    // discovers tsconfig.json) or `resolve.tsconfigPaths`.
+    configResolved(config) {
+      const baseUrlConfig = options.getBaseUrlConfig();
+      const nativeConfigPath = config.tsconfig
+        ? toSlash(config.tsconfig)
+        : path.join(toSlash(config.root), "tsconfig.json");
+      const nativeReadsBaseUrlConfig =
+        config.resolve.tsconfigPaths === true && baseUrlConfig?.configPath === nativeConfigPath;
+      baseUrl = baseUrlConfig && !nativeReadsBaseUrlConfig ? baseUrlConfig.baseUrl : null;
+    },
     resolveId: {
       filter: { id: { include: NON_RELATIVE_SPECIFIER_RE, exclude: EXCLUDED_SPECIFIER_RES } },
       async handler(id, importer, resolveOptions) {
-        const baseUrl = options.getBaseUrl();
         if (!baseUrl || !importer || isJsonRequest(id)) return null;
         if (toSlash(importer).includes("/node_modules/")) return null;
         const resolved = await this.resolve(path.join(baseUrl, id), importer, {
