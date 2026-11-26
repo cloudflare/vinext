@@ -111,6 +111,18 @@ describe("pagesRouter - route discovery", () => {
     expect(aboutIndex).toBeLessThan(postIndex);
   });
 
+  // Ported from Next.js: test/e2e/404-page/404-page.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/404-page/404-page.test.ts
+  // Next.js never treats TypeScript declaration files as pages
+  // (build/route-discovery.ts createPagesMapping, and Turbopack's
+  // crates/next-core/src/pages_structure.rs).
+  it("ignores TypeScript declaration files", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    expect(routes.map((r) => r.pattern)).not.toContain("/declaration-file.d");
+    expect(routes.filter((r) => r.filePath.endsWith(".d.ts"))).toEqual([]);
+  });
+
   it("ignores _app.tsx and _document.tsx", async () => {
     const routes = await pagesRouter(FIXTURE_DIR);
     const patterns = routes.map((r) => r.pattern);

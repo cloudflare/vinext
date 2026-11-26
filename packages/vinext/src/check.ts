@@ -1377,7 +1377,9 @@ export function checkConventions(root: string): CheckItem[] {
     if (isGitignored(dir, true, rules)) return [];
     return findSourceFiles(dir, scanExts, rules);
   };
-  const isPageFile = (file: string) => pageExts.some((ext) => file.endsWith(ext));
+  // Like the route scanners, TypeScript declaration files are never pages.
+  const isPageFile = (file: string) =>
+    !file.endsWith(".d.ts") && pageExts.some((ext) => file.endsWith(ext));
 
   // Like the plugin's auto-detection, look for app/ and pages/ in a single base
   // directory: the root when either is there, else src/. proxy/middleware live

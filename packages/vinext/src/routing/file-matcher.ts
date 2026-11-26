@@ -174,6 +174,10 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
  * Yields forward-slash relative paths: node's glob emits native (backslash)
  * separators on Windows, so each match goes through `toSlash` — this is the
  * boundary where external fs output enters the canonical forward-slash space.
+ *
+ * TypeScript declaration files are never route files, matching Next.js
+ * (`build/route-discovery.ts` `createPagesMapping`, and Turbopack's
+ * `pages_structure.rs` / `app_structure.rs`).
  */
 export async function* scanWithExtensions(
   stem: string,
@@ -186,6 +190,7 @@ export async function* scanWithExtensions(
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
+    if (file.endsWith(".d.ts")) continue;
     yield toSlash(file);
   }
 }

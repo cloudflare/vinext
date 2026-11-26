@@ -12,6 +12,7 @@ import {
   formatReport,
   type CheckResult,
 } from "../packages/vinext/src/check.js";
+import { pagesRouter } from "../packages/vinext/src/routing/pages-router.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -2383,6 +2384,20 @@ describe("integration: pages-basic fixture", () => {
   it("detects Pages Router conventions", () => {
     const items = checkConventions(fixtureDir);
     expect(items.find((i) => i.name === "Pages Router (pages/)")).toBeDefined();
+  });
+
+  it("counts the pages the Pages Router scanner discovers", async () => {
+    // pages/declaration-file.d.ts is not a page (Next.js 404-page e2e test).
+    // Same pageExtensions as the fixture's next.config.mjs.
+    const routes = await pagesRouter(path.join(fixtureDir, "pages"), [
+      "js",
+      "jsx",
+      "ts",
+      "tsx",
+      "mdx",
+    ]);
+    const items = checkConventions(fixtureDir);
+    expect(items.find((i) => i.name.endsWith(" page(s)"))?.name).toBe(`${routes.length} page(s)`);
   });
 
   it("detects config options from next.config.mjs", () => {

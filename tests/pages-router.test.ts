@@ -1130,6 +1130,16 @@ describe("Pages Router integration", () => {
     expect(body).toEqual({ ok: true, source: "gssp-res-end" });
   });
 
+  // Ported from Next.js: test/e2e/404-page/404-page.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/404-page/404-page.test.ts
+  it("renders pages/404 for a TypeScript declaration file under pages/", async () => {
+    for (const pathname of ["/declaration-file", "/declaration-file.d"]) {
+      const res = await fetch(`${baseUrl}${pathname}`);
+      expect(res.status).toBe(404);
+      expect(await res.text()).toContain("Page Not Found");
+    }
+  });
+
   it("getServerSideProps returning notFound renders custom 404 page", async () => {
     const res = await fetch(`${baseUrl}/posts/missing`);
     expect(res.status).toBe(404);
@@ -6241,6 +6251,8 @@ describe("Production build", () => {
     // Should contain route patterns from our fixture pages
     expect(entryContent).toContain("/about");
     expect(entryContent).toContain("/ssr");
+    // pages/declaration-file.d.ts is not a page (Next.js 404-page e2e test).
+    expect(entryContent).not.toContain("declaration-file");
   });
 
   // Ported from Next.js: test/e2e/handle-non-hoisted-swc-helpers/index.test.ts
