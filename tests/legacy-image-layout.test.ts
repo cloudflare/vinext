@@ -198,6 +198,21 @@ describe("legacy image blur placeholder", () => {
     expect(fallback.style).toBe(IMG_LAYOUT_STYLE);
   });
 
+  // vinext generates no blurDataURL for static imports (Next.js does).
+  it("renders a static import without a blurDataURL with no placeholder", () => {
+    const html = render({
+      src: { src: "/_next/static/media/photo.jpg", width: 640, height: 320 },
+      width: undefined,
+      height: undefined,
+      placeholder: "blur",
+      priority: true,
+    });
+    expect(image(html).style).toBe(IMG_LAYOUT_STYLE);
+    expect(() => render({ placeholder: "blur", priority: true })).toThrow(
+      'Image with src "/photo.jpg" has "placeholder=\'blur\'" property but is missing the "blurDataURL" property.',
+    );
+  });
+
   it("positions the placeholder like the image", () => {
     const html = render({
       placeholder: "blur",

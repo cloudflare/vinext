@@ -18,6 +18,8 @@
  *   (basePath, trailingSlash, `dpl` and `images.qualities` handling).
  * - `images.loader` "imgix", "cloudinary" and "akamai" build URLs with the
  *   default loader, as vinext has no `images.path`.
+ * - vinext generates no `blurDataURL` for static imports, so a static import
+ *   with `placeholder="blur"` renders no placeholder (and no dev error).
  * - React 19 always has `ReactDOM.preload`, so Next.js's `<Head>` preload
  *   fallback for older React never renders and is left out. As in Next.js,
  *   React's server renderer preloads non-lazy images itself.
@@ -822,7 +824,9 @@ export default function Image({
             `Image with src "${srcString}" is smaller than 40x40. Consider removing the "placeholder='blur'" property to improve performance.`,
           );
         }
-        if (!blurDataURL) {
+        // vinext does not generate a blurDataURL for static imports, where
+        // Next.js always has one for the supported formats.
+        if (!blurDataURL && typeof src === "string") {
           const VALID_BLUR_EXT = ["jpeg", "png", "webp", "avif"]; // should match next-image-loader
 
           throw new Error(
@@ -887,8 +891,10 @@ export default function Image({
     }
   }
   const imgStyle = Object.assign({}, style, layoutStyle);
+  // Like the dev check above, skip the placeholder when there is no
+  // blurDataURL (a static import), rather than request `url("undefined")`.
   const blurStyle: ImgElementStyle =
-    placeholder === "blur" && !blurComplete
+    placeholder === "blur" && !blurComplete && blurDataURL
       ? {
           backgroundSize: objectFit || "cover",
           backgroundPosition: objectPosition || "0% 0%",
