@@ -111,33 +111,43 @@ type WholeInterceptedSlot = {
   path: string;
 };
 
+function withoutSlotSegments(sourcePagePath: string): string {
+  return joinSourcePath(sourcePagePath.split("/").filter((segment) => !segment.startsWith("@")));
+}
+
 function resolveWholeInterceptedSlot(
   bindings: readonly AppElementsSlotBinding[],
   sourceSegments: readonly string[],
   routeManifest: BrowserRouteManifest | null,
 ): WholeInterceptedSlot | null {
-  const candidates: WholeInterceptedSlot[] = [];
+  const sourcePath = joinSourcePath(sourceSegments);
+  let fallback: WholeInterceptedSlot | null = null;
   for (const binding of bindings) {
     const slot = AppElementsWire.parseElementKey(binding.slotId);
     if (slot?.kind !== "slot" || slot.name === "children" || binding.state !== "active") continue;
     const ownerSegments = treePathSegments(slot.treePath);
     if (!startsWithSegments(sourceSegments, ownerSegments)) continue;
-    const path = joinSourcePath([
-      ...ownerSegments,
-      `@${slot.name}`,
-      ...sourceSegments.slice(ownerSegments.length),
-    ]);
-    candidates.push({ binding, ownerSegments, path });
+    // The manifest's source page path names every slot between the
+    // intercepting route and its page, which the source page leaves out.
+    const sourcePagePath = routeManifest?.segmentGraph.interceptionsBySlotId
+      .get(binding.slotId)
+      ?.find(
+        (interception) =>
+          interception.sourcePagePath !== undefined &&
+          withoutSlotSegments(interception.sourcePagePath) === sourcePath,
+      )?.sourcePagePath;
+    if (sourcePagePath !== undefined) return { binding, ownerSegments, path: sourcePagePath };
+    fallback ??= {
+      binding,
+      ownerSegments,
+      path: joinSourcePath([
+        ...ownerSegments,
+        `@${slot.name}`,
+        ...sourceSegments.slice(ownerSegments.length),
+      ]),
+    };
   }
-  return (
-    candidates.find((candidate) =>
-      routeManifest?.segmentGraph.interceptionsBySlotId
-        .get(candidate.binding.slotId)
-        ?.some((interception) => interception.sourcePagePath === candidate.path),
-    ) ??
-    candidates[0] ??
-    null
-  );
+  return fallback;
 }
 
 /**

@@ -986,6 +986,7 @@ export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push
       fs.writeFileSync(
         path.join(tmpDir, "mutates.mjs"),
         `export function onRouterTransitionStart(url, type, event) {
+  globalThis.__vinextInjectEvents.push({ ...event, fromRoutes: [...event.fromRoutes] });
   event.id = "changed";
   event.fromRoutes.push("/mutated");
 }
@@ -1009,11 +1010,20 @@ export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push
         onRouterTransitionStart: (url: string, type: string, event: unknown) => void;
       };
       const event = { id: "1", timestamp: 1, fromRoutes: ["/"], prefetchIntent: "auto" };
+      // Each hook's event samples its own timestamp, as Next.js's does.
+      let now = 0;
+      const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => (now += 10));
 
-      mod.onRouterTransitionStart("/a", "push", event);
+      try {
+        mod.onRouterTransitionStart("/a", "push", event);
+      } finally {
+        nowSpy.mockRestore();
+      }
 
-      expect(events).toEqual([event]);
-      expect(events[0]).not.toBe(event);
+      expect(events).toEqual([
+        { ...event, timestamp: performance.timeOrigin + 10 },
+        { ...event, timestamp: performance.timeOrigin + 20 },
+      ]);
       expect(event).toEqual({ id: "1", timestamp: 1, fromRoutes: ["/"], prefetchIntent: "auto" });
     } finally {
       delete (globalThis as { __vinextInjectEvents?: unknown[] }).__vinextInjectEvents;

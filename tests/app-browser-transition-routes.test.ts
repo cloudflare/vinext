@@ -200,6 +200,34 @@ describe("resolveRouterTransitionFromRoutes", () => {
     ).toEqual(["/gallery/default", "/gallery/@aside", "/gallery/@modal/(.)photos/[id]"]);
   });
 
+  it("reports every slot of a whole intercepting route nested through slots", async () => {
+    // @modal/(.)test-nested renders its page through its own @sidebar slot.
+    const graph = await appRouteGraph(
+      path.resolve(import.meta.dirname, "fixtures/app-basic/app/interception-dyn-seg"),
+    );
+    const nestedManifest = decodeBrowserRouteManifest(
+      toBrowserRouteManifestWire(graph.routeManifest),
+    );
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          interceptionContext: "/",
+          slotBindings: [
+            {
+              activeRouteId: "route:/test-nested",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:modal:/",
+              state: "active",
+            },
+          ],
+          sourcePage: "/(.)test-nested/page",
+          wholeInterceptionSource: "/",
+        }),
+        nestedManifest,
+      ),
+    ).toEqual(["/default", "/@modal/(.)test-nested/@sidebar"]);
+  });
+
   it("puts the primary route first, then each slot", () => {
     expect(
       resolveRouterTransitionFromRoutes(
