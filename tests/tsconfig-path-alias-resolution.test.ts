@@ -451,7 +451,7 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
       const passThroughEntries = [
         [String(/^@types-only$/), "@types-only"],
         [String(/^@lib\/typed$/), "@lib/typed"],
-        ["@lib/types", "@lib/types"],
+        [String(/^@lib\/types\//), "@lib/types/"],
       ] as const;
       for (const [find, replacement] of passThroughEntries) {
         const entry = aliasEntries[findIndex(find)]!;
@@ -459,6 +459,9 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
         expect(await (entry.customResolver as (id: string) => unknown)(replacement)).toBeNull();
         expect(findIndex(find)).toBeLessThan(findIndex("@lib"));
       }
+      // Like Next.js, `@lib/types/*` matches paths below `@lib/types` only.
+      const typesFind = aliasEntries[findIndex(String(/^@lib\/types\//))]!.find as RegExp;
+      expect(["@lib/types", "@lib/types/x"].map((id) => typesFind.test(id))).toEqual([false, true]);
     } finally {
       await server.close();
     }

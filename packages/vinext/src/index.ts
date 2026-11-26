@@ -1665,7 +1665,13 @@ function buildResolveAliasEntries(
     ...exactEntries,
     ...Object.entries(aliasMap).map(([find, replacement]) =>
       passThrough.has(find) && !Object.hasOwn(explicitAliases, find)
-        ? { find, replacement, customResolver: resolveTsconfigPassThrough }
+        ? {
+            // A `foo/*` key keeps its `/`, so it matches `foo/...` but not bare
+            // `foo`, which a string find would also match.
+            find: new RegExp(`^${escapeRegExp(find)}/`),
+            replacement: `${find}/`,
+            customResolver: resolveTsconfigPassThrough,
+          }
         : Object.hasOwn(tsconfigPathAliases, find) && !Object.hasOwn(explicitAliases, find)
           ? {
               find,
