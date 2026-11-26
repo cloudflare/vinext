@@ -5,7 +5,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "vite";
 import { createExtensionlessDynamicImportPlugin } from "../packages/vinext/src/plugins/extensionless-dynamic-import.js";
-import { exactRegExpLiteral, prefixRegExpLiteral } from "../packages/vinext/src/utils/regex.js";
+import {
+  exactRegExpLiteral,
+  prefixRegExpLiteral,
+  queryAwareExactRegExpLiteral,
+} from "../packages/vinext/src/utils/regex.js";
 
 const tempDirs: string[] = [];
 
@@ -48,15 +52,53 @@ function createPackageFixture(
   return { root, packageRoot, importer: path.join(root, "entry.ts") };
 }
 
-// Exact tsconfig `paths` keys match before an optional query/hash; they are
-// still literal aliases, so template imports next to them keep transforming.
 describe("exactRegExpLiteral", () => {
-  it("reads both exact alias forms and rejects other patterns", () => {
+  it("reads `^literal$` and rejects other patterns", () => {
     expect(exactRegExpLiteral(/^fake-lib$/)).toBe("fake-lib");
-    expect(exactRegExpLiteral(/^@lib\/typed(?=[?#]|$)/)).toBe("@lib/typed");
     expect(exactRegExpLiteral(/^a.b$/)).toBeNull();
-    expect(exactRegExpLiteral(/^ab(?=x)/)).toBeNull();
-    expect(exactRegExpLiteral(/^ab(?=[?#]|$)/i)).toBeNull();
+    expect(exactRegExpLiteral(/^@lib\/typed(?=[?#]|$)/)).toBeNull();
+    expect(exactRegExpLiteral(/^ab$/i)).toBeNull();
+  });
+});
+
+// Exact tsconfig `paths` keys also match before a query/hash.
+describe("queryAwareExactRegExpLiteral", () => {
+  it("reads `^literal(?=[?#]|$)` and rejects other patterns", () => {
+    expect(queryAwareExactRegExpLiteral(/^@lib\/typed(?=[?#]|$)/)).toBe("@lib/typed");
+    expect(queryAwareExactRegExpLiteral(/^fake-lib$/)).toBeNull();
+    expect(queryAwareExactRegExpLiteral(/^ab(?=x)/)).toBeNull();
+    expect(queryAwareExactRegExpLiteral(/^ab(?=[?#]|$)/i)).toBeNull();
+  });
+});
+
+// app-basic's checked-in `fake-tsconfig-exact-lib` exports `./messages/*`.
+describe("query-aware exact aliases and template imports", () => {
+  const APP_BASIC = path.resolve(import.meta.dirname, "fixtures/app-basic");
+  const transformWithAlias = (find: RegExp, code: string) => {
+    const plugin = createExtensionlessDynamicImportPlugin();
+    unwrapHook(plugin.configResolved).call(plugin, {
+      resolve: { alias: [{ find, replacement: "x" }], conditions: [], extensions: [".js"] },
+    });
+    return unwrapHook(plugin.transform).call(plugin, code, path.join(APP_BASIC, "app/entry.ts"));
+  };
+
+  it("keeps rewriting template imports the alias cannot match", () => {
+    const result = transformWithAlias(
+      /^fake-tsconfig-exact-lib(?=[?#]|$)/,
+      "await import(`fake-tsconfig-exact-lib/messages/${name}`)",
+    );
+    expect(result?.code).toContain("import.meta.glob");
+  });
+
+  // The dynamic part can supply the `?` or `#` the alias matches before, even
+  // with static text after it.
+  it("leaves template imports that can complete the key with a query or hash", () => {
+    expect(
+      transformWithAlias(
+        /^fake-tsconfig-exact-lib\/messages\/greeting(?=[?#]|$)/,
+        "await import(`fake-tsconfig-exact-lib/messages/greeting${modifier}.js`)",
+      ),
+    ).toBeNull();
   });
 });
 

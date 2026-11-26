@@ -14,7 +14,12 @@ import { createTransformCache } from "./transform-cache.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { escapeRegExp, exactRegExpLiteral, prefixRegExpLiteral } from "../utils/regex.js";
+import {
+  escapeRegExp,
+  exactRegExpLiteral,
+  prefixRegExpLiteral,
+  queryAwareExactRegExpLiteral,
+} from "../utils/regex.js";
 
 const MODULE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"];
 type ExtensionlessImport = {
@@ -375,6 +380,16 @@ function aliasesMayMatch(aliases: readonly Alias[], requestPattern: string): boo
       // Exact tsconfig `paths` keys are anchored literals: `^key$`.
       const literal = exactRegExpLiteral(find);
       if (literal !== null) return matchesTemplatePattern(requestPattern, literal);
+      // Exact tsconfig `paths` keys: `^key(?=[?#]|$)` matches `key`, `key?*`
+      // and `key#*`, and the dynamic part can supply the `?` or `#`.
+      const queryAwareLiteral = queryAwareExactRegExpLiteral(find);
+      if (queryAwareLiteral !== null) {
+        return (
+          matchesTemplatePattern(requestPattern, queryAwareLiteral) ||
+          wildcardPatternsMayIntersect(requestPattern, `${queryAwareLiteral}?*`) ||
+          wildcardPatternsMayIntersect(requestPattern, `${queryAwareLiteral}#*`)
+        );
+      }
       // Declaration-only wildcard keys match below a literal prefix: `^key/`.
       const prefix = prefixRegExpLiteral(find);
       if (prefix !== null) {

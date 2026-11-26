@@ -2,18 +2,26 @@ export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// `RegExp#source` also escapes `/`. The literal ends the pattern (`$`), or
-// precedes an optional query/hash (`(?=[?#]|$)`, exact tsconfig `paths` keys).
-const EXACT_REGEXP_SOURCE_RE =
-  /^\^((?:\\[.*+?^${}()|[\]\\/]|[^.*+?^${}()|[\]\\])*)(?:\$|\(\?=\[\?#\]\|\$\))$/;
+// `RegExp#source` also escapes `/`.
+const EXACT_REGEXP_SOURCE_RE = /^\^((?:\\[.*+?^${}()|[\]\\/]|[^.*+?^${}()|[\]\\])*)\$$/;
+// Exact tsconfig `paths` keys also match before a query/hash.
+const QUERY_AWARE_EXACT_REGEXP_SOURCE_RE =
+  /^\^((?:\\[.*+?^${}()|[\]\\/]|[^.*+?^${}()|[\]\\])*)\(\?=\[\?#\]\|\$\)$/;
 
 /**
- * Return the literal a RegExp matches when it is just `^literal$` or
- * `^literal(?=[?#]|$)` (as built from `escapeRegExp`), or null for any other
- * pattern.
+ * Return the literal a RegExp matches when it is just `^literal$` (as built
+ * from `escapeRegExp`), or null for any other pattern.
  */
 export function exactRegExpLiteral(pattern: RegExp): string | null {
   return regExpLiteral(pattern, EXACT_REGEXP_SOURCE_RE);
+}
+
+/**
+ * Return the literal of a `^literal(?=[?#]|$)` RegExp, which matches the
+ * literal alone or followed by a query or hash, or null for any other pattern.
+ */
+export function queryAwareExactRegExpLiteral(pattern: RegExp): string | null {
+  return regExpLiteral(pattern, QUERY_AWARE_EXACT_REGEXP_SOURCE_RE);
 }
 
 // `^literal/`, as built for declaration-only wildcard tsconfig `paths` keys.
