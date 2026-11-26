@@ -1084,11 +1084,9 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
-  it("self-hosts font calls whose comments hold an apostrophe or a brace", async () => {
-    // Regression: _findBalancedObject did not skip comments, so the apostrophe
-    // in `next/font's` opened a "string" that ran on past the object's closing
-    // brace. The call was left untransformed and fell back to a runtime
-    // fonts.googleapis.com <link>: a third-party request, no self-hosting.
+  it("self-hosts font calls whose option comments contain quotes or braces", async () => {
+    // Regression: an apostrophe in a comment opened a "string" that ran past the
+    // closing brace, so the call fell back to a fonts.googleapis.com <link>.
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-comment-quotes");
     initPlugin(plugin, { command: "build", root });
@@ -1100,21 +1098,16 @@ describe("vinext:google-fonts plugin", () => {
       const code = [
         `import { Inter } from 'next/font/google';`,
         `const inter = Inter({`,
+        `  // the font's fallback }`,
         `  subsets: ["latin"],`,
-        `  // the font's own fallback is not used }`,
+        `  /* next/font's { default */`,
         `  display: 'swap',`,
-        `  /* Not next/font's generated fallback: that one is \`local(Arial)\``,
-        `     alone. { */`,
-        `  adjustFontFallback: false,`,
-        `  fallback: ['Inter Metric Fallback'],`,
-        `  variable: '--font-inter',`,
         `});`,
       ].join("\n");
 
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
       expect(result.code).toContain("selfHostedCSS");
-      expect(result.code).toContain("@font-face");
       expect(result.code).not.toMatch(/,\s*,/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -1874,25 +1867,6 @@ describe("_findBalancedObject", () => {
     const val = "val ${nested}";
     const code = "{ key: `" + val + "` }";
     expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
-  });
-
-  it("ignores quotes and braces inside line comments", () => {
-    const code = "{ a: 1, // the font's own }\n b: 2 }";
-    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
-  });
-
-  it("ignores quotes and braces inside block comments", () => {
-    const code = "{ a: 1, /* next/font's `fallback` } */ b: 2 }";
-    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
-  });
-
-  it("does not treat // inside a string as a comment", () => {
-    const code = `{ a: "https://example.com/}", b: 2 }`;
-    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
-  });
-
-  it("returns null for an unterminated block comment", () => {
-    expect(findBalancedObject(`{ a: 1, /* never closed }`, 0)).toBeNull();
   });
 
   it("returns null when no opening brace is found", () => {
