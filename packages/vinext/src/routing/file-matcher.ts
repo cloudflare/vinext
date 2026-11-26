@@ -97,11 +97,6 @@ export function createValidFileMatcher(
   };
 }
 
-/** Check if a file exists with any configured page extension. */
-export function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): boolean {
-  return matcher.dottedExtensions.some((ext) => existsSync(basePath + ext));
-}
-
 /**
  * Find a file by basename and configured page extension in a directory.
  * Returns the first matching absolute path, or null if not found.
@@ -119,8 +114,10 @@ export function findFileWithExts(
 }
 
 /**
- * `findFileWithExts` for page and route files: like `scanWithExtensions`, it
- * skips declaration files when `ts` is a page extension.
+ * `findFileWithExts` for page and route files, including the Pages Router's
+ * `_app`, `_document`, `_error`, `404` and `500`: like `scanWithExtensions`, it
+ * skips declaration files when `ts` is a page extension (Next.js
+ * build/route-discovery.ts `createPagesMapping`).
  */
 export function findRouteFileWithExts(
   dir: string,

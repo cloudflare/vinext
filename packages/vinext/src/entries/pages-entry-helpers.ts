@@ -1,1 +1,1 @@
-export { findFileWithExts } from "../routing/file-matcher.js";
+export { findRouteFileWithExts } from "../routing/file-matcher.js";

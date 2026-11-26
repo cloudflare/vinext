@@ -11717,3 +11717,40 @@ export default function Page() { return <p>manifest reuse</p>; }
     120000,
   );
 });
+
+// Ported from Next.js: test/e2e/404-page/404-page.test.ts (declaration files
+// next to pages). Next.js createPagesMapping (build/route-discovery.ts) skips
+// `.d.ts` files when `ts` is a page extension, `_app` and `_document`
+// included, and Turbopack always skips them.
+describe("Pages Router declaration special files", () => {
+  const fixtureDir = path.resolve(import.meta.dirname, "fixtures/pages-declaration-special-files");
+
+  it("does not use _app.d.ts or _document.d.ts in dev", async () => {
+    const { server, baseUrl } = await startFixtureServer(fixtureDir);
+    try {
+      const res = await fetch(`${baseUrl}/`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("Declaration special files home");
+      // Dev falls back to the default _app/_document for a missing default
+      // export, so check the declarations were never loaded.
+      for (const file of ["_app.d.ts", "_document.d.ts"]) {
+        const filePath = toSlash(path.join(fixtureDir, "pages", file));
+        expect(server.environments.ssr.moduleGraph.getModulesByFile(filePath)).toBeUndefined();
+      }
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
+
+  it("does not use _app.d.ts or _document.d.ts in a production build", async () => {
+    const entryPath = await buildPagesFixture(fixtureDir);
+    try {
+      const entry = await import(pathToFileURL(entryPath).href);
+      const res = await entry.renderPage(new Request("http://localhost/"), "/", null);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("Declaration special files home");
+    } finally {
+      fs.rmSync(path.dirname(path.dirname(entryPath)), { recursive: true, force: true });
+    }
+  }, 120_000);
+});

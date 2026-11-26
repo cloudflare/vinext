@@ -56,6 +56,7 @@ import {
   createValidFileMatcher,
   routeSourceOptimizeEntries,
   findFileWithExts,
+  findRouteFileWithExts,
 } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
@@ -5604,7 +5605,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               crossOrigin: nextConfig?.crossOrigin ?? "",
             };
             const ssrManifest: Record<string, string[]> = {};
-            const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+            const appFilePath = findRouteFileWithExts(pagesDir, "_app", fileMatcher);
             const pagesRoutes = await pagesRouter(
               pagesDir,
               nextConfig?.pageExtensions,
@@ -8817,12 +8818,15 @@ export const loadServerActionClient = ${
         if (!hasPagesDir) return { appFile: null, pages: [] };
         const pages = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
         return {
-          appFile: findFileWithExts(pagesDir, "_app", fileMatcher),
+          appFile: findRouteFileWithExts(pagesDir, "_app", fileMatcher),
           pages: [
             ...pages.map((route) => ({ pattern: route.pattern, filePath: route.filePath })),
             // The error page renders as a page of its own, like Next.js' `/_error`
             // entry, with only `_app`'s fonts when the app has no custom one.
-            { pattern: "/_error", filePath: findFileWithExts(pagesDir, "_error", fileMatcher) },
+            {
+              pattern: "/_error",
+              filePath: findRouteFileWithExts(pagesDir, "_error", fileMatcher),
+            },
           ],
         };
       },
