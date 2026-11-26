@@ -221,7 +221,6 @@ describe("typeof window compilation", () => {
     async (nativeFolding) => {
       vi.mocked(assertSupportedViteVersion).mockReturnValueOnce({
         supportsNativeTypeofWindowFolding: nativeFolding,
-        supportsNativeCommandLock: false,
       });
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-scan-gate-"));
       temporaryDirectories.push(root);

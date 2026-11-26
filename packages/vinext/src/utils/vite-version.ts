@@ -156,7 +156,6 @@ function isVersionAtLeast(
 
 export function assertSupportedViteVersion(): {
   supportsNativeTypeofWindowFolding: boolean;
-  supportsNativeCommandLock: boolean;
 } {
   const toolchainVersion = getViteToolchainVersion();
   const [major] = parseViteVersion(toolchainVersion.vite)!;
@@ -168,6 +167,5 @@ export function assertSupportedViteVersion(): {
       toolchainVersion.vite,
       toolchainVersion.rolldown,
     ),
-    supportsNativeCommandLock: supportsNativeCommandLock(toolchainVersion.vite),
   };
 }

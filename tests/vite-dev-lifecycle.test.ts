@@ -5,22 +5,19 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { createServer, type ViteDevServer } from "vite";
+import { createServer, version as viteVersion, type ViteDevServer } from "vite";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { getLockfilePath, readLockfile } from "../packages/vinext/src/server/dev-lockfile.js";
 import { supportsNativeCommandLock } from "../packages/vinext/src/utils/vite-version.js";
-import vitePackage from "vite/package.json" with { type: "json" };
 
 const originalArgv = process.argv;
 const VITE_CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.resolve("vite"))), "cli.js");
 const VINEXT_ENTRY_URL = pathToFileURL(
   path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
 ).href;
-const VITE_VERSION: string =
-  (vitePackage as { bundledVersions?: { vite?: string } }).bundledVersions?.vite ??
-  vitePackage.version;
-const HAS_NATIVE_COMMAND_LOCK = supportsNativeCommandLock(VITE_VERSION);
+// The same Vite that VITE_CLI_PATH runs.
+const HAS_NATIVE_COMMAND_LOCK = supportsNativeCommandLock(viteVersion);
 const originalForceDevLock = process.env.VINEXT_TEST_FORCE_DEV_LOCK;
 const roots: string[] = [];
 let server: ViteDevServer | undefined;

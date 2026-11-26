@@ -1987,10 +1987,8 @@ function createServerEnvironmentFileNameResolver(
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const internalOptions = options as InternalVinextOptions;
-  const {
-    supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding,
-    supportsNativeCommandLock,
-  } = assertSupportedViteVersion();
+  const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
+    assertSupportedViteVersion();
   // Reserve CLI ownership while evaluating the outer config, before an earlier
   // plugin's config hook can create a nested programmatic Vite server.
   const reservedDevCliInvocation = reserveViteCliDevInvocation();
@@ -3059,7 +3057,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Pins `build.cssTarget` where the app leaves it unset. See plugins/css-target.ts.
     createCssTargetPlugin(),
     createDevServerLifecyclePlugin(
-      { devLock: !supportsNativeCommandLock },
+      {},
       (config) => (config as InternalUserConfig)[VINEXT_DEV_CLI_LIFECYCLE] === true,
     ),
     {

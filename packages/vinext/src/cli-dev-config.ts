@@ -3,6 +3,7 @@ import { toSlash } from "pathslash";
 import type { Plugin, ResolvedConfig, ServerOptions, UserConfig, ViteDevServer } from "vite";
 import { formatAlreadyRunningError, tryAcquireLockfile } from "./server/dev-lockfile.js";
 import { isViteCliInvocation } from "./utils/vite-cli-invocation.js";
+import { supportsNativeCommandLock } from "./utils/vite-version.js";
 
 type ActiveDevServerLock = {
   lockfile: Extract<ReturnType<typeof tryAcquireLockfile>, { ok: true }>["lockfile"];
@@ -56,16 +57,8 @@ export function applyDevServerDefaults(server: ServerOptions, options: DevServer
   server.host = options.hostname ?? server.host ?? "localhost";
 }
 
-type DevServerLifecycleOptions = DevServerCliOptions & {
-  /**
-   * Whether vinext guards against a second dev server with its own lock file.
-   * False on Vite versions that ship the same check natively.
-   */
-  devLock: boolean;
-};
-
 export function createDevServerLifecyclePlugin(
-  options: DevServerLifecycleOptions,
+  options: DevServerCliOptions,
   isEnabled: (config: UserConfig | ResolvedConfig) => boolean,
 ): Plugin {
   return {
@@ -89,7 +82,9 @@ export function createDevServerLifecyclePlugin(
           if (options.port !== undefined) server.config.server.port = options.port;
           if (options.hostname !== undefined) server.config.server.host = options.hostname;
         }
-        configureDevServerLifecycle(server, options.devLock);
+        // Vite's own lock belongs to the executing CLI, which can differ from
+        // the Vite package the project resolves (e.g. `npm exec vite@...`).
+        configureDevServerLifecycle(server, !supportsNativeCommandLock(this.meta.viteVersion));
       },
     },
   };
