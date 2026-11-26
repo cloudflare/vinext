@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vite-plus/test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { generateAppRequestRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { toSlash } from "pathslash";
 import {
@@ -120,6 +121,48 @@ async function createSemanticIdsFixture(appDir: string): Promise<void> {
 }
 
 describe("App Router route graph builder", () => {
+  // Next.js resolves route handler segment config from the handler's own exports.
+  // https://github.com/vercel/next.js/blob/96f545aec7187747388cb54e0d355ce480ead552/test/production/segment-config-precedence/segment-config-precedence.test.ts
+  it("keeps an inherited interception layout's dynamic config off route handlers", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "photo/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@modal/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "@modal/(.)photo/page.tsx", EMPTY_PAGE);
+      await writeAppFile(
+        appDir,
+        "@modal/(.)photo/layout.tsx",
+        'export const dynamic = "force-dynamic";\n' + EMPTY_LAYOUT,
+      );
+      await writeAppFile(
+        appDir,
+        "api/route.ts",
+        'export const dynamic = "force-static";\n' + EMPTY_ROUTE,
+      );
+      await writeAppFile(appDir, "api-default/route.ts", EMPTY_ROUTE);
+      await writeAppFile(
+        appDir,
+        "api-dynamic/route.ts",
+        'export const dynamic = "force-dynamic";\n' + EMPTY_ROUTE,
+      );
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const code = generateAppRequestRscEntry(appDir, graph.routes);
+      const serializedRoutes = code.match(/^const __routes = (.+);$/m)?.[1];
+      expect(serializedRoutes).toBeDefined();
+      const routes = JSON.parse(serializedRoutes!) as Array<{
+        pattern: string;
+        forceDynamic: boolean;
+      }>;
+
+      expect(routes.find((route) => route.pattern === "/")?.forceDynamic).toBe(true);
+      expect(routes.find((route) => route.pattern === "/api")?.forceDynamic).toBe(false);
+      expect(routes.find((route) => route.pattern === "/api-default")?.forceDynamic).toBe(false);
+      expect(routes.find((route) => route.pattern === "/api-dynamic")?.forceDynamic).toBe(true);
+    });
+  });
+
   it("materializes pages, handlers, layouts, and inherited parallel slots", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
