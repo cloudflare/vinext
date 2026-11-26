@@ -1,10 +1,49 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  appendAppPprFallbackShellResumeDataCache,
   createAppPprFallbackShells,
+  createAppPprRequestFallbackShells,
+  hasAppPprFallbackShellPrelude,
   isAppPprDynamicFallbackShellHtml,
   markAppPprDynamicFallbackShellHtml,
   rewriteAppPprFallbackShellHtmlNavigation,
+  splitAppPprFallbackShellResumeDataCache,
 } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
+
+describe("createAppPprRequestFallbackShells", () => {
+  it("encodes a request's kept params once, as the build does", () => {
+    const shells = createAppPprRequestFallbackShells(
+      { params: ["locale", "slug"], pattern: "/:locale/blog/:slug", rootParamNames: ["locale"] },
+      { locale: "caf%C3%A9", slug: "new-post" },
+    );
+
+    expect(shells).toEqual([
+      {
+        fallbackParamNames: ["slug"],
+        pathname: "/caf%C3%A9/blog/[slug]",
+        params: { locale: "café", slug: "[slug]" },
+      },
+    ]);
+  });
+
+  it("keeps a param named __proto__", () => {
+    const shells = createAppPprRequestFallbackShells(
+      {
+        params: ["__proto__", "slug"],
+        pattern: "/:__proto__/:slug",
+        rootParamNames: ["__proto__"],
+      },
+      JSON.parse('{"__proto__":"caf%C3%A9","slug":"new-post"}'),
+    );
+
+    expect(shells).toHaveLength(1);
+    expect(shells[0].pathname).toBe("/caf%C3%A9/[slug]");
+    expect(Object.entries(shells[0].params)).toEqual([
+      ["__proto__", "café"],
+      ["slug", "[slug]"],
+    ]);
+  });
+});
 
 describe("createAppPprFallbackShells", () => {
   it("builds a cacheComponents fallback shell from known root params and missing child params", () => {
@@ -58,6 +97,25 @@ describe("createAppPprFallbackShells", () => {
     });
   });
 
+  it("derives no shell from a value equal to its param's placeholder", () => {
+    const route = { params: ["locale", "slug"], pattern: "/:locale/:slug", rootParamNames: [] };
+    const pathnamesFor = (locale: string) =>
+      createAppPprFallbackShells(route, { locale, slug: "a" }).map((shell) => shell.pathname);
+
+    // `/%5Blocale%5D/[slug]` would share `/[locale]/[slug]`'s decoded key.
+    expect(pathnamesFor("[locale]")).toEqual(["/[locale]/[slug]"]);
+    expect(pathnamesFor("[en]")).toEqual(["/%5Ben%5D/[slug]", "/[locale]/[slug]"]);
+  });
+
+  it("keeps a root param's bracket-shaped value, which no shell leaves out", () => {
+    const shells = createAppPprFallbackShells(
+      { params: ["locale", "slug"], pattern: "/:locale/:slug", rootParamNames: ["locale"] },
+      { locale: "[locale]", slug: "a" },
+    );
+
+    expect(shells.map((shell) => shell.pathname)).toEqual(["/%5Blocale%5D/[slug]"]);
+  });
+
   it("orders nested fallback shells from most specific child prefix to root-only", () => {
     const shells = createAppPprFallbackShells(
       {
@@ -82,7 +140,7 @@ describe("createAppPprFallbackShells", () => {
     ]);
   });
 
-  it("does not create a fallback shell without a known root-param boundary", () => {
+  it("creates fallback shells down to the route root without root params, like Next.js", () => {
     expect(
       createAppPprFallbackShells(
         {
@@ -92,7 +150,18 @@ describe("createAppPprFallbackShells", () => {
         },
         { locale: "en", slug: "new-post" },
       ),
-    ).toEqual([]);
+    ).toEqual([
+      {
+        fallbackParamNames: ["slug"],
+        pathname: "/en/blog/[slug]",
+        params: { locale: "en", slug: "[slug]" },
+      },
+      {
+        fallbackParamNames: ["locale", "slug"],
+        pathname: "/[locale]/blog/[slug]",
+        params: { locale: "[locale]", slug: "[slug]" },
+      },
+    ]);
   });
 
   it("does not create a fallback shell when the matched request lacks a root param", () => {
@@ -175,5 +244,62 @@ describe("dynamic fallback shell marker", () => {
 
     expect(isAppPprDynamicFallbackShellHtml(html)).toBe(true);
     expect(isAppPprDynamicFallbackShellHtml("<html><body>static</body></html>")).toBe(false);
+  });
+});
+
+describe("fallback shell resume data cache transport", () => {
+  async function readAppended(html: string, resumeDataCache: string | null): Promise<string> {
+    const encoder = new TextEncoder();
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(html));
+        controller.close();
+      },
+    });
+    return new Response(
+      appendAppPprFallbackShellResumeDataCache(source, () => resumeDataCache),
+    ).text();
+  }
+
+  it("round-trips the resume data cache out of the shell HTML", async () => {
+    const resumeDataCache = JSON.stringify({ cache: { key: { body: "--></script>" } }, fetch: {} });
+    const html = "<!DOCTYPE html><html><body>shell</body></html>";
+    const transported = await readAppended(html, resumeDataCache);
+
+    expect(transported).not.toContain("--></script>");
+    const split = splitAppPprFallbackShellResumeDataCache(transported);
+    expect(split.html).toBe(html);
+    expect(JSON.parse(split.resumeDataCache ?? "null")).toEqual(JSON.parse(resumeDataCache));
+  });
+
+  it("round-trips a resume data cache that holds the trailer's own start", async () => {
+    const resumeDataCache = JSON.stringify({
+      cache: { key: { tags: ["<!--vinext-ppr-resume-data-cache:"] } },
+      fetch: {},
+    });
+    const html = "<!DOCTYPE html><html><body>shell</body></html>";
+    const split = splitAppPprFallbackShellResumeDataCache(
+      await readAppended(html, resumeDataCache),
+    );
+
+    expect(split.html).toBe(html);
+    expect(JSON.parse(split.resumeDataCache ?? "null")).toEqual(JSON.parse(resumeDataCache));
+  });
+
+  it("leaves a shell without a resume data cache unchanged", async () => {
+    const html = "<!DOCTYPE html><html><body>shell</body></html>";
+
+    await expect(readAppended(html, null)).resolves.toBe(html);
+    expect(splitAppPprFallbackShellResumeDataCache(html)).toEqual({
+      html,
+      resumeDataCache: null,
+    });
+  });
+
+  it("only treats a shell with a document prelude as resumable", () => {
+    expect(hasAppPprFallbackShellPrelude("<!DOCTYPE html><html><body>shell</body></html>")).toBe(
+      true,
+    );
+    expect(hasAppPprFallbackShellPrelude("")).toBe(false);
   });
 });

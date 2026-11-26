@@ -44,7 +44,6 @@ it.each([
           ...process.env,
           NODE_ENV: "production",
           NO_COLOR: "1",
-          __VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS: "1",
         },
         timeout: 90_000,
         maxBuffer: 4 * 1024 * 1024,
