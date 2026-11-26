@@ -402,6 +402,8 @@ export type AppRscHandlerRoute = {
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
   forceDynamic?: boolean;
+  /** Whether an intercepting route this route owns sets `dynamic = "force-dynamic"`. */
+  interceptForcesDynamic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -3454,7 +3456,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           canonicalPathname,
           cleanPathname,
           draftModeCookie,
-          forceDynamic: route.forceDynamic === true,
+          forceDynamic:
+            route.forceDynamic === true ||
+            // The source route owns the intercept, which renders only for a
+            // request with a verified interception source.
+            (interceptionSourceContext !== null &&
+              interceptionSourceMatch?.route.interceptForcesDynamic === true),
           interceptionContext: interceptionSourceContext,
           interceptionId: interceptionIdHeader,
           isRscRequest,
