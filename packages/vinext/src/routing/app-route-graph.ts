@@ -3241,13 +3241,6 @@ function markerForInterceptionConvention(convention: string): string {
  */
 const findFileProbeCache = new WeakMap<ValidFileMatcher, Map<string, string | null>>();
 
-/**
- * Find a file by name (without extension) in a directory, checking configured
- * pageExtensions. Memoizes through `findFileProbeCache` when the matcher has a
- * registered per-scan cache; otherwise falls back to a direct probe (identical
- * result). The `null` "not found" outcome is cached too, so repeated misses on
- * shared ancestors cost a single set of `existsSync` calls per scan.
- */
 // Page and route probes skip declaration files like the scanners do; layouts
 // and boundary files keep them (see `scanWithExtensions`).
 function lookupFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
@@ -3256,6 +3249,13 @@ function lookupFile(dir: string, name: string, matcher: ValidFileMatcher): strin
     : findFileWithExts(dir, name, matcher);
 }
 
+/**
+ * Find a file by name (without extension) in a directory, checking configured
+ * pageExtensions. Memoizes through `findFileProbeCache` when the matcher has a
+ * registered per-scan cache; otherwise falls back to a direct probe (identical
+ * result). The `null` "not found" outcome is cached too, so repeated misses on
+ * shared ancestors cost a single set of `existsSync` calls per scan.
+ */
 function findFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
   const cache = findFileProbeCache.get(matcher);
   if (!cache) return lookupFile(dir, name, matcher);
