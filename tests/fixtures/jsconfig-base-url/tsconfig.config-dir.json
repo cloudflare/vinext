@@ -1,5 +1,5 @@
 {
-  "extends": "./config-dir/base.json",
+  "extends": "./config-dir/base",
   "compilerOptions": {
     "jsx": "react-jsx",
     "allowJs": true

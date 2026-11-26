@@ -3324,11 +3324,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // configured tsconfigPath. Whether Vite's native resolver already reads
         // this config is decided from the final config (see the plugin).
         loadBaseUrlConfig = () => loadTsconfigBaseUrl(root, configuredTsconfigPath);
-        // Refreshes the alias cache, so a dev restart reads the edited paths.
-        const tsconfigAliasesSnapshot = JSON.stringify(resolvedTsconfigAliases);
-        tsconfigPathAliasesChanged = () =>
-          JSON.stringify(resolveTsconfigAliases(root, configuredTsconfigPath, true)) !==
-          tsconfigAliasesSnapshot;
+        // Refreshes the alias cache, so a dev restart reads the edited paths,
+        // and compares with the latest state so every transition is seen.
+        let tsconfigAliasesSnapshot = JSON.stringify(resolvedTsconfigAliases);
+        tsconfigPathAliasesChanged = () => {
+          const next = JSON.stringify(resolveTsconfigAliases(root, configuredTsconfigPath, true));
+          const changed = next !== tsconfigAliasesSnapshot;
+          tsconfigAliasesSnapshot = next;
+          return changed;
+        };
 
         // tsconfig-derived alias entries carry a customResolver, which Vite 8
         // reports as deprecated during config resolution. Filter that warning

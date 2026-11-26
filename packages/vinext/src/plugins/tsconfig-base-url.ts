@@ -23,6 +23,15 @@ type TsconfigBaseUrlPluginOptions = {
 const NON_RELATIVE_SPECIFIER_RE = /^[^/\\\0#]/;
 const EXCLUDED_SPECIFIER_RES = [/^\.\.?(?:$|[/\\])/, /^[a-z][\w+.-]*:/i];
 const QUERY_OR_HASH_RE = /[?#].*$/;
+// `\0` ids and `virtual:` ids, including root-prefixed ones in builds.
+const VIRTUAL_IMPORTER_RE = /^\0|(?:^|\/)virtual:/;
+
+function isSourceFileImporter(importer: string): boolean {
+  const file = toSlash(importer);
+  return (
+    path.isAbsolute(file) && !file.includes("/node_modules/") && !VIRTUAL_IMPORTER_RE.test(file)
+  );
+}
 
 // Whether `node_modules/<package>` (a directory or a workspace symlink) exists
 // at or above the importer, so standard resolution would find the package.
@@ -89,8 +98,13 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
     configureServer(server) {
       const watched = new Set(loaded?.watchFiles);
       server.watcher.add([...watched]);
+      // Chokidar reports paths relative to a configured `server.watch.cwd`.
+      const watchCwd = server.config.server.watch?.cwd;
       const onConfigFileEvent = (file: string) => {
-        if (!watched.has(toSlash(file))) return;
+        const absoluteFile = watchCwd
+          ? path.resolve(toSlash(watchCwd), toSlash(file))
+          : toSlash(file);
+        if (!watched.has(absoluteFile)) return;
         const next = options.load();
         const added = (next?.watchFiles ?? []).filter((watchFile) => !watched.has(watchFile));
         for (const watchFile of added) watched.add(watchFile);
@@ -114,7 +128,10 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
       filter: { id: { include: NON_RELATIVE_SPECIFIER_RE, exclude: EXCLUDED_SPECIFIER_RES } },
       async handler(id, importer, resolveOptions) {
         if (!baseUrl || !importer || isJsonRequest(id)) return null;
-        if (toSlash(importer).includes("/node_modules/")) return null;
+        // Like Vite's native resolve.tsconfigPaths, only source files on disk
+        // get baseUrl: not dependencies or virtual modules (vinext's generated
+        // entries import `react` and the like).
+        if (!isSourceFileImporter(importer)) return null;
         const options = { ...resolveOptions, skipSelf: true };
         const resolved = await this.resolve(path.join(baseUrl, id), importer, options);
         // No file under baseUrl: standard resolution proceeds untouched.

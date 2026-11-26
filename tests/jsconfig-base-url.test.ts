@@ -10,6 +10,7 @@
  * turbopack-resolve/src/typescript.rs). Vite's native `resolve.tsconfigPaths`
  * only reads `tsconfig.json`.
  */
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { toSlash } from "pathslash";
@@ -94,6 +95,14 @@ describe("jsconfig.json baseUrl", () => {
     expect(watchFiles).toContain(toSlash(path.join(FIXTURE, "tsconfig.not-created.json")));
   });
 
+  // `./config-dir/base` resolves to base.json; creating the higher-priority
+  // extensionless `base` would change the parent, so it is watched too.
+  it("watches higher-priority candidates of a resolved extends parent", () => {
+    const { watchFiles } = loadTsconfigBaseUrl(FIXTURE, "tsconfig.config-dir.json");
+    expect(watchFiles).toContain(toSlash(path.join(FIXTURE, "config-dir/base")));
+    expect(watchFiles).toContain(toSlash(path.join(FIXTURE, "config-dir/base.json")));
+  });
+
   // The dev server restarts on a config edit, re-reading baseUrl.
   it("applies a jsconfig.json baseUrl edit in dev", async () => {
     const jsconfigPath = path.join(FIXTURE, "jsconfig.json");
@@ -144,6 +153,30 @@ describe("jsconfig.json baseUrl", () => {
     buildDirs.push(path.dirname(path.dirname(entryPath)));
     expect(fs.readFileSync(entryPath, "utf-8")).toContain("Custom base world");
   }, 120_000);
+
+  // Chokidar reports paths relative to a configured `server.watch.cwd`.
+  it("restarts dev for a config change reported relative to server.watch.cwd", () => {
+    const jsconfigPath = toSlash(path.join(FIXTURE, "jsconfig.json"));
+    let loadedBaseUrl = FIXTURE;
+    const plugin = createTsconfigBaseUrlPlugin({
+      load: () => ({
+        config: { configPath: jsconfigPath, baseUrl: loadedBaseUrl },
+        watchFiles: [jsconfigPath],
+      }),
+      pathAliasesChanged: () => false,
+    });
+    (plugin.configResolved as (config: object) => void)({ root: FIXTURE, resolve: {} });
+    const watcher = Object.assign(new EventEmitter(), { add: vi.fn() });
+    const restart = vi.fn(async () => {});
+    (plugin.configureServer as (server: object) => void)({
+      watcher,
+      restart,
+      config: { server: { watch: { cwd: FIXTURE } }, logger: { info: vi.fn() } },
+    });
+    loadedBaseUrl = path.join(FIXTURE, "custom-base");
+    watcher.emit("change", "jsconfig.json");
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
 
   // TypeScript applies `extends` arrays in order, so the later parent's
   // inherited baseUrl wins even when an earlier parent shares its base config.
@@ -209,6 +242,23 @@ describe("jsconfig.json baseUrl", () => {
     const importer = path.join(FIXTURE, "pages/hello.js");
     expect(await resolveId.handler.call({ resolve }, "react", importer, {})).toBe(fromBaseUrl);
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  // Like Vite's native resolve.tsconfigPaths, virtual modules (such as
+  // vinext's generated entries, which import `react`) keep standard resolution.
+  it("leaves imports from virtual modules to standard resolution", async () => {
+    const resolveId = createResolvedBaseUrlPlugin();
+    const resolve = vi.fn(async (id: string) => ({ id }));
+    for (const importer of [
+      "\0virtual:vinext-rsc-entry",
+      "virtual:vinext-rsc-entry",
+      `${toSlash(FIXTURE)}/virtual:vinext-server-entry`,
+    ]) {
+      expect(
+        await resolveId.handler.call({ resolve }, "components/world", importer, {}),
+      ).toBeNull();
+    }
+    expect(resolve).not.toHaveBeenCalled();
   });
 
   // Like tsconfig `paths` in Next.js webpack, dependencies keep standard
