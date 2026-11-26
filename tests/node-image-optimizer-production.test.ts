@@ -15,6 +15,7 @@ const SOURCE_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+X8n26QAAAABJRU5ErkJggg==",
   "base64",
 );
+const SOURCE_ICO = Buffer.from("00000100010001010000010020000000000016000000", "hex");
 
 function serverOrigin(server: Server): string {
   const address = server.address();
@@ -118,7 +119,14 @@ describe.each(["app", "pages"] as const)(
            if (request.nextUrl.pathname === "/_next/image" && request.nextUrl.searchParams.get("dpl") === "staged-middleware") {
              const response = NextResponse.next();
              response.headers.set("Content-Length", "3");
+             response.headers.set("Content-Type", "text/x-image-endpoint");
              response.headers.set("X-Image-Header", "middleware");
+             return response;
+           }
+           if (request.nextUrl.pathname === "/local.ico") {
+             const response = NextResponse.next();
+             response.headers.set("Cache-Control", "public, max-age=86400");
+             response.headers.set("Set-Cookie", "source=private");
              return response;
            }
            return NextResponse.next();
@@ -129,6 +137,7 @@ describe.each(["app", "pages"] as const)(
         "export default function Page() { return <p>image optimizer fixture</p>; }\n",
       );
       await fs.writeFile(path.join(fixtureDir, "public/local.png"), SOURCE_PNG);
+      await fs.writeFile(path.join(fixtureDir, "public/local.ico"), SOURCE_ICO);
       await fs.writeFile(
         path.join(fixtureDir, "next.config.mjs"),
         `export default {
@@ -209,6 +218,9 @@ describe.each(["app", "pages"] as const)(
           ],
         });
         await builder.buildApp();
+        const staticDir = path.join(buildOutDir, "client/_next/static");
+        await fs.mkdir(staticDir, { recursive: true });
+        await fs.writeFile(path.join(staticDir, "test-build.ico"), SOURCE_ICO);
         // Adapter initialization must resolve CommonJS dependencies relative to
         // the built server entry, just like its request handlers do.
         await fs.writeFile(
@@ -253,6 +265,20 @@ describe.each(["app", "pages"] as const)(
       await post.arrayBuffer();
       expect(post.status).toBe(405);
       expect(post.headers.get("allow")).toBe("GET, HEAD");
+    });
+
+    it.each([
+      ["/local.ico", "public, max-age=86400, must-revalidate"],
+      ["/_next/static/test-build.ico", "public, max-age=31536000, immutable"],
+    ])("preserves cache policy for bypassed source %s", async (source, cacheControl) => {
+      const response = await fetch(
+        `${baseUrl}/_next/image?url=${encodeURIComponent(source)}&w=64&q=75`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe(cacheControl);
+      expect(response.headers.has("set-cookie")).toBe(false);
+      expect(response.headers.has("x-optimizer-width")).toBe(false);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(SOURCE_ICO);
     });
 
     // Next.js derives image Content-Length from the transformed bytes:
@@ -396,6 +422,14 @@ describe.each(["app", "pages"] as const)(
           expect(response.status).toBe(200);
           expect(response.headers.get("content-type")).toBe("image/png");
           expect(Buffer.from(await response.arrayBuffer())).toEqual(SOURCE_PNG);
+          if (router === "app" && mode === "none") {
+            const missing = await fetch(
+              `${serverOrigin(other)}/_next/image?url=%2Fmissing.png&w=64&q=75&dpl=staged-middleware`,
+            );
+            expect(missing.status).toBe(400);
+            expect(missing.headers.get("content-type")).toBe("text/x-image-endpoint");
+            expect(await missing.text()).toBe("The requested resource isn't a valid image.");
+          }
           const original = await fetch(`${baseUrl}/_next/image?url=%2Flocal.png&w=64&q=75`, {
             headers: { Accept: "image/webp" },
           });

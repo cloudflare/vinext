@@ -628,7 +628,7 @@ export function markImageBuildAsset(response: Response): Response {
   return response;
 }
 
-function isImageBuildAsset(response: Response): boolean {
+export function isImageBuildAsset(response: Response): boolean {
   return Reflect.get(response, IMAGE_BUILD_ASSET) === true;
 }
 

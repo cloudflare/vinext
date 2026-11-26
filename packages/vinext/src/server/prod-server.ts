@@ -43,6 +43,8 @@ import {
   getImageOptimizerRevision,
   handleImageOptimization,
   invalidImageSourceResponse,
+  isImageBuildAsset,
+  markImageBuildAsset,
   parseImageParams,
   isImageSourceBodyStatus,
   IMAGE_TYPE_NOT_ALLOWED_MESSAGE,
@@ -794,6 +796,7 @@ function readCachedImageSource(
   cache: StaticFileCache,
   pathname: string,
   signal: AbortSignal,
+  publicFileCacheControl: string | null | undefined,
 ): Response {
   const lookupPath = staticCacheLookupPath(pathname);
   const file = lookupPath === null ? undefined : cache.lookup(lookupPath)?.original;
@@ -801,7 +804,21 @@ function readCachedImageSource(
   const body = file.buffer
     ? new Uint8Array(file.buffer)
     : (Readable.toWeb(fs.createReadStream(file.path, { signal })) as ReadableStream<Uint8Array>);
-  return new Response(body, { headers: { "Content-Type": file.headers["Content-Type"] } });
+  const response = new Response(body, {
+    headers: {
+      "Content-Type": file.headers["Content-Type"],
+      "Cache-Control":
+        publicFileCacheControl === undefined
+          ? file.headers["Cache-Control"]
+          : (publicFileCacheControl ?? staticFileCacheControl(false)),
+    },
+  });
+  // A public-file signal always supplies a cache policy or null, even when
+  // middleware rewrites to a path that resembles a build asset.
+  return publicFileCacheControl === undefined &&
+    file.headers["Cache-Control"] === staticFileCacheControl(true)
+    ? markImageBuildAsset(response)
+    : response;
 }
 
 function createServerImageOptimizerGetter(
@@ -826,6 +843,7 @@ async function serveNodeImageOptimization(
   allowedWidths: number[],
   imageConfig: ImageConfig | undefined,
   optimizer: ImageOptimizer | null,
+  errorHeaders?: Headers,
 ): Promise<void> {
   const response = await handleImageOptimization(
     request,
@@ -843,10 +861,13 @@ async function serveNodeImageOptimization(
           cancelResponseBody(source);
           return invalidImageSourceResponse();
         }
-        // Source response cookies and cache policy do not belong to the image.
-        return new Response(source.body, {
-          headers: { "Content-Type": source.headers.get("Content-Type")! },
-        });
+        // Keep only the representation type and the metadata used to compute
+        // passthrough caching. In particular, never forward source cookies.
+        const headers = new Headers({ "Content-Type": source.headers.get("Content-Type")! });
+        const cacheControl = source.headers.get("Cache-Control");
+        if (cacheControl !== null) headers.set("Cache-Control", cacheControl);
+        const imageSource = new Response(source.body, { headers });
+        return isImageBuildAsset(source) ? markImageBuildAsset(imageSource) : imageSource;
       },
       transformImage: optimizer
         ? (body, options) => optimizer.transformImage(body, options)
@@ -858,6 +879,12 @@ async function serveNodeImageOptimization(
   if (request.signal.aborted) {
     cancelResponseBody(response, request.signal.reason);
     return;
+  }
+  if (response.status >= 400 && errorHeaders) {
+    for (const name of IMAGE_ERROR_SIGNAL_HEADERS) {
+      const value = errorHeaders.get(name);
+      if (value !== null) response.headers.set(name, value);
+    }
   }
   await sendWebResponse(response, req, res, false);
 }
@@ -2153,10 +2180,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           req,
           res,
           imageRequest,
-          () => readCachedImageSource(staticCache, sourcePath, request.signal),
+          () =>
+            readCachedImageSource(staticCache, sourcePath, request.signal, publicFileCacheControl),
           appImageAllowedWidths,
           imageConfig,
           optimizer,
+          signal.middlewareHeaders,
         );
         return true;
       }
@@ -2235,6 +2264,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           appImageAllowedWidths,
           imageConfig,
           getServerImageOptimizer(),
+          signal.middlewareHeaders,
         );
         return;
       }
@@ -3155,7 +3185,13 @@ async function createPagesRouterRequestHandler(
                   req,
                   res,
                   imageRequest,
-                  () => readCachedImageSource(staticCache, sourcePath, webRequest.signal),
+                  () =>
+                    readCachedImageSource(
+                      staticCache,
+                      sourcePath,
+                      webRequest.signal,
+                      publicFileCacheControl,
+                    ),
                   allowedImageWidths,
                   pagesImageConfig,
                   optimizer,
@@ -3224,7 +3260,12 @@ async function createPagesRouterRequestHandler(
                   if (initial) return initial;
                   const next = await resolveImageSource(sourceUrl);
                   return next !== null && !(next instanceof Response)
-                    ? readCachedImageSource(staticCache, next.path, webRequest.signal)
+                    ? readCachedImageSource(
+                        staticCache,
+                        next.path,
+                        webRequest.signal,
+                        next.cacheControl,
+                      )
                     : (next ?? invalidImageSourceResponse());
                 },
                 allowedImageWidths,
