@@ -1,6 +1,6 @@
 import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
-import type { TsconfigBaseUrlLoad } from "../config/tsconfig-paths.js";
+import type { TsconfigBaseUrlConfig, TsconfigBaseUrlLoad } from "../config/tsconfig-paths.js";
 
 type TsconfigBaseUrlPluginOptions = {
   /**
@@ -22,6 +22,13 @@ function isJsonRequest(id: string): boolean {
   return id.replace(QUERY_OR_HASH_RE, "").endsWith(".json");
 }
 
+function sameBaseUrlConfig(
+  a: TsconfigBaseUrlConfig | null,
+  b: TsconfigBaseUrlConfig | null,
+): boolean {
+  return a?.configPath === b?.configPath && a?.baseUrl === b?.baseUrl;
+}
+
 /**
  * Resolve bare imports against an explicit tsconfig/jsconfig `baseUrl` that
  * Vite's native resolver doesn't read: `jsconfig.json` (Vite only discovers
@@ -37,7 +44,7 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
   // The baseUrl to apply, or null when Vite's native resolve.tsconfigPaths
   // already reads the config that sets it (or none does).
   let baseUrl: string | null = null;
-  let watchFiles: string[] = [];
+  let loaded: TsconfigBaseUrlLoad | null = null;
   return {
     name: "vinext:tsconfig-base-url",
     enforce: "pre",
@@ -45,9 +52,8 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
     // top-level `tsconfig` (the file the native resolver reads, else it
     // discovers tsconfig.json) or `resolve.tsconfigPaths`.
     configResolved(config) {
-      const loaded = options.load();
+      loaded = options.load();
       const baseUrlConfig = loaded?.config ?? null;
-      watchFiles = loaded?.watchFiles ?? [];
       const nativeConfigPath = config.tsconfig
         ? toSlash(config.tsconfig)
         : path.join(toSlash(config.root), "tsconfig.json");
@@ -55,16 +61,23 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
         config.resolve.tsconfigPaths === true && baseUrlConfig?.configPath === nativeConfigPath;
       baseUrl = baseUrlConfig && !nativeReadsBaseUrlConfig ? baseUrlConfig.baseUrl : null;
     },
-    // vinext derives `baseUrl` and the `paths` aliases from these configs at
-    // startup, and Vite only refreshes its own cache for `tsconfig.json`. A
-    // change to a candidate config or one it extends restarts the server so
-    // all of them are read again.
+    // vinext derives `baseUrl` and the `paths` aliases (which resolve against
+    // it) at startup, and Vite only refreshes its own cache for
+    // `tsconfig.json`. When an edit to a candidate config or one it extends
+    // changes the selected baseUrl, restart the server so all of them are
+    // read again.
     configureServer(server) {
-      const watched = new Set(watchFiles);
-      server.watcher.add(watchFiles);
+      const watched = new Set(loaded?.watchFiles);
+      server.watcher.add([...watched]);
       const onConfigFileEvent = (file: string) => {
         if (!watched.has(toSlash(file))) return;
-        server.config.logger.info(`${path.basename(file)} changed, restarting server...`, {
+        const next = options.load();
+        const added = (next?.watchFiles ?? []).filter((watchFile) => !watched.has(watchFile));
+        for (const watchFile of added) watched.add(watchFile);
+        if (added.length > 0) server.watcher.add(added);
+        if (sameBaseUrlConfig(loaded?.config ?? null, next?.config ?? null)) return;
+        loaded = next;
+        server.config.logger.info(`${path.basename(file)} changed baseUrl, restarting server...`, {
           clear: server.config.clearScreen,
           timestamp: true,
         });
