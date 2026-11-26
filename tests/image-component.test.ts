@@ -1358,6 +1358,26 @@ describe("images.loader config errors", () => {
     );
   });
 
+  it('lets next/legacy/image render unoptimized images with images.loader "custom"', async () => {
+    await importWithLoaderEnv("custom", false);
+    const { default: LegacyImage } = await import("../packages/vinext/src/shims/legacy-image.js");
+    const props = { alt: "i", src: "/i.png", width: 100, height: 100 };
+    // Next.js's legacy custom loader throws only when it is called.
+    expect(
+      ReactDOMServer.renderToString(
+        React.createElement(LegacyImage, { ...props, unoptimized: true }),
+      ),
+    ).toContain('src="/i.png"');
+    expect(
+      ReactDOMServer.renderToString(
+        React.createElement(LegacyImage, { ...props, src: "data:image/png;base64,AA" }),
+      ),
+    ).toContain('src="data:image/png;base64,AA"');
+    expect(() => ReactDOMServer.renderToString(React.createElement(LegacyImage, props))).toThrow(
+      'Image with src "/i.png" is missing "loader" prop.',
+    );
+  });
+
   // Ported from Next.js: test/e2e/app-dir/loader-file-named-export-custom-loader-error/loader-file-named-export-custom-loader-error.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/loader-file-named-export-custom-loader-error/loader-file-named-export-custom-loader-error.test.ts
   it("requires a default export from images.loaderFile", async () => {

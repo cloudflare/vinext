@@ -114,12 +114,23 @@ export function resolveCustomImageLoader(
   const loader =
     loaderProp ?? (useLoaderFile ? (__imageLoaderFileDefault as ImageLoader) : undefined);
   if (!loader && __imageLoaderIsCustom) {
-    throw new Error(
-      `Image with src "${src}" is missing "loader" prop.` +
-        "\nRead more: https://nextjs.org/docs/messages/next-image-missing-loader",
-    );
+    // next/legacy/image's "custom" loader throws only once it builds a URL
+    // (client/legacy/image.tsx), so its unoptimized images still render.
+    if (ignoreLoaderFile) {
+      return ({ src: imageSrc }) => {
+        throw missingLoaderError(imageSrc);
+      };
+    }
+    throw missingLoaderError(src);
   }
   return loader;
+}
+
+function missingLoaderError(src: string): Error {
+  return new Error(
+    `Image with src "${src}" is missing "loader" prop.` +
+      "\nRead more: https://nextjs.org/docs/messages/next-image-missing-loader",
+  );
 }
 
 /**
