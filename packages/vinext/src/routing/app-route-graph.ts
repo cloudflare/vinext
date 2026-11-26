@@ -2552,8 +2552,8 @@ function isCatchAllPart(part: string, modifier: "+" | "*"): boolean {
 function scoreSlotPattern(urlSegments: readonly string[]): number {
   let score = 0;
   for (const seg of urlSegments) {
-    if (seg.endsWith("*")) score += 1;
-    else if (seg.endsWith("+")) score += 2;
+    if (isCatchAllPart(seg, "*")) score += 1;
+    else if (isCatchAllPart(seg, "+")) score += 2;
     else if (seg.startsWith(":")) score += 3;
     else score += 4;
   }

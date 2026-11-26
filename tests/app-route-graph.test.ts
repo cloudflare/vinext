@@ -747,6 +747,12 @@ describe("App Router route graph builder", () => {
       expect(literal.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
         canonical(appDir, "nested-only-literal/@slot/[id]/page.tsx"),
       );
+
+      // A literal folder ending in + also outranks a dynamic one when scored.
+      const scored = findRoute(graph.routes, "/nested-only-literal-dynamic/a/specific+");
+      expect(scored.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "nested-only-literal-dynamic/@slot/[id]/specific+/page.tsx"),
+      );
     });
 
     it("doesn't mirror an ancestor slot with a page that fills its nested slot", async () => {
