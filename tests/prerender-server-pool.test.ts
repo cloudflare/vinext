@@ -92,17 +92,19 @@ describe("prerender server pool sizing", () => {
     }
   });
 
-  it("starts render workers in the Next production-build phase", async () => {
+  it("starts render workers in the Next production-build phase with the configured output paths", async () => {
     const { dir, entry } = writeWorkerEntry(`
       if (
         process.env.VINEXT_PRERENDER !== "1" ||
         process.env.NEXT_PHASE !== "phase-production-build" ||
+        process.env.VINEXT_PRERENDER_CLIENT_DIR !== "exported-client" ||
         process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH !== "application-entry.js" ||
         process.env.VINEXT_PRERENDER_SERVER_DIR !== "server-artifacts"
       ) {
         process.send({ type: "vinext:prerender-server-error", error: JSON.stringify({
           VINEXT_PRERENDER: process.env.VINEXT_PRERENDER,
           NEXT_PHASE: process.env.NEXT_PHASE,
+          VINEXT_PRERENDER_CLIENT_DIR: process.env.VINEXT_PRERENDER_CLIENT_DIR,
           VINEXT_PRERENDER_RSC_ENTRY_PATH: process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH,
           VINEXT_PRERENDER_SERVER_DIR: process.env.VINEXT_PRERENDER_SERVER_DIR,
         }) });
@@ -115,6 +117,7 @@ describe("prerender server pool sizing", () => {
     try {
       const pool = await startPrerenderServerPool(dir, 1, {
         entry,
+        clientDir: "exported-client",
         rscEntryPath: "application-entry.js",
         serverDir: "server-artifacts",
       });

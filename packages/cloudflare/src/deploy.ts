@@ -33,7 +33,7 @@ import {
   loadNextConfig,
   resolveNextConfig,
   resolveNextConfigInput,
-  type NextConfigInput,
+  type ResolvedNextConfig,
 } from "vinext/internal/config/next-config";
 import {
   findVinextCacheConfigInPlugins,
@@ -49,6 +49,7 @@ import {
   hasCacheAdapterPrerenderOutput,
   formatVinextPrerenderLabel,
   requiresRouteCacheabilityProbeManifest,
+  resolvePrebuiltStaticExportClientDir,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
   type VinextCacheConfig,
@@ -224,7 +225,7 @@ type ProjectWranglerApi = {
 
 type DeployViteConfigMetadata = {
   cacheConfig: VinextCacheConfig | null;
-  nextConfig: NextConfigInput | null;
+  nextConfig: ResolvedNextConfig;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
   routeRootConfig: VinextRouteRootConfig | null;
 };
@@ -641,11 +642,19 @@ async function loadDeployViteConfigMetadata(
   root: string,
   mode: string,
   configFile: string | undefined,
+  prebuilt?: DeploymentTool,
 ): Promise<DeployViteConfigMetadata> {
   const vite = await loadProjectViteApi(root);
   const loaded = await vite.loadConfigFromFile({ command: "build", mode }, configFile, root);
   const plugins = loaded?.config.plugins;
   const routeRootConfig = await findVinextRouteRootConfigInPlugins(plugins);
+  const configClientOutDir =
+    routeRootConfig?.clientOutDir ?? loaded?.config.environments?.client?.build?.outDir;
+  const inlineNextConfig = await findVinextNextConfigInPlugins(plugins);
+  const rawNextConfig = inlineNextConfig
+    ? await resolveNextConfigInput(inlineNextConfig, PHASE_PRODUCTION_BUILD)
+    : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
+  const nextConfig = await resolveNextConfig(rawNextConfig, root);
   // The build writes BUILD_ID, vinext-server.json and the prerender output
   // below Vite's `build.outDir`; the steps after it read them from there.
   // runBuild replaces this with the value its resolved config used. Like
@@ -653,17 +662,37 @@ async function loadDeployViteConfigMetadata(
   // config's root.
   const configRoot = loaded?.config.root;
   const configOutDir = loaded?.config.build?.outDir;
+  const outputRoot = path.resolve(root, configRoot ?? ".");
   const outDir =
     configOutDir === undefined && configRoot === undefined
       ? undefined
-      : path.resolve(root, configRoot ?? ".", configOutDir ?? "dist");
+      : path.resolve(outputRoot, configOutDir ?? "dist");
+  let clientOutDir =
+    configClientOutDir === undefined ? undefined : path.resolve(outputRoot, configClientOutDir);
+  // Use loaded metadata for prebuilt output. Vite's build hooks may clean it.
+  if (
+    clientOutDir === undefined &&
+    prebuilt &&
+    !(prebuilt === "cf" && fs.existsSync(resolveBuildOutputDefaultWorkerConfigPath(root)))
+  ) {
+    clientOutDir = resolvePrebuiltStaticExportClientDir({
+      projectRoot: root,
+      configRoot: outputRoot,
+      nextConfig,
+      routeRootConfig: { ...routeRootConfig, outDir },
+      publicDir: loaded?.config.publicDir,
+    });
+  }
   return {
     // The executed Vite config is authoritative. Source scans cannot see
     // imported or composed cache objects and must not suppress valid metadata.
     cacheConfig: await findVinextCacheConfigInPlugins(plugins),
-    nextConfig: await findVinextNextConfigInPlugins(plugins),
+    nextConfig,
     prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
-    routeRootConfig: outDir === undefined ? routeRootConfig : { ...routeRootConfig, outDir },
+    routeRootConfig:
+      outDir === undefined && clientOutDir === undefined
+        ? routeRootConfig
+        : { ...routeRootConfig, outDir, clientOutDir },
   };
 }
 
@@ -672,7 +701,7 @@ async function runBuild(
   env: string | undefined,
   mode: string,
   configFile: string | undefined,
-): Promise<string> {
+): Promise<Pick<VinextRouteRootConfig, "outDir" | "clientOutDir">> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   const { createBuilder } = await loadProjectViteApi(info.root);
@@ -686,7 +715,7 @@ async function runBuild(
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
   let completed = false;
-  const outDir = await withCloudflareEnv(env, async () => {
+  const output = await withCloudflareEnv(env, async () => {
     const invocation: BuildLifecycleInvocation = {
       // Deploy decides platform-specific finalization only after TPR and staged
       // warmup selection.
@@ -701,11 +730,16 @@ async function runBuild(
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
     } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
-    // Vite resolves a relative outDir against the resolved root.
-    return path.resolve(builder.config.root, builder.config.build.outDir);
+    // Vite resolves relative output directories against the resolved root.
+    const { root, build } = builder.config;
+    const clientOutDir = builder.environments.client?.config.build.outDir;
+    return {
+      outDir: path.resolve(root, build.outDir),
+      ...(clientOutDir === undefined ? {} : { clientOutDir: path.resolve(root, clientOutDir) }),
+    };
   });
   if (!completed) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
-  return outDir;
+  return output;
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
@@ -2517,16 +2551,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // This load is intentionally eager: inline `vinext({ nextConfig })` can decide
   // export/prerender behavior, so deploy cannot safely short-circuit before reading it.
   const viteConfigMetadata = await withBuildContext(() =>
-    loadDeployViteConfigMetadata(info.root, viteMode, viteConfigFile),
+    loadDeployViteConfigMetadata(
+      info.root,
+      viteMode,
+      viteConfigFile,
+      options.skipBuild ? deploymentTool : undefined,
+    ),
   );
   const cdnAdapterConfig = resolveCdnAdapterConfig(viteConfigMetadata.cacheConfig);
-  const nextConfig = await withBuildContext(async () => {
-    const inlineNextConfig = viteConfigMetadata.nextConfig;
-    const rawNextConfig = inlineNextConfig
-      ? await resolveNextConfigInput(inlineNextConfig, PHASE_PRODUCTION_BUILD)
-      : await loadNextConfig(info.root, PHASE_PRODUCTION_BUILD);
-    return resolveNextConfig(rawNextConfig, info.root);
-  });
+  const { nextConfig } = viteConfigMetadata;
 
   const shouldLoadVinextPrerenderConfig = !options.prerenderAll && nextConfig.output !== "export";
   const vinextPrerenderConfig = shouldLoadVinextPrerenderConfig
@@ -2566,12 +2599,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   // Step 5: Build
   if (!options.skipBuild) {
-    const outDir = await withBuildContext(() =>
+    const output = await withBuildContext(() =>
       runBuild(info, cloudflareEnv, viteMode, viteConfigFile),
     );
     // A plugin's config hook may set `build.outDir`, which the config file
     // alone does not show.
-    viteConfigMetadata.routeRootConfig = { ...viteConfigMetadata.routeRootConfig, outDir };
+    viteConfigMetadata.routeRootConfig = { ...viteConfigMetadata.routeRootConfig, ...output };
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }

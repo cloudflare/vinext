@@ -454,6 +454,7 @@ import {
 } from "./utils/vite-version.js";
 import {
   normalizeVinextPrerenderConfig,
+  resolveStaticExportDistDir,
   VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY,
   VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY,
   type VinextPrerenderConfig,
@@ -3879,11 +3880,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // @vitejs/plugin-rsc defaults the client output to a fixed
         // "dist/client", so a `build.outDir` has to be carried over here. A
         // client outDir another plugin or the user set stays as it is.
-        const clientOutDirConfig = options.clientOutDir
-          ? { outDir: options.clientOutDir }
-          : hasUserBuildOutDir && config.environments?.client?.build?.outDir === undefined
-            ? { outDir: path.join(buildOutDir, "client") }
-            : {};
+        const exportClientOutDir =
+          env.command === "build" || env.isPreview
+            ? resolveStaticExportDistDir(root, nextConfig)
+            : undefined;
+        const clientOutDir =
+          options.clientOutDir ??
+          config.environments?.client?.build?.outDir ??
+          exportClientOutDir ??
+          (hasUserBuildOutDir ? path.join(buildOutDir, "client") : undefined);
+        const clientOutDirConfig = clientOutDir === undefined ? {} : { outDir: clientOutDir };
         const clientAssetsDir = resolveAssetsDir(nextConfig.assetPrefix ?? "");
         // Next emits CSS url() deps as files, not inlined data URLs. A user's
         // explicit `build.assetsInlineLimit` always wins.
@@ -4844,7 +4850,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: options.clientOutDir ?? path.join(buildOutDir, "client"),
+                outDir: clientOutDir ?? path.join(buildOutDir, "client"),
                 manifest: true,
                 ssrManifest: true,
                 assetsInlineLimit: clientAssetsInlineLimit,

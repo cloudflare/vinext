@@ -15,11 +15,14 @@ import path from "node:path";
 import { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createBuilder, createServer, resolveConfig, type Plugin } from "vite";
-import { afterAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, describe, expect, it, vi } from "vite-plus/test";
 import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 import { emitPrerenderPathManifest } from "../packages/vinext/src/build/prerender-paths.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
+import { loadNextConfig, resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import vinext from "../packages/vinext/src/index.js";
+import { PHASE_PRODUCTION_BUILD } from "../packages/vinext/src/shims/constants.js";
+import * as viteCliInvocation from "../packages/vinext/src/utils/vite-cli-invocation.js";
 import { createIsolatedFixture } from "./helpers.js";
 
 const APP_FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-build-outdir");
@@ -196,6 +199,173 @@ describe("build.outDir", () => {
       expect.arrayContaining(["entry.js", "BUILD_ID", "vinext-server.json"]),
     );
   }, 180_000);
+
+  // Ported from Next.js: test/production/adapter-config/adapter-config-export.test.ts
+  // https://github.com/vercel/next.js/blob/f3a6f976de26c40e7a6543a3175666906e84e050/test/production/adapter-config/adapter-config-export.test.ts
+  it.each([
+    { router: "Pages", absolute: false },
+    { router: "Pages", absolute: true },
+    { router: "App", absolute: false },
+    { router: "App", absolute: true },
+  ])(
+    "exports a static site and its assets to a custom Next.js distDir ($router, absolute=$absolute)",
+    async ({ router, absolute }) => {
+      const isApp = router === "App";
+      const fixtureDir = await isolatedFixture(
+        isApp ? APP_FIXTURE_SOURCE_DIR : PAGES_FIXTURE_SOURCE_DIR,
+      );
+      if (isApp) fs.rmSync(path.join(fixtureDir, "pages"), { recursive: true });
+      const exportDir = path.join(fixtureDir, "custom-out");
+      const distDir = absolute ? exportDir : "custom-out";
+      fs.writeFileSync(
+        path.join(fixtureDir, "next.config.mjs"),
+        `export default { output: "export", distDir: ${JSON.stringify(distDir)} };\n`,
+      );
+
+      // Enable the real build lifecycle for this programmatic builder.
+      const claim = vi
+        .spyOn(viteCliInvocation, "claimViteCliBuildInvocation")
+        .mockReturnValueOnce(true);
+      const builder = await createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        logLevel: "silent",
+      }).finally(() => claim.mockRestore());
+      await builder.buildApp();
+
+      const rawConfig = await loadNextConfig(fixtureDir, PHASE_PRODUCTION_BUILD);
+      expect(await resolveNextConfig(rawConfig, fixtureDir)).toHaveProperty("distDir", distDir);
+      expect(listFiles(path.join(fixtureDir, "dist", "server"))).toEqual(
+        expect.arrayContaining([
+          isApp ? "index.js" : "entry.js",
+          "BUILD_ID",
+          "vinext-prerender.json",
+        ]),
+      );
+      expect(fs.existsSync(path.join(fixtureDir, "dist", "client", "index.html"))).toBe(false);
+
+      const html = fs.readFileSync(path.join(exportDir, "index.html"), "utf8");
+      expect(html).toContain(`Build outDir ${router}`);
+      const scripts = [...html.matchAll(/<script\b[^>]*\bsrc="(\/_next\/static\/[^"]+)"/g)];
+      expect(scripts.length).toBeGreaterThan(0);
+      for (const [, src] of scripts) {
+        expect(fs.existsSync(path.join(exportDir, src.slice(1))), src).toBe(true);
+      }
+    },
+    180_000,
+  );
+
+  it.each([
+    {
+      name: "vinext clientOutDir",
+      output: "export",
+      distDir: "custom-out",
+      pluginOutDir: "plugin-out",
+      expected: "plugin-out",
+    },
+    {
+      name: "Vite client outDir",
+      output: "export",
+      distDir: "custom-out",
+      environmentOutDir: "vite-out",
+      expected: "vite-out",
+    },
+    { name: "non-export build", output: undefined, distDir: "custom-out", expected: "dist/client" },
+    {
+      name: "Next.js default distDir",
+      output: "export",
+      distDir: ".next",
+      expected: "dist/client",
+    },
+  ] as const)("preserves the client output for $name", async (options) => {
+    const fixtureDir = await isolatedFixture(PAGES_FIXTURE_SOURCE_DIR);
+    const config = await resolveConfig(
+      {
+        root: fixtureDir,
+        configFile: false,
+        plugins: [
+          vinext({
+            appDir: fixtureDir,
+            clientOutDir: "pluginOutDir" in options ? options.pluginOutDir : undefined,
+            nextConfig: { output: options.output, distDir: options.distDir },
+          }),
+        ],
+        environments:
+          "environmentOutDir" in options
+            ? { client: { build: { outDir: options.environmentOutDir } } }
+            : undefined,
+      },
+      "build",
+    );
+    expect(path.resolve(fixtureDir, config.environments.client!.build.outDir)).toBe(
+      path.join(fixtureDir, options.expected),
+    );
+  });
+
+  it("preserves the client output when a later Vite config hook changes the root", async () => {
+    const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+    const laterRoot = path.join(fixtureDir, "site");
+    fs.mkdirSync(laterRoot);
+
+    const config = await resolveConfig(
+      {
+        root: fixtureDir,
+        configFile: false,
+        plugins: [
+          vinext({ nextConfig: { output: "export", distDir: "custom-out" } }),
+          { name: "test:late-root", config: () => ({ root: laterRoot }) },
+        ],
+      },
+      "build",
+    );
+
+    expect(config.root).toBe(toSlash(fs.realpathSync(laterRoot)));
+    expect(config.environments.client!.build.outDir).toBe(
+      toSlash(path.join(fs.realpathSync(fixtureDir), "custom-out")),
+    );
+  });
+
+  it.each([
+    { distDir: "", error: /distDir cannot be empty/ },
+    { distDir: " ", error: /distDir cannot be empty/ },
+    { distDir: ".", error: /contains rscOutDir/ },
+    { distDir: "..", error: /contains rscOutDir/ },
+    { distDir: "app", error: /overlaps the app directory/ },
+    { distDir: "public", error: /overlaps the public directory/ },
+    { distDir: "dist", error: /contains the server metadata directory/ },
+  ])(
+    "rejects unsafe static export distDir '$distDir' during config resolution",
+    async ({ distDir, error }) => {
+      const fixtureDir = await isolatedFixture(APP_FIXTURE_SOURCE_DIR);
+      const page = path.join(fixtureDir, "app", "page.tsx");
+      const pageSource = fs.readFileSync(page, "utf8");
+      const publicDir = path.join(fixtureDir, "public");
+      fs.mkdirSync(publicDir, { recursive: true });
+      const publicFile = path.join(publicDir, "keep.txt");
+      fs.writeFileSync(publicFile, "public source");
+
+      await expect(
+        resolveConfig(
+          {
+            root: fixtureDir,
+            configFile: false,
+            plugins: [
+              vinext({
+                appDir: fixtureDir,
+                nextConfig: { output: "export", distDir },
+                rscOutDir: "intermediate/rsc",
+                ssrOutDir: "intermediate/ssr",
+              }),
+            ],
+          },
+          "build",
+        ),
+      ).rejects.toThrow(error);
+      expect(fs.readFileSync(page, "utf8")).toBe(pageSource);
+      expect(fs.readFileSync(publicFile, "utf8")).toBe("public source");
+    },
+  );
 
   it("writes a Cloudflare App Router build under build.outDir", async () => {
     const fixtureDir = await isolatedFixture(CF_APP_FIXTURE_SOURCE_DIR, CF_NODE_MODULES_DIR);

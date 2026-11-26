@@ -92,7 +92,8 @@ export type PrerenderProdServer = {
   close: () => Promise<void>;
 };
 
-type PrerenderServerOptions = {
+export type PrerenderServerOptions = {
+  clientDir?: string;
   rscEntryPath?: string;
   serverDir?: string;
   serverEntryPath?: string;
@@ -184,7 +185,14 @@ export async function startPrerenderServerPool(
   size: number,
   options: PrerenderServerOptions & { entry?: string; silent?: boolean } = {},
 ): Promise<PrerenderServerPool> {
-  const { entry = WORKER_ENTRY, rscEntryPath, serverDir, serverEntryPath, silent = true } = options;
+  const {
+    entry = WORKER_ENTRY,
+    clientDir,
+    rscEntryPath,
+    serverDir,
+    serverEntryPath,
+    silent = true,
+  } = options;
   const children: ChildProcess[] = [];
   let shuttingDown = false;
   let crash: { port?: number; code: number | null; signal: NodeJS.Signals | null } | null = null;
@@ -204,6 +212,7 @@ export async function startPrerenderServerPool(
           VINEXT_PRERENDER: "1",
           NEXT_PHASE: PHASE_PRODUCTION_BUILD,
           VINEXT_PRERENDER_OUTDIR: outDir,
+          VINEXT_PRERENDER_CLIENT_DIR: clientDir,
           ...(rscEntryPath ? { VINEXT_PRERENDER_RSC_ENTRY_PATH: rscEntryPath } : {}),
           ...(serverDir ? { VINEXT_PRERENDER_SERVER_DIR: serverDir } : {}),
           ...(serverEntryPath ? { VINEXT_PRERENDER_SERVER_ENTRY_PATH: serverEntryPath } : {}),
