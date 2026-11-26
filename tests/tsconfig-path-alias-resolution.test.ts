@@ -420,6 +420,9 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
     ["/resolve-order", "Hello from a"],
     ["/resolve-fallback", "Hello from only b"],
     ["/alias-to-d-ts", "Not aliased to d.ts file"],
+    // `lib/missing/*` doesn't resolve, so the fixed `lib/fixed.ts` target wins
+    // over the later `lib/b/*`.
+    ["/resolve-fixed", "Hello from fixed"],
   ] as const;
 
   it("resolves the first matching target and skips .d.ts targets in dev", async () => {
@@ -432,12 +435,30 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
       }
       expect(results).toEqual(pages.map(([pathname]) => [pathname, 200, true]));
 
-      // tsconfig.json redefines the inherited `@types-only` key with only a
-      // declaration target, which replaces the parent's runtime target. (Vite's
-      // native resolve.tsconfigPaths may still resolve it to the .d.ts file.)
-      const aliases = aliasEntriesToRecord(server.config.resolve.alias);
-      expect(Object.keys(aliases).filter((find) => find.includes("types-only"))).toEqual([]);
+      // A key with only declaration targets resolves the specifier as written,
+      // and still shadows broader keys: tsconfig.json's `@types-only` replaces
+      // the parent's runtime target, and `@lib/typed` / `@lib/types/*` are
+      // never handled by `@lib/*`. (Vite's native resolve.tsconfigPaths may
+      // still resolve them to the .d.ts file.)
+      const aliasEntries = server.config.resolve.alias as {
+        find: string | RegExp;
+        replacement: string;
+        customResolver?: unknown;
+      }[];
+      const aliases = aliasEntriesToRecord(aliasEntries);
       expect(aliases[String(/^d-ts-alias$/)]).toMatch(/components\/alias-to-d-ts\.tsx$/);
+      const findIndex = (find: string) => aliasEntries.findIndex((e) => String(e.find) === find);
+      const passThroughEntries = [
+        [String(/^@types-only$/), "@types-only"],
+        [String(/^@lib\/typed$/), "@lib/typed"],
+        ["@lib/types", "@lib/types"],
+      ] as const;
+      for (const [find, replacement] of passThroughEntries) {
+        const entry = aliasEntries[findIndex(find)]!;
+        expect(entry.replacement).toBe(replacement);
+        expect(await (entry.customResolver as (id: string) => unknown)(replacement)).toBeNull();
+        expect(findIndex(find)).toBeLessThan(findIndex("@lib"));
+      }
     } finally {
       await server.close();
     }
