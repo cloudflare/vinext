@@ -10,6 +10,8 @@ import * as React from "react";
 
 export type NavigateOptions = {
   scroll?: boolean;
+  /** View transition types for this navigation (React `addTransitionType`). */
+  transitionTypes?: string[];
 };
 
 export type PrefetchOptions = {
