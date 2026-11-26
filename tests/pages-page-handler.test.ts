@@ -228,6 +228,56 @@ describe("createPagesPageHandler — route module spans", () => {
   });
 });
 
+describe("createPagesPageHandler — coalesced route module spans", () => {
+  it("resolves and prepares the page once for each request sharing an on-demand revalidation", async () => {
+    let releaseRender!: () => void;
+    const renderGate = new Promise<void>((resolve) => {
+      releaseRender = resolve;
+    });
+    const getStaticProps = vi.fn(async () => {
+      await renderGate;
+      return { props: {}, revalidate: 60 };
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/coalesced-spans", makePageModule({ getStaticProps }))],
+      }),
+    );
+    const revalidate = () =>
+      handler(
+        new Request("http://localhost/coalesced-spans", {
+          headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+        }),
+        "/coalesced-spans",
+        null,
+        null,
+        null,
+      );
+    capturedRouteModuleSpans.length = 0;
+    captureRouteModuleSpans = true;
+    try {
+      const responses = Promise.all([revalidate(), revalidate()]);
+      await vi.waitFor(() => expect(getStaticProps).toHaveBeenCalledOnce());
+      releaseRender();
+      for (const response of await responses) {
+        expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+        await response.text();
+      }
+    } finally {
+      captureRouteModuleSpans = false;
+    }
+
+    expect(getStaticProps).toHaveBeenCalledOnce();
+    const count = (type: string) =>
+      capturedRouteModuleSpans.filter(([spanType]) => spanType === type).length;
+    expect({
+      findPageComponents: count("NextNodeServer.findPageComponents"),
+      loadRouteModule: count("LoadComponents.loadRouteModule"),
+      prepare: count("RouteModule.prepare"),
+    }).toEqual({ findPageComponents: 2, loadRouteModule: 2, prepare: 2 });
+  });
+});
+
 describe("createPagesPageHandler — after() lifecycle", () => {
   it("runs callbacks only after the response body closes", async () => {
     let callbackRan = false;

@@ -133,6 +133,11 @@ export function traceLoadRouteModule<T>(callback: () => T): T {
   return frameworkTracer.trace(LOAD_ROUTE_MODULE_SPAN, callback);
 }
 
+/** Resolve a matched route's modules, as Next.js's `findPageComponents`. */
+export function traceRouteModuleLoad<T>(routePattern: string, load: () => T): T {
+  return traceFindPageComponents(routePattern, () => traceLoadRouteModule(load));
+}
+
 /** Set up the matched route's request context (pathname, query, params). */
 export function tracePrepareRouteModule<T>(callback: () => T): T {
   return frameworkTracer.trace(PREPARE_ROUTE_MODULE_SPAN, callback);

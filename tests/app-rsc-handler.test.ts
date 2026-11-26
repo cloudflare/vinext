@@ -743,6 +743,106 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
+  async function captureRouteModuleSpans(run: () => Promise<void>) {
+    capturedNotFoundSpans.length = 0;
+    captureNotFoundSpans = true;
+    try {
+      await run();
+    } finally {
+      captureNotFoundSpans = false;
+      activeCapturedSpan = undefined;
+    }
+    return capturedNotFoundSpans
+      .filter(({ descriptor }) =>
+        [
+          "LoadComponents.loadRouteModule",
+          "NextNodeServer.findPageComponents",
+          "RouteModule.prepare",
+        ].includes(descriptor.type),
+      )
+      .map(({ descriptor, parentType }) => [descriptor.type, parentType]);
+  }
+
+  it("prepares a route tree prefetch's route module once", async () => {
+    const handler = createHandler({ ensureRouteLoaded: vi.fn() });
+    const headers = createRscRequestHeaders();
+    headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+    const rscUrl = await createRscRequestUrl("/docs/about", headers);
+    const spans = await captureRouteModuleSpans(async () => {
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    });
+
+    expect(spans).toEqual([
+      ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", "BaseServer.handleRequest"],
+    ]);
+  });
+
+  it("loads and prepares a Server Action's route module once before handling it", async () => {
+    const order: string[] = [];
+    const ensureRouteLoaded = vi.fn(() => {
+      order.push("load");
+    });
+    const handler = createHandler({
+      ensureRouteLoaded,
+      handleServerActionRequest: async () => {
+        order.push("action");
+        return new Response("action");
+      },
+    });
+    const spans = await captureRouteModuleSpans(async () => {
+      const response = await handler(
+        new Request("https://example.test/docs/about", {
+          method: "POST",
+          headers: { "next-action": "action-id", "content-type": "text/plain" },
+        }),
+        null,
+        false,
+      );
+      expect(await response.text()).toBe("action");
+    });
+
+    expect(order).toEqual(["load", "action"]);
+    expect(spans).toEqual([
+      ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", "BaseServer.handleRequest"],
+    ]);
+  });
+
+  it("leaves preparing the route module to the response stage it dispatches", async () => {
+    const responseHandler = createHandler({ ensureRouteLoaded: vi.fn() });
+    // The request stage holds no route modules.
+    const requestHandler = createHandler({ configHeaders: [] });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>((stageRequest, props) =>
+      responseHandler.handleResponseStage(stageRequest, null, props),
+    );
+    const spans = await captureRouteModuleSpans(async () => {
+      const response = await requestHandler(
+        new Request("https://example.test/docs/about"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    });
+
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(spans.map(([type]) => type)).toEqual([
+      "NextNodeServer.findPageComponents",
+      "LoadComponents.loadRouteModule",
+      "RouteModule.prepare",
+    ]);
+  });
+
   it("establishes the Cache Components request work unit in the split response stage", async () => {
     let workUnitType: string | undefined;
     const handler = createHandler({

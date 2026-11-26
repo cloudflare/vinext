@@ -43,11 +43,7 @@ import { traceAppPageRender } from "./app-page-tracing.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { stripInheritedResponseStageCookies } from "./response-stage-policy.js";
-import {
-  traceFindPageComponents,
-  traceLoadRouteModule,
-  tracePrepareRouteModule,
-} from "./pages-execution-tracing.js";
+import { tracePrepareRouteModule, traceRouteModuleLoad } from "./pages-execution-tracing.js";
 import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import {
   cloneRequestWithHeaders,
@@ -221,9 +217,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   const route = match?.route ?? null;
   if (route) {
     if (options.ensureRouteLoaded) {
-      await traceFindPageComponents(route.pattern, () =>
-        traceLoadRouteModule(() => options.ensureRouteLoaded!(route)),
-      );
+      await traceRouteModuleLoad(route.pattern, () => options.ensureRouteLoaded!(route));
     }
     if (
       (props.kind === "app-page" && route.routeHandler) ||

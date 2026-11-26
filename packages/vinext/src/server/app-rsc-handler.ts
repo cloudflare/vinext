@@ -11,11 +11,7 @@ import {
   normalizePathnameForRouteMatchStrict,
 } from "../routing/utils.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
-import {
-  traceFindPageComponents,
-  traceLoadRouteModule,
-  tracePrepareRouteModule,
-} from "./pages-execution-tracing.js";
+import { tracePrepareRouteModule, traceRouteModuleLoad } from "./pages-execution-tracing.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
   getActiveDraftModeState,
@@ -2613,6 +2609,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const isFinalRouteMatch = isInterceptionMatch || requestsLiteralRoutePattern;
   const preActionMatchIsFinal =
     preActionMatch !== null && (isFinalRouteMatch || !preActionMatch.route.isDynamic);
+  // Next.js prepares the matched route module once per request, at the start
+  // of its handler (`RouteModule.prepare`), before handling a Server Action or
+  // a prefetch.
+  let routeModulePrepared = false;
+  const prepareRouteModule = <T>(callback: () => T): T => {
+    if (routeModulePrepared) return callback();
+    routeModulePrepared = true;
+    return tracePrepareRouteModule(callback);
+  };
   let serverActionHandled = false;
   const handleServerAction = async (
     routeMatch: AppRscRouteMatch<TRoute> | null,
@@ -2623,6 +2628,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (!options.handleServerActionRequest) {
       return markServerActionResponse(
         respondServerActionNotFound(actionId, options.clearRequestContext),
+      );
+    }
+    if (routeMatch) {
+      // Like Next.js, load the action's page before handling the action,
+      // which may forward it to the route that owns it.
+      const actionRoute = routeMatch.route;
+      if (options.ensureRouteLoaded) {
+        await traceRouteModuleLoad(actionRoute.pattern, () =>
+          options.ensureRouteLoaded!(actionRoute),
+        );
+      }
+      // The action and the page it renders see the route's root params.
+      prepareRouteModule(() =>
+        setRootParams(pickRootParams(routeMatch.params, actionRoute.rootParamNames)),
       );
     }
     const sourceConfigHeaders = new Headers();
@@ -3248,9 +3267,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
     // branch and any downstream synchronous module reads.
     if (options.ensureRouteLoaded) {
-      await traceFindPageComponents(route.pattern, () =>
-        traceLoadRouteModule(() => options.ensureRouteLoaded!(route)),
-      );
+      await traceRouteModuleLoad(route.pattern, () => options.ensureRouteLoaded!(route));
     }
     const resolvedSearchParams = getResolvedSearchParams();
     const isRouteTreePrefetch = isRouteTreePrefetchRequest(request) && !route.routeHandler;
@@ -3276,8 +3293,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       resumeRoutingAfterMiss();
       return new Response(null, { status: 404 });
     }
-    setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
+    const setRequestRoute = () =>
+      setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
+    const matchedResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     if (isRouteTreePrefetch) {
+      // The tree prefetch answers from the matched route alone, so naming it
+      // on the request span is all this request prepares.
+      prepareRouteModule(setRequestRoute);
       const response = await createRouteTreePrefetchResponse(route, {
         buildId: options.buildId,
         prefetchInlining: options.prefetchInlining,
@@ -3285,6 +3307,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       options.clearRequestContext();
       return applyMiddlewareContextToResponse(response, middlewareContext);
     }
+    setRequestRoute();
     const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
     const prerenderRouteParamsMatch = matchPrerenderRouteParamsPayload(
       prerenderRouteParamsPayload,
@@ -3307,7 +3330,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : cleanPathnameIsRequestPathname
         ? requestPathname || "/"
         : cleanPathname || "/";
-    const matchedResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     let runtimeFallbackShells: AppPagePprFallbackCacheShell[] = [];
     if (
       options.createPprFallbackShells &&
@@ -3325,7 +3347,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         params,
       );
     }
-    const rootParams = tracePrepareRouteModule(() => {
+    const setMatchedRouteContext = () => {
       options.setNavigationContext({
         pathname: canonicalPathname,
         searchParams: resolvedSearchParams,
@@ -3334,7 +3356,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const matchedRootParams = pickRootParams(renderParams, route.rootParamNames);
       setRootParams(matchedRootParams);
       return matchedRootParams;
-    });
+    };
+    // A response stage prepares the route module it renders.
+    const rootParams = matchedResponseStage
+      ? setMatchedRouteContext()
+      : prepareRouteModule(setMatchedRouteContext);
 
     if (route.routeHandler) {
       // Next.js edge route handlers run through web/adapter.ts, which strips

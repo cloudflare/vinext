@@ -1381,6 +1381,33 @@ describe("Pages Router integration", () => {
     ]);
   });
 
+  it("prepares the 404 page it renders for a route miss in dev", async () => {
+    capturedFrameworkSpans.length = 0;
+    captureFrameworkSpans = true;
+    try {
+      const res = await fetch(`${baseUrl}/route-module-span-miss`);
+      expect(res.status).toBe(404);
+      await res.text();
+    } finally {
+      captureFrameworkSpans = false;
+    }
+    expect(
+      capturedFrameworkSpans
+        .map(({ type }) => type)
+        .filter((type) =>
+          [
+            "LoadComponents.loadRouteModule",
+            "NextNodeServer.findPageComponents",
+            "RouteModule.prepare",
+          ].includes(type),
+        ),
+    ).toEqual([
+      "NextNodeServer.findPageComponents",
+      "LoadComponents.loadRouteModule",
+      "RouteModule.prepare",
+    ]);
+  });
+
   it("renders dynamic routes with params", async () => {
     const res = await fetch(`${baseUrl}/posts/42`);
     expect(res.status).toBe(200);

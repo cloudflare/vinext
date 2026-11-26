@@ -41,8 +41,8 @@ import {
 import {
   tracePagesDocumentStream,
   traceFindPageComponents,
-  traceLoadRouteModule,
   tracePrepareRouteModule,
+  traceRouteModuleLoad,
 } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
@@ -703,15 +703,25 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
-    const pageModule = traceFindPageComponents(route.pattern, () =>
-      traceLoadRouteModule(() => route.module),
-    );
+    // A coalesced on-demand revalidation renders again below for the request
+    // that leads it, which already resolved and prepared the page.
+    const tracesRouteModule = options?.__skipOnDemandCoalesce !== true;
+    const pageModule = tracesRouteModule
+      ? traceRouteModuleLoad(route.pattern, () => route.module)
+      : route.module;
     const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
-    const pagesReadiness = buildPagesReadinessNextData({
-      pageModule,
-      appComponent: AppComponent as { getInitialProps?: unknown; origGetInitialProps?: unknown },
-      hasRewrites,
-    });
+    // Like Next.js's `RouteModule.prepare` at the start of the page's handler,
+    // this runs once for each request the page answers, including ISR hits and
+    // the requests that share a coalesced revalidation.
+    const readPagesReadiness = () =>
+      buildPagesReadinessNextData({
+        pageModule,
+        appComponent: AppComponent as { getInitialProps?: unknown; origGetInitialProps?: unknown },
+        hasRewrites,
+      });
+    const pagesReadiness = tracesRouteModule
+      ? tracePrepareRouteModule(readPagesReadiness)
+      : readPagesReadiness();
     const isCacheabilityProbe = isRouteCacheabilityProbe();
     const isTopLevelPageRoute = !isRouteMissErrorRender && options?.__forcedRoute === undefined;
     // A page or custom `_app` getInitialProps runs on every request with the
@@ -932,12 +942,10 @@ export function createPagesPageHandler(
           }
         }
 
-        tracePrepareRouteModule(() =>
-          applySSRContext({
-            isPreview: previewData !== false,
-            nextData: pagesNextData,
-          }),
-        );
+        applySSRContext({
+          isPreview: previewData !== false,
+          nextData: pagesNextData,
+        });
 
         const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {

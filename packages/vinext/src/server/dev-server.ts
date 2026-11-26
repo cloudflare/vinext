@@ -1994,12 +1994,15 @@ async function renderErrorPage(
       };
       try {
         errorRouterShim = await importModule(runner, "next/router");
-        if (typeof errorRouterShim.setSSRContext === "function") {
-          errorRouterShim.setSSRContext({
-            ...errorRouter,
-            navigationIsReady: true,
-          });
-        }
+        // The error page's own handler prepares it, as in Next.js.
+        tracePrepareRouteModule(() => {
+          if (typeof errorRouterShim.setSSRContext === "function") {
+            errorRouterShim.setSSRContext({
+              ...errorRouter,
+              navigationIsReady: true,
+            });
+          }
+        });
       } catch {
         // router shim not available — continue without it
       }
