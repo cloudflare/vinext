@@ -396,31 +396,56 @@ describe("App prerender endpoint helpers", () => {
     expect(appResult[1]).not.toHaveProperty("slug");
   });
 
-  it("never reads a user's object param value as an undefined param", async () => {
-    // An object is never a valid param value, so Next.js rejects it; it must
-    // not turn into a valid root path on the way through JSON.
-    const value = { __vinextParam: "undefined" };
+  it("reads every object param value back as an invalid object", async () => {
+    // An object is never a valid param value, so Next.js rejects it. Through
+    // JSON it must stay an object: not an undefined param (a valid root path)
+    // and not whatever its toJSON returns.
     const response = await handleAppPrerenderEndpoint(
       new Request("http://localhost/__vinext/prerender/static-params?pattern=/:slug*"),
       {
         isPrerenderEnabled: () => true,
         pathname: "/__vinext/prerender/static-params",
-        staticParamsMap: { "/:slug*": () => [{ slug: value }] },
+        staticParamsMap: {
+          "/:slug*": () => [
+            { slug: { __vinextParam: "undefined" } },
+            { slug: { toJSON: () => undefined } },
+            { slug: { toJSON: (key: string) => (key === "slug" ? { invalid: true } : "a") } },
+          ],
+        },
       },
     );
-    expect(staticParamsFromJson(await response?.json())).toEqual([{ slug: value }]);
+    expect(staticParamsFromJson(await response?.json())).toEqual([
+      { slug: {} },
+      { slug: {} },
+      { slug: {} },
+    ]);
+  });
 
-    // A value that serializes to nothing stays an invalid object too.
-    const dropped = await handleAppPrerenderEndpoint(
-      new Request("http://localhost/__vinext/prerender/static-params?pattern=/:slug*"),
+  it("reads each getStaticPaths result property once", async () => {
+    let reads = 0;
+    const result = {
+      fallback: false,
+      get paths() {
+        if (++reads > 1) throw new Error("read twice");
+        return [{ params: { slug: undefined } }];
+      },
+    };
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/pages-static-paths?pattern=/:slug*"),
       {
         isPrerenderEnabled: () => true,
-        pathname: "/__vinext/prerender/static-params",
-        staticParamsMap: { "/:slug*": () => [{ slug: { toJSON: () => undefined } }] },
+        loadPagesRoutes: async () => [
+          { module: { getStaticPaths: () => result }, pattern: "/:slug*" },
+        ],
+        pathname: "/__vinext/prerender/pages-static-paths",
+        staticParamsMap: {},
       },
     );
-    const [droppedParams] = staticParamsFromJson(await dropped?.json()) as [{ slug: unknown }];
-    expect(droppedParams.slug).toEqual({ __vinextParam: "value" });
+    expect(response?.status).toBe(200);
+    expect(staticPathsFromJson(await response?.json())).toEqual({
+      fallback: false,
+      paths: [{ params: { slug: undefined } }],
+    });
   });
 
   // Next.js passes a layout's own undefined param to the child

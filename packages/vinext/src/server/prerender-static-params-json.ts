@@ -9,32 +9,29 @@
  * incomplete param set (build/static-paths/app.ts and pages.ts validateParams
  * check `params.hasOwnProperty(key)`), and a layout's `undefined` reaches the
  * child generateStaticParams as an own property. A present `undefined` is
- * sent as an envelope object. Every other object value, which no valid param
- * has, is wrapped in one too, so decoding never mistakes a user value for an
- * envelope.
+ * sent as a marker. An object value, which no valid param has, is sent as
+ * another marker that reads back as an empty object: still invalid, without
+ * running the user object's `toJSON` or carrying it through JSON. Every
+ * property is read once, as `JSON.stringify` does.
  */
 
-const ENVELOPE_KEY = "__vinextParam";
+const MARKER_KEY = "__vinextParam";
 
-type ParamEnvelope = { [ENVELOPE_KEY]: "undefined" } | { [ENVELOPE_KEY]: "value"; value: unknown };
+type ParamMarker = { [MARKER_KEY]: "undefined" | "object" };
 
 function isObjectValue(value: unknown): value is object {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function encodeValue(value: unknown): unknown {
-  if (value === undefined) return { [ENVELOPE_KEY]: "undefined" } satisfies ParamEnvelope;
-  if (isObjectValue(value)) return { [ENVELOPE_KEY]: "value", value } satisfies ParamEnvelope;
+  if (value === undefined) return { [MARKER_KEY]: "undefined" } satisfies ParamMarker;
+  if (isObjectValue(value)) return { [MARKER_KEY]: "object" } satisfies ParamMarker;
   return value;
 }
 
 function decodeValue(value: unknown): unknown {
-  if (!isObjectValue(value) || !(ENVELOPE_KEY in value)) return value;
-  const envelope = value as ParamEnvelope;
-  if (envelope[ENVELOPE_KEY] === "undefined") return undefined;
-  // A wrapped value JSON dropped (a `toJSON` returning undefined) stays an
-  // invalid object rather than reading as an undefined param.
-  return Object.hasOwn(envelope, "value") ? Reflect.get(envelope, "value") : envelope;
+  if (!isObjectValue(value)) return value;
+  return Reflect.get(value, MARKER_KEY) === "undefined" ? undefined : {};
 }
 
 function mapParamValues(params: unknown, map: (value: unknown) => unknown): unknown {
@@ -44,16 +41,23 @@ function mapParamValues(params: unknown, map: (value: unknown) => unknown): unkn
 
 function mapStaticPaths(result: unknown, map: (value: unknown) => unknown): unknown {
   if (!isObjectValue(result)) return result;
-  const { paths } = result as { paths?: unknown };
-  if (!Array.isArray(paths)) return result;
-  return {
-    ...result,
-    paths: paths.map((entry: unknown) =>
-      isObjectValue(entry) && "params" in entry
-        ? { ...entry, params: mapParamValues(entry.params, map) }
-        : entry,
-    ),
-  };
+  return Object.fromEntries(
+    Object.entries(result).map(([key, paths]) => [
+      key,
+      key === "paths" && Array.isArray(paths)
+        ? paths.map((entry: unknown) =>
+            isObjectValue(entry)
+              ? Object.fromEntries(
+                  Object.entries(entry).map(([entryKey, value]) => [
+                    entryKey,
+                    entryKey === "params" ? mapParamValues(value, map) : value,
+                  ]),
+                )
+              : entry,
+          )
+        : paths,
+    ]),
+  );
 }
 
 /** One param object ready for JSON. */
