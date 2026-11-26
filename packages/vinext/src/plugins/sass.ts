@@ -125,7 +125,9 @@ function isSassAliasEligibleUrl(url: string, context?: SassFileImporterContext):
  * One importer is emitted per ordered replacement slot. When Sass cannot find
  * a file for the first target it advances to the next importer, preserving the
  * fallback order from `paths`. All importers select the same best pattern, so a
- * failed specific mapping never falls through to a less-specific mapping.
+ * failed specific mapping never falls through to a less-specific mapping. An
+ * alias without replacements (a key whose targets are all declaration files)
+ * still wins the match, so the URL is left to the other importers.
  *
  * Aliases stay scoped to application stylesheets. Loads originating in
  * `node_modules`, plus absolute, relative, protocol-relative, and scheme URLs,
@@ -134,9 +136,7 @@ function isSassAliasEligibleUrl(url: string, context?: SassFileImporterContext):
 export function createSassTsconfigPathImporters(
   aliases: readonly SassTsconfigPathAlias[],
 ): SassFileImporter[] {
-  const entries = aliases.filter(
-    ({ find, replacements }) => find.length > 0 && replacements.length > 0,
-  );
+  const entries = aliases.filter(({ find }) => find.length > 0);
   const replacementSlots = Math.max(0, ...entries.map((alias) => alias.replacements.length));
 
   return Array.from({ length: replacementSlots }, (_, replacementIndex) => ({

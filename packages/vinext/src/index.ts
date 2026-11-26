@@ -1214,6 +1214,7 @@ function materializeTsconfigPathAliases(
       if (declaredTargets.length > 0) {
         if (!find.includes("*")) viteExactPassThrough.push(find);
         else if (isTrailingWildcardPattern(find)) vitePassThrough.push(find.slice(0, -2));
+        if (find.length > 0 && hasZeroOrOneAsterisk(find)) sass.push({ find, replacements: [] });
       }
       continue;
     }
@@ -1566,6 +1567,8 @@ function isStylesheetImporter(importer: string | undefined): boolean {
  * alias replacement doesn't resolve, each fallback replaces it in order and
  * the first that resolves wins.
  */
+const QUERY_OR_HASH_RE = /[?#]/;
+
 function createTsconfigAliasCustomResolver(
   replacement: string,
   fallbacks: readonly TsconfigPathFallback[] = [],
@@ -1585,16 +1588,20 @@ function createTsconfigAliasCustomResolver(
     const resolved = await this.resolve(updatedId, importer, resolveOptions);
     if (resolved) return resolved;
     // The alias plugin replaced the matched key with `replacement`, so the
-    // rest of the id is `/` + the part the `*` matched.
+    // rest of the id is `/` + the part the `*` matched, then any query/hash,
+    // which every candidate keeps (`?raw`, `?url`).
     if (updatedId.startsWith(replacement)) {
       const rest = updatedId.slice(replacement.length);
+      const postfixStart = rest.search(QUERY_OR_HASH_RE);
+      const matched = postfixStart < 0 ? rest : rest.slice(0, postfixStart);
+      const postfix = postfixStart < 0 ? "" : rest.slice(postfixStart);
       for (const fallback of fallbacks) {
         let candidate: string;
         if ("fixed" in fallback) candidate = fallback.fixed;
-        else if (rest.startsWith("/"))
-          candidate = fallback.prefix + rest.slice(1) + fallback.suffix;
-        else continue;
-        const fallbackResolved = await this.resolve(candidate, importer, resolveOptions);
+        else if (matched.startsWith("/")) {
+          candidate = fallback.prefix + matched.slice(1) + fallback.suffix;
+        } else continue;
+        const fallbackResolved = await this.resolve(candidate + postfix, importer, resolveOptions);
         if (fallbackResolved) return fallbackResolved;
       }
     }

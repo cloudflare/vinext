@@ -423,6 +423,8 @@ describe("tsconfig path targets (fallbacks and .d.ts)", () => {
     // `lib/missing/*` doesn't resolve, so the fixed `lib/fixed.ts` target wins
     // over the later `lib/b/*`.
     ["/resolve-fixed", "Hello from fixed"],
+    // The import's `?raw` query carries over to the fixed fallback.
+    ["/resolve-fixed-raw", "fixed-source-marker"],
   ] as const;
 
   it("resolves the first matching target and skips .d.ts targets in dev", async () => {

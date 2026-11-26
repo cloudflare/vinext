@@ -321,6 +321,21 @@ describe("createSassTildeImporter", () => {
 });
 
 describe("createSassTsconfigPathImporters", () => {
+  // A key whose targets are all declaration files keeps the URL from broader
+  // keys, as for module resolution.
+  it("lets an alias without replacements shadow broader aliases", () => {
+    const general = path.join(os.tmpdir(), "general");
+    const importers = createSassTsconfigPathImporters([
+      { find: "@lib/*", replacements: [path.join(general, "*")] },
+      { find: "@lib/types/*", replacements: [] },
+    ]);
+
+    expect(importers.map((importer) => importer.findFileUrl("@lib/types/x"))).toEqual([null]);
+    expect(importers[0]?.findFileUrl("@lib/colors")?.href).toBe(
+      pathToFileURL(path.join(general, "colors")).href,
+    );
+  });
+
   it("preserves exact, wildcard, longest-match, and target fallback semantics", async () => {
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext sass aliases "));
     try {
