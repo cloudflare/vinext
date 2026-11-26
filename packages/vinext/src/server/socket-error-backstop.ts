@@ -309,7 +309,7 @@ export function installSocketErrorBackstop(
 
   process.on("uncaughtException", (err: Error) => {
     if (absorbBenignAssetImport(err, "uncaughtException")) return;
-    if (process.env.VINEXT_PRERENDER === "1") {
+    if (proc.env.VINEXT_PRERENDER === "1") {
       if (!proc[PRERENDER_WORKER_FLAG]) throw err;
       if (isFrameworkSignalError(err)) {
         console.error(
@@ -318,14 +318,14 @@ export function installSocketErrorBackstop(
             "and the build will now exit.",
         );
         console.error(err);
-        process.exit(FATAL_UNHANDLED_NEXT_API_EXIT_CODE);
+        proc.exit(FATAL_UNHANDLED_NEXT_API_EXIT_CODE);
       }
       // Next.js's export worker logs it and keeps rendering, but bounds each
       // page by `staticPageGenerationTimeout`. vinext has no such bound, so a
       // request left waiting on the work the throw abandoned would hang the
       // build; the worker exits with the error instead.
       console.error("[vinext] uncaughtException during prerender:", err);
-      process.exit(1);
+      proc.exit(1);
     }
     const code = peerDisconnectCode(err);
     if (code) {
@@ -352,7 +352,7 @@ export function installSocketErrorBackstop(
   process.on("rejectionHandled", () => {});
   process.on("unhandledRejection", (reason: unknown) => {
     if (absorbBenignAssetImport(reason, "unhandledRejection")) return;
-    if (process.env.VINEXT_PRERENDER === "1") {
+    if (proc.env.VINEXT_PRERENDER === "1") {
       if (!proc[PRERENDER_WORKER_FLAG]) throw reason;
       if (!isFrameworkSignalError(reason)) console.error("[vinext] unhandledRejection:", reason);
       return;

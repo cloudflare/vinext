@@ -288,6 +288,28 @@ describe("installSocketErrorBackstop listeners", () => {
     );
   });
 
+  // A Workers server bundle can replace `globalThis.process` with a polyfill
+  // after the worker installs the backstop (see prerender-server-entry.ts).
+  it("keeps the real process when a server bundle replaces the global one", () => {
+    const result = spawnWithBackstop(
+      `
+      ${RENDER_WORKER_INSTALL}
+      Object.defineProperty(globalThis, "process", {
+        configurable: true,
+        value: { env: {}, exit() { throw new Error("polyfill exit"); } },
+        writable: true,
+      });
+      setTimeout(() => { throw new Error("uncaught throw"); }, 10);
+    `,
+      { VINEXT_PRERENDER: "1" },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "[vinext] uncaughtException during prerender: Error: uncaught throw",
+    );
+    expect(result.stderr).not.toContain("polyfill exit");
+  });
+
   // The build process sets VINEXT_PRERENDER too while it drives the workers;
   // like Next.js's build process it fails on these errors.
   it("re-throws during prerender outside a render worker", () => {
