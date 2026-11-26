@@ -29,6 +29,7 @@ import { parseStaticObjectLiteral } from "../plugins/fonts.js";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
+const CONFIG_DIR_TEMPLATE_RE = /\$\{configDir\}/g;
 
 type TsconfigPathResolution = {
   aliases: Record<string, string>;
@@ -134,6 +135,8 @@ function loadResolutionFromTsconfigFile(
   // Collects every config file read (and missing relative parents), for
   // watching.
   readConfigs?: Set<string>,
+  // The directory of the config the chain starts from, for `${configDir}`.
+  rootConfigDir = path.dirname(configPath),
 ): TsconfigPathResolution {
   // `activeConfigs` holds only the configs on the current `extends` chain, so
   // it breaks cycles while a config shared by several parents (`[B, C]` both
@@ -142,7 +145,7 @@ function loadResolutionFromTsconfigFile(
   activeConfigs.add(configPath);
   readConfigs?.add(configPath);
   try {
-    return readResolutionFromTsconfigFile(configPath, activeConfigs, readConfigs);
+    return readResolutionFromTsconfigFile(configPath, activeConfigs, readConfigs, rootConfigDir);
   } finally {
     activeConfigs.delete(configPath);
   }
@@ -151,7 +154,8 @@ function loadResolutionFromTsconfigFile(
 function readResolutionFromTsconfigFile(
   configPath: string,
   activeConfigs: Set<string>,
-  readConfigs?: Set<string>,
+  readConfigs: Set<string> | undefined,
+  rootConfigDir: string,
 ): TsconfigPathResolution {
   let parsed: Record<string, unknown> | null = null;
   try {
@@ -179,7 +183,12 @@ function readResolutionFromTsconfigFile(
       for (const candidate of tsconfigPathCandidates(missing)) readConfigs.add(candidate);
     }
     if (extendedPath) {
-      const parent = loadResolutionFromTsconfigFile(extendedPath, activeConfigs, readConfigs);
+      const parent = loadResolutionFromTsconfigFile(
+        extendedPath,
+        activeConfigs,
+        readConfigs,
+        rootConfigDir,
+      );
       resolution = {
         aliases: { ...resolution.aliases, ...parent.aliases },
         baseUrl: parent.baseUrl ?? resolution.baseUrl,
@@ -190,7 +199,12 @@ function readResolutionFromTsconfigFile(
   const compilerOptions = isRecord(parsed.compilerOptions) ? parsed.compilerOptions : null;
   const ownBaseUrl =
     compilerOptions && typeof compilerOptions.baseUrl === "string"
-      ? path.resolve(path.dirname(configPath), compilerOptions.baseUrl)
+      ? // Like TypeScript and Next.js lib/typescript/loadTsConfig.ts,
+        // `${configDir}` is the directory of the config the chain starts from.
+        path.resolve(
+          path.dirname(configPath),
+          compilerOptions.baseUrl.replace(CONFIG_DIR_TEMPLATE_RE, () => rootConfigDir),
+        )
       : null;
   const baseUrl = ownBaseUrl ?? resolution.baseUrl;
 

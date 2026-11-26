@@ -100,11 +100,16 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
       async handler(id, importer, resolveOptions) {
         if (!baseUrl || !importer || isJsonRequest(id)) return null;
         if (toSlash(importer).includes("/node_modules/")) return null;
-        const resolved = await this.resolve(path.join(baseUrl, id), importer, {
-          ...resolveOptions,
-          skipSelf: true,
-        });
-        if (!resolved || resolved.external || isJsonRequest(resolved.id)) return null;
+        const options = { ...resolveOptions, skipSelf: true };
+        // Other resolvers (later pre plugins, virtual modules) see the bare id
+        // first, as with Vite's native resolve.tsconfigPaths; baseUrl then
+        // only takes precedence over packages.
+        const standard = await this.resolve(id, importer, options);
+        if (standard && !standard.external && !toSlash(standard.id).includes("/node_modules/")) {
+          return standard;
+        }
+        const resolved = await this.resolve(path.join(baseUrl, id), importer, options);
+        if (!resolved || resolved.external || isJsonRequest(resolved.id)) return standard;
         return resolved;
       },
     },

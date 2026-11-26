@@ -135,6 +135,16 @@ describe("jsconfig.json baseUrl", () => {
     }
   }, 60_000);
 
+  // `${configDir}` in an inherited baseUrl is the directory of the config the
+  // chain starts from (Next.js lib/typescript/loadTsConfig.ts).
+  it("expands ${configDir} in an inherited baseUrl to the root config directory", async () => {
+    const entryPath = await buildPagesFixture(FIXTURE, {
+      typescript: { tsconfigPath: "tsconfig.config-dir.json" },
+    });
+    buildDirs.push(path.dirname(path.dirname(entryPath)));
+    expect(fs.readFileSync(entryPath, "utf-8")).toContain("Custom base world");
+  }, 120_000);
+
   // TypeScript applies `extends` arrays in order, so the later parent's
   // inherited baseUrl wins even when an earlier parent shares its base config.
   it("takes baseUrl from the later parent when extends parents share a base config", async () => {
@@ -157,6 +167,33 @@ describe("jsconfig.json baseUrl", () => {
       expect(await resolveId.handler.call({ resolve }, id, importer, {})).toBeNull();
     }
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  // Like Vite's native resolve.tsconfigPaths, other resolvers (such as a later
+  // pre plugin's virtual module) claim a bare id before baseUrl does.
+  it("lets other resolvers claim a bare id before baseUrl", async () => {
+    const resolveId = createResolvedBaseUrlPlugin();
+    const resolve = vi.fn(async (id: string) => ({ id: `\0virtual:${id}` }));
+    const importer = path.join(FIXTURE, "pages/hello.js");
+    expect(await resolveId.handler.call({ resolve }, "components/world", importer, {})).toEqual({
+      id: "\0virtual:components/world",
+    });
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  // Like Turbopack, baseUrl still takes precedence over packages.
+  it("prefers baseUrl over a package with the same name", async () => {
+    const resolveId = createResolvedBaseUrlPlugin();
+    const fromBaseUrl = { id: path.join(FIXTURE, "components/world.js") };
+    const resolve = vi.fn(async (id: string) =>
+      path.isAbsolute(id)
+        ? fromBaseUrl
+        : { id: path.join(FIXTURE, "node_modules", id, "index.js") },
+    );
+    const importer = path.join(FIXTURE, "pages/hello.js");
+    expect(await resolveId.handler.call({ resolve }, "components/world", importer, {})).toBe(
+      fromBaseUrl,
+    );
   });
 
   // Like tsconfig `paths` in Next.js webpack, dependencies keep standard
