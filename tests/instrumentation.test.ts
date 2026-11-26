@@ -882,7 +882,7 @@ describe("generateInstrumentationClientInjectModule", () => {
     const code = generateInstrumentationClientInjectModule(["./inject-a.js"], null);
     expect(code).toContain('import * as __vinj_0 from "./inject-a.js"');
     expect(code).toContain("export function onRouterTransitionStart(url, type, event)");
-    expect(code).toContain("hooks.onRouterTransitionStart?.(url, type, event);");
+    expect(code).toContain("hook?.call(hooks, url, type, event);");
   });
 
   it("generates imports in config order with user file last", () => {
@@ -1021,6 +1021,45 @@ export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push
         INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE,
         expect.objectContaining({ message: "getter failed" }),
       );
+    } finally {
+      consoleError.mockRestore();
+      delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a CommonJS inject's hook once per transition", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-getter-once-"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const code = generateInstrumentationClientInjectModule(["./getter.cjs"], null);
+      const getterImport = 'import * as __vinj_0 from "./getter.cjs";';
+      expect(code).toContain(getterImport);
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      // A stateful live getter: the hook on the first read, a throw after.
+      fs.writeFileSync(
+        entryPath,
+        code.replace(
+          getterImport,
+          `let reads = 0;
+const __vinj_0 = {
+  get onRouterTransitionStart() {
+    if (reads++ > 0) throw new Error("read twice");
+    return (url) => globalThis.__vinextInjectCalls.push("hook " + url);
+  },
+};`,
+        ),
+      );
+      const calls: string[] = [];
+      (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls = calls;
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        onRouterTransitionStart: (url: string, type: string, event: null) => void;
+      };
+
+      mod.onRouterTransitionStart("/a", "push", null);
+
+      expect(calls).toEqual(["hook /a"]);
+      expect(consoleError).not.toHaveBeenCalled();
     } finally {
       consoleError.mockRestore();
       delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
