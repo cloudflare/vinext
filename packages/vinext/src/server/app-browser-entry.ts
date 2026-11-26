@@ -3302,9 +3302,12 @@ function bootstrapHydration(
               DYNAMIC_NAVIGATION_CACHE_TTL,
               mountedSlotsHeader,
               committedElements,
-              // A payload that left out layouts or the elements beneath an
-              // intercepted route only fits the state it merged into.
-              isCompleteAppPayloadMetadata(metadata),
+              // A payload that left out layouts only fits the state it merged
+              // into. One that leaves the source's elements beneath an
+              // intercepted route for the client to keep still replays as a
+              // prefetch: the navigation that consumes it fetches the source
+              // page when its state doesn't hold them, as for a fresh response.
+              metadata.skippedLayoutIds.length === 0,
               prefetchSnapshot,
               interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
               false,
