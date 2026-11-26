@@ -30,6 +30,7 @@ import {
   __globallyUnoptimized,
   __isDev,
   RESPONSIVE_WIDTHS,
+  customLoaderUrlBuilder,
   generateImageAttributes,
   getImageStyle,
   imageOptimizationUrl,
@@ -37,6 +38,7 @@ import {
   isRemoteUrl,
   isSvgUrl,
   parseImageQuality,
+  resolveCustomImageLoader,
   resolveImageSource,
   sanitizeBlurDataURL,
   validateRemoteUrl,
@@ -142,7 +144,7 @@ function preloadImageResource(input: {
   });
 }
 
-const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
+function ImageRender(
   {
     src: srcProp,
     alt,
@@ -168,8 +170,9 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
     objectFit,
     objectPosition,
     ...rest
-  },
-  ref,
+  }: ImageProps,
+  ref: React.ForwardedRef<HTMLImageElement>,
+  ignoreLoaderFile: boolean,
 ) {
   // Dedup refs: ensure onLoad and onError fire at most once per src per mount.
   // Matches Next.js behavior — prevents double-firing from React re-renders,
@@ -219,6 +222,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
     height: imgHeight,
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
+  const customLoader = resolveCustomImageLoader(loader, src, ignoreLoaderFile);
   const shouldPreload = preload === true || priority === true;
   const priorityFetchPriority = priority ? "high" : undefined;
   // data: and blob: sources are served as-is and never lazy by default (Next.js parity).
@@ -235,7 +239,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
     __globallyUnoptimized ||
     !src ||
     isInlineSrc ||
-    (!loader && !__dangerouslyAllowSVG && isSvgUrl(src));
+    (!customLoader && !__dangerouslyAllowSVG && isSvgUrl(src));
   const checkFillSizes =
     __isDev && fill && !isUnoptimized
       ? (img: HTMLImageElement) => warnFillImageSizes(img, sizes)
@@ -371,40 +375,12 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
     );
   }
 
-  // If a custom loader is provided, use basic img with loader URL
-  if (loader) {
-    const resolvedQuality = parseImageQuality(quality) ?? 75;
-    const resolvedSrc = loader({ src, width: imgWidth ?? 0, quality: resolvedQuality });
-    preloadImageResource({
-      shouldPreload,
-      src: resolvedSrc,
-      sizes,
-      fetchPriority: priorityFetchPriority,
-    });
-    return (
-      <img
-        ref={mergedRef}
-        src={resolvedSrc}
-        alt={alt}
-        width={fill ? undefined : imgWidth}
-        height={fill ? undefined : imgHeight}
-        loading={imageLoading}
-        decoding="async"
-        sizes={sizes}
-        className={className}
-        onLoad={handleLoad}
-        onError={handleError}
-        style={getImageStyle(fill, style, undefined, legacyFill, showAltText)}
-        {...rest}
-        data-nimg={fill ? "fill" : "1"}
-      />
-    );
-  }
-
   // For remote URLs, validate against remotePatterns. Non-fill images use
   // @unpic/react for CDN URL transforms; fill uses a plain img so the DOM
-  // element keeps Next.js's absolute-positioned fill contract.
-  if (isRemoteUrl(src)) {
+  // element keeps Next.js's absolute-positioned fill contract. A custom loader
+  // builds remote URLs itself, so it skips this (Next.js only checks remote
+  // patterns in its default loader).
+  if (!customLoader && isRemoteUrl(src)) {
     const validation = validateRemoteUrl(src);
     if (!validation.allowed) {
       if (__isDev) {
@@ -504,15 +480,25 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
   // SVG sources auto-skip unless dangerouslyAllowSVG is enabled, matching
   // Next.js behavior where .svg triggers unoptimized=true by default.
-  const imgQuality = parseImageQuality(quality) ?? 75;
-  const isSvg = isSvgUrl(src);
-  const skipOptimization = isSvg && !__dangerouslyAllowSVG;
+  //
+  // A custom loader builds every src and srcSet URL instead, as in Next.js's
+  // generateImgAttrs: it gets each srcSet width and the `quality` prop as
+  // written (undefined when unset), and SVG sources are not skipped.
+  // The default loader uses 75 for an unset quality.
+  const imgQuality = parseImageQuality(quality);
+  const skipOptimization = !customLoader && isSvgUrl(src) && !__dangerouslyAllowSVG;
 
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_next/image with the appropriate width.
   const optimizedAttributes =
-    (fill || imgWidth) && !skipOptimization
-      ? generateImageAttributes(src, fill ? undefined : imgWidth, imgQuality, sizes)
+    (fill || imgWidth || customLoader) && !skipOptimization
+      ? generateImageAttributes(
+          src,
+          fill ? undefined : imgWidth,
+          imgQuality,
+          sizes,
+          customLoader ? customLoaderUrlBuilder(customLoader) : undefined,
+        )
       : undefined;
   const srcSet = optimizedAttributes
     ? optimizedAttributes.srcSet
@@ -574,6 +560,19 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
       data-nimg={fill ? "fill" : "1"}
     />
   );
+}
+
+const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(props, ref) {
+  return ImageRender(props, ref, false);
+});
+
+/**
+ * The Image that next/legacy/image renders. Next.js's legacy Image picks its
+ * loader from `images.loader` and never loads `images.loaderFile`
+ * (client/legacy/image.tsx), so this one ignores the loader file.
+ */
+export const LegacyBaseImage = forwardRef<HTMLImageElement, ImageProps>(function Image(props, ref) {
+  return ImageRender(props, ref, true);
 });
 
 // Annotated so declaration emit references ImageProps by name and keeps its

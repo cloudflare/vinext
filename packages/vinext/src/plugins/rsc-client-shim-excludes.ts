@@ -19,6 +19,9 @@ export const VINEXT_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
   // shim). Not a real npm dep, so pre-bundling it would break HMR and cause
   // a "new dependencies optimized" reload on the first request.
   "private-next-instrumentation-client",
+  // Aliased to the user's images.loaderFile (or an empty shim). Kept out of
+  // pre-bundled shims so the alias still applies to their import of it.
+  "private-next-image-loader",
   ...RSC_CLIENT_SHIM_OPTIMIZE_DEPS_EXCLUDE,
 ]);
 

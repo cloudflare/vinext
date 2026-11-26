@@ -3509,6 +3509,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_IMAGE_UNOPTIMIZED"] = JSON.stringify(
           String(nextConfig.images?.unoptimized === true),
         );
+        // `images.loader` and whether `images.loaderFile` is set. The file
+        // itself is wired in through the private-next-image-loader alias.
+        defines["process.env.__VINEXT_IMAGE_LOADER"] = JSON.stringify(
+          nextConfig.images?.loader ?? "default",
+        );
+        defines["process.env.__VINEXT_IMAGE_LOADER_FILE"] = JSON.stringify(
+          String(Boolean(nextConfig.images?.loaderFile)),
+        );
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Server entries read it, and it namespaces ISR cache keys so a
         // previous deploy's entries are never served. The real value is a
@@ -3720,6 +3728,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/dev-error-overlay": path.resolve(__dirname, "client", "dev-error-overlay"),
             "vinext/route-announcer": path.resolve(__dirname, "client", "route-announcer"),
             "vinext/html": path.resolve(__dirname, "server", "html"),
+            // Next.js aliases next/dist/shared/lib/image-loader to
+            // images.loaderFile; the image shim reads it from here.
+            "private-next-image-loader":
+              nextConfig.images?.loaderFile ?? path.join(shimsDir, "image-loader"),
             ...(clientInjectModule === null
               ? {
                   "private-next-instrumentation-client":

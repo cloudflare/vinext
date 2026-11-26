@@ -259,7 +259,12 @@ describe("Image SSR rendering", () => {
         loader,
       }),
     );
-    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=200&amp;q=75"');
+    // Like Next.js's generateImgAttrs, the loader builds a 1x/2x srcSet from
+    // the configured sizes, and src is its largest width.
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=640&amp;q=75"');
+    expect(html).toContain(
+      'srcSet="https://cdn.example.com/photo.jpg?w=256&amp;q=75 1x, https://cdn.example.com/photo.jpg?w=640&amp;q=75 2x"',
+    );
   });
 
   it("renders StaticImageData (import result)", () => {
@@ -525,8 +530,11 @@ describe("getImageProps", () => {
   });
 
   it("returns custom loader URL", () => {
-    const loader = ({ src, width }: { src: string; width: number }) =>
-      `https://cdn.example.com${src}?w=${width}`;
+    const qualities: Array<number | undefined> = [];
+    const loader = ({ src, width, quality }: { src: string; width: number; quality?: number }) => {
+      qualities.push(quality);
+      return `https://cdn.example.com${src}?w=${width}`;
+    };
 
     const { props } = getImageProps({
       alt: "cdn",
@@ -536,7 +544,13 @@ describe("getImageProps", () => {
       loader,
     });
 
-    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=300");
+    // Next.js calls a custom loader for each srcSet width, with the quality
+    // prop as written (undefined when unset).
+    expect(props.src).toBe("https://cdn.example.com/photo.jpg?w=640");
+    expect(props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=384 1x, https://cdn.example.com/photo.jpg?w=640 2x",
+    );
+    expect(new Set(qualities)).toEqual(new Set([undefined]));
   });
 
   it("returns blur placeholder styles", () => {
@@ -1308,5 +1322,56 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("resolved to private IP"));
 
     warnSpy.mockRestore();
+  });
+});
+
+// Errors Next.js's getImgProps throws (shared/lib/get-img-props.ts) for the
+// image loader config.
+describe("images.loader config errors", () => {
+  async function importWithLoaderEnv(loader: string, hasLoaderFile: boolean) {
+    vi.stubEnv("__VINEXT_IMAGE_LOADER", loader);
+    vi.stubEnv("__VINEXT_IMAGE_LOADER_FILE", String(hasLoaderFile));
+    vi.resetModules();
+    return import("../packages/vinext/src/shims/image.js");
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  // Ported from Next.js: test/production/export-image-loader/export-image-loader.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/production/export-image-loader/export-image-loader.test.ts
+  it('requires a loader with images.loader "custom"', async () => {
+    const { default: CustomImage, getImageProps: customGetImageProps } = await importWithLoaderEnv(
+      "custom",
+      false,
+    );
+    const props = { alt: "i", src: "/i.png", width: 100, height: 100 };
+    const message = 'Image with src "/i.png" is missing "loader" prop.';
+    expect(() => customGetImageProps(props)).toThrow(message);
+    expect(() => ReactDOMServer.renderToString(React.createElement(CustomImage, props))).toThrow(
+      message,
+    );
+    expect(customGetImageProps({ ...props, loader: ({ src }) => `${src}?ok` }).props.src).toBe(
+      "/i.png?ok",
+    );
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/loader-file-named-export-custom-loader-error/loader-file-named-export-custom-loader-error.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/loader-file-named-export-custom-loader-error/loader-file-named-export-custom-loader-error.test.ts
+  it("requires a default export from images.loaderFile", async () => {
+    // Without a configured file, private-next-image-loader has no default export.
+    const { default: FileImage, getImageProps: fileGetImageProps } = await importWithLoaderEnv(
+      "default",
+      true,
+    );
+    const props = { alt: "i", src: "/i.png", width: 100, height: 100 };
+    const message =
+      "images.loaderFile detected but the file is missing default export.\nRead more: https://nextjs.org/docs/messages/invalid-images-config";
+    expect(() => fileGetImageProps(props)).toThrow(message);
+    expect(() => ReactDOMServer.renderToString(React.createElement(FileImage, props))).toThrow(
+      message,
+    );
   });
 });

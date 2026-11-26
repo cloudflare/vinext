@@ -9,7 +9,7 @@
  * codemod when upgrading from Next.js 12.
  */
 import React from "react";
-import Image from "./image.js";
+import { LegacyBaseImage as Image } from "./image.js";
 import type {
   ImageLoader,
   ImageLoaderProps,

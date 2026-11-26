@@ -371,6 +371,16 @@ export type NextConfig = {
      */
     localPatterns?: Array<{ pathname?: string; search?: string }>;
     unoptimized?: boolean;
+    /**
+     * `"custom"` requires every image to get a loader, from `loaderFile` or the
+     * `loader` prop. Other values build URLs with the default loader.
+     */
+    loader?: string;
+    /**
+     * Module, relative to the project root, whose default export replaces the
+     * default image loader. Resolved to an absolute path.
+     */
+    loaderFile?: string;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
     /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [32, 48, 64, 96, 128, 256, 384] */
@@ -1374,6 +1384,29 @@ async function resolveBuildId(
   }
 
   return trimmed;
+}
+
+/**
+ * Mirror Next.js's config resolution of `images.loaderFile`
+ * (packages/next/src/server/config.ts): it needs the default or custom loader
+ * and an existing file, and resolves to an absolute path.
+ */
+function resolveImageLoaderFile(
+  images: { loader?: string; loaderFile?: string },
+  root: string,
+): string | undefined {
+  if (!images.loaderFile) return undefined;
+  const loader = images.loader || "default";
+  if (loader !== "default" && loader !== "custom") {
+    throw new Error(
+      `Specified images.loader property (${loader}) cannot be used with images.loaderFile property. Please set images.loader to "custom".`,
+    );
+  }
+  const absolutePath = path.join(root, images.loaderFile);
+  if (!fs.existsSync(absolutePath)) {
+    throw new Error(`Specified images.loaderFile does not exist at "${absolutePath}".`);
+  }
+  return absolutePath;
 }
 
 /**
@@ -2435,6 +2468,7 @@ export async function resolveNextConfig(
             : { ...pattern },
         ),
         localPatterns: resolveImageLocalPatterns(config.images.localPatterns),
+        loaderFile: resolveImageLoaderFile(config.images, root),
       }
     : undefined;
 
