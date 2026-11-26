@@ -209,6 +209,28 @@ export function loadTsconfigResolutionForRoot(projectRoot: string): TsconfigPath
 }
 
 /**
+ * Return the explicit `compilerOptions.baseUrl` (own or inherited through
+ * `extends`) of the config file vinext reads compiler options from:
+ * `typescript.tsconfigPath` when set, else `tsconfig.json`, else
+ * `jsconfig.json` (Next.js build/load-jsconfig.ts). Returns null when no config
+ * file sets `baseUrl`.
+ */
+export function loadTsconfigBaseUrl(
+  projectRoot: string,
+  configuredPath?: string,
+): { configPath: string; baseUrl: string } | null {
+  const candidates = configuredPath
+    ? [path.resolve(projectRoot, configuredPath)]
+    : TSCONFIG_FILES.map((name) => path.join(projectRoot, name));
+  for (const configPath of candidates) {
+    if (!fs.existsSync(configPath)) continue;
+    const { baseUrl } = loadResolutionFromTsconfigFile(configPath, new Set());
+    return baseUrl ? { configPath, baseUrl } : null;
+  }
+  return null;
+}
+
+/**
  * Back-compat helper for call sites that only need `compilerOptions.paths`.
  */
 export function loadTsconfigPathAliasesForRoot(projectRoot: string): Record<string, string> {
