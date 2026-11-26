@@ -358,6 +358,39 @@ describe("renderAppPageCacheArtifacts", () => {
     ).rejects.toBe(failure);
   });
 
+  // A regeneration that turned dynamic, such as one PPR keeps, isn't a static
+  // render, so a notFound() a Suspense boundary caught after connection()
+  // leaves it a 200, as in Next.js.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  it("keeps the 200 of a regeneration that turned dynamic before a Suspense boundary caught its notFound()", async () => {
+    const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: false,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          markDynamicUsage();
+          options?.onSsrError?.(notFoundError);
+          return createStream(["<html>layout and fallback</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderToReadableStream: () => createStream(["flight-data"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result.usedDynamicApi).toBe(true);
+    expect(result.status).toBeUndefined();
+    expect(result.headers).toBeUndefined();
+  });
+
   it("reports a regeneration that used a dynamic API", async () => {
     const result = await renderAppPageCacheArtifacts({
       captureRscData: false,

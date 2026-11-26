@@ -137,8 +137,8 @@ async function renderAppPageCacheArtifactsImpl(
   const ssrHandler = await options.loadSsrHandler();
   let htmlResult: Awaited<ReturnType<AppPageSsrHandler["handleSsr"]>> | null = null;
   let specialErrorDocument: AppPageCacheSpecialErrorDocument | null = null;
-  // A regeneration is a static render, so the HTTP errors its document's
-  // Suspense boundaries catch set its status, as in Next.js.
+  // A regeneration that stays static sets its status from the HTTP errors its
+  // document's Suspense boundaries catch, as Next.js's static generation does.
   const staticGenerationStatus = createAppPageStaticGenerationStatusCapture(options.basePath);
   const reportSsrError = (error: unknown): unknown => {
     staticGenerationStatus.capture(error);
@@ -212,9 +212,6 @@ async function renderAppPageCacheArtifactsImpl(
       if (!specialErrorDocument) throw caughtShellError;
       html = specialErrorDocument.html;
       linkHeader = specialErrorDocument.linkHeader;
-    } else {
-      const status = staticGenerationStatus.get();
-      if (status) specialErrorDocument = { ...status, html, linkHeader };
     }
   }
 
@@ -240,6 +237,10 @@ async function renderAppPageCacheArtifactsImpl(
   // SSR runs in a child scope, so a client page's searchParams read there
   // reaches only the render's dynamic latch.
   const usedDynamicApi = consumeDynamicUsage() || isRenderDynamicLatched();
+  // A render that turned dynamic isn't a static one, so it keeps its 200.
+  const caughtStatus =
+    htmlResult && !specialErrorDocument && !usedDynamicApi ? staticGenerationStatus.get() : null;
+  if (caughtStatus) specialErrorDocument = { ...caughtStatus, html, linkHeader };
 
   const htmlRenderObservation = createAppPageRenderObservation({
     boundaryOutcome: { kind: "success" },

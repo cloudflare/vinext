@@ -1702,8 +1702,12 @@ async function renderAppPageLifecycleImpl(
   const htmlMiddlewareContext: AppPageMiddlewareContext = completedStaticStatus
     ? { headers: options.middlewareContext.headers, status: completedStaticStatus.status }
     : options.middlewareContext;
+  // As on a redirect that rejects the shell, the error owns the status, but
+  // middleware's own `Location` stays on the response. The entries store the
+  // redirect's.
   const applyCompletedStaticStatusHeaders = (response: Response): Response => {
     for (const [name, value] of Object.entries(completedStaticStatus?.headers ?? {})) {
+      if (options.middlewareContext.headers?.has(name)) continue;
       response.headers.set(name, value);
     }
     return response;

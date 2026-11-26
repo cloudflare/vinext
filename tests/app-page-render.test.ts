@@ -3059,6 +3059,37 @@ describe("ISR storage of a page's special error", () => {
     },
   );
 
+  // As on a redirect that rejects the shell, middleware's own Location stays
+  // on the response, and the prerender writes the redirect's.
+  it("keeps middleware's Location on a prerender whose Suspense boundary caught a redirect()", async () => {
+    const common = createCommonOptions();
+
+    const { markers, response } = await recordPrerenderSpecialErrors(() =>
+      renderAppPageLifecycle({
+        ...common.options,
+        isPrerender: true,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
+            ssrOptions?.onSsrError?.(redirectError);
+            return createStream(["<html>layout and fallback</html>"]);
+          },
+        }),
+        middlewareContext: {
+          headers: new Headers({ location: "/middleware-location" }),
+          status: null,
+        },
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+        revalidateSeconds: 60,
+      }),
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/middleware-location");
+    expect(markers).toEqual([{ headers: { location: "/target" }, status: 307 }]);
+    await response.text();
+  });
+
   it("prerenders a page that turns dynamic after a Suspense boundary caught its notFound() as a 200", async () => {
     const common = createCommonOptions();
     let dynamicUsed = false;
