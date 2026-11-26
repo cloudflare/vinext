@@ -658,16 +658,20 @@ describe("App Router route graph builder", () => {
       expect(realMembersTeam?.routeSegments).toEqual(["members", "(__SLOT__)"]);
     });
 
-    it("gives each slot at one URL the segments of its own page", async () => {
+    it("keeps every slot at a synthetic route's depth", async () => {
+      // @alpha/[id] reaches :id first, @beta/[id]/@children is one folder
+      // deeper. Segment config places @beta/[id]/layout.tsx (dynamicParams =
+      // false) by the depth of beta's segments, so they match the route's.
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
 
-      const members = findRoute(graph.routes, "/children-slot-siblings/members");
-      const slot = (name: string) => members.parallelSlots.find((entry) => entry.name === name);
-      expect(slot("alpha")?.routeSegments).toEqual(["members"]);
+      const dynamic = findRoute(graph.routes, "/children-slot-siblings/:id");
+      const slot = (name: string) => dynamic.parallelSlots.find((entry) => entry.name === name);
+      expect(dynamic.routeSegments).toEqual(["children-slot-siblings", "[id]"]);
+      expect(slot("alpha")?.routeSegments).toEqual(["[id]"]);
       expect(slot("beta")?.pagePath).toBe(
-        canonical(appDir, "children-slot-siblings/@beta/members/@children/page.tsx"),
+        canonical(appDir, "children-slot-siblings/@beta/[id]/@children/page.tsx"),
       );
-      expect(slot("beta")?.routeSegments).toEqual(["members", "(__SLOT__)"]);
+      expect(slot("beta")?.routeSegments).toEqual(["[id]"]);
     });
 
     it("keeps a slot's direct page over an @children page inside a route group", async () => {

@@ -1219,7 +1219,7 @@ function discoverSlotSubRoutes(
   const applySlotSubPages = (
     route: AppRoute,
     slotPages: Map<string, string>,
-    slotSegments: Map<string, string[]>,
+    rawSegments: string[],
   ): void => {
     route.parallelSlots = route.parallelSlots.map((slot) => {
       const subPage = slotPages.get(slot.key);
@@ -1234,7 +1234,7 @@ function discoverSlotSubRoutes(
               slot.ownerDir,
               configLayoutPaths,
             ),
-            routeSegments: slotSegments.get(slot.key) ?? null,
+            routeSegments: toSlotRouteSegments(rawSegments),
           },
           subPage,
           matcher,
@@ -1270,14 +1270,14 @@ function discoverSlotSubRoutes(
       string,
       {
         // Raw filesystem segments (with route groups, @slots, etc.) used for routeSegments so
-        // that useSelectedLayoutSegments() sees the correct segment list at runtime.
+        // that useSelectedLayoutSegments() sees the correct segment list at runtime. Every
+        // slot at this URL and the synthetic route share them, keeping each slot branch at
+        // the route's depth: segment config places a slot's layouts at
+        // `route.routeSegments.length - slot.routeSegments.length`.
         rawSegments: string[];
         // Pre-computed URL parts, params, isDynamic from convertSegmentsToRouteParts.
         converted: { urlSegments: string[]; params: string[]; isDynamic: boolean };
         slotPages: Map<string, string>;
-        // Each slot's routeSegments from its own page, since slots at one URL
-        // can reach it through different folders (route groups, @children).
-        slotSegments: Map<string, string[]>;
       }
     >();
 
@@ -1305,7 +1305,6 @@ function discoverSlotSubRoutes(
             rawSegments: subSegments,
             converted: convertedSubRoute,
             slotPages: new Map(),
-            slotSegments: new Map(),
           };
           subPathMap.set(normalizedSubPath, subPathEntry);
         }
@@ -1321,7 +1320,6 @@ function discoverSlotSubRoutes(
         if (subPathEntry.slotPages.has(slot.key)) continue;
 
         subPathEntry.slotPages.set(slot.key, pagePath);
-        subPathEntry.slotSegments.set(slot.key, toSlotRouteSegments(subSegments));
       }
     }
 
@@ -1394,12 +1392,7 @@ function discoverSlotSubRoutes(
     const childrenCatchAll = childrenDefault ? null : findCatchAllPage(parentPageDir, matcher);
     const childrenFallback = childrenDefault ?? childrenCatchAll;
 
-    for (const {
-      rawSegments,
-      converted: convertedSubRoute,
-      slotPages,
-      slotSegments,
-    } of subPathMap.values()) {
+    for (const { rawSegments, converted: convertedSubRoute, slotPages } of subPathMap.values()) {
       const {
         urlSegments: urlParts,
         params: subParams,
@@ -1424,7 +1417,7 @@ function discoverSlotSubRoutes(
         // ["(group)"]), making useSelectedLayoutSegment return the route-group
         // name rather than null.
         if (urlParts.length > 0) {
-          applySlotSubPages(existingRoute, slotPages, slotSegments);
+          applySlotSubPages(existingRoute, slotPages, rawSegments);
         }
         continue;
       }
@@ -1458,7 +1451,7 @@ function discoverSlotSubRoutes(
               slot.ownerDir,
               configLayoutPaths,
             ),
-            routeSegments: subPage ? (slotSegments.get(slot.key) ?? null) : null,
+            routeSegments: subPage ? toSlotRouteSegments(rawSegments) : null,
           },
           subPage ?? null,
           matcher,
