@@ -124,11 +124,24 @@ function emptyResolution(): TsconfigPathResolution {
 
 function loadResolutionFromTsconfigFile(
   configPath: string,
-  seen: Set<string>,
+  activeConfigs: Set<string>,
 ): TsconfigPathResolution {
-  if (seen.has(configPath)) return emptyResolution();
-  seen.add(configPath);
+  // `activeConfigs` holds only the configs on the current `extends` chain, so
+  // it breaks cycles while a config shared by several parents (`[B, C]` both
+  // extending `D`) is still read through each of them.
+  if (activeConfigs.has(configPath)) return emptyResolution();
+  activeConfigs.add(configPath);
+  try {
+    return readResolutionFromTsconfigFile(configPath, activeConfigs);
+  } finally {
+    activeConfigs.delete(configPath);
+  }
+}
 
+function readResolutionFromTsconfigFile(
+  configPath: string,
+  activeConfigs: Set<string>,
+): TsconfigPathResolution {
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = parseStaticObjectLiteral(fs.readFileSync(configPath, "utf-8"));
@@ -145,7 +158,7 @@ function loadResolutionFromTsconfigFile(
   for (const extendsSpecifier of extendsList) {
     const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
     if (extendedPath) {
-      const parent = loadResolutionFromTsconfigFile(extendedPath, seen);
+      const parent = loadResolutionFromTsconfigFile(extendedPath, activeConfigs);
       resolution = {
         aliases: { ...resolution.aliases, ...parent.aliases },
         baseUrl: parent.baseUrl ?? resolution.baseUrl,

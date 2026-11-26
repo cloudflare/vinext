@@ -12,7 +12,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, describe, expect, it, vi } from "vite-plus/test";
+import { createTsconfigBaseUrlPlugin } from "../packages/vinext/src/plugins/tsconfig-base-url.js";
 import { buildPagesFixture, fetchHtml, startFixtureServer } from "./helpers.js";
 
 const FIXTURE = path.resolve(import.meta.dirname, "fixtures/jsconfig-base-url");
@@ -29,6 +30,8 @@ describe("jsconfig.json baseUrl", () => {
       const { res, html } = await fetchHtml(baseUrl, "/hello");
       expect(res.status).toBe(200);
       expect(html).toContain("World");
+      // `~shared/tilde` is non-relative too, so it resolves through baseUrl.
+      expect(html).toContain("Tilde import");
     } finally {
       await server.close();
     }
@@ -51,4 +54,31 @@ describe("jsconfig.json baseUrl", () => {
     buildDirs.push(path.dirname(path.dirname(entryPath)));
     expect(fs.readFileSync(entryPath, "utf-8")).toContain("Custom base world");
   }, 120_000);
+
+  // TypeScript applies `extends` arrays in order, so the later parent's
+  // inherited baseUrl wins even when an earlier parent shares its base config.
+  it("takes baseUrl from the later parent when extends parents share a base config", async () => {
+    const entryPath = await buildPagesFixture(FIXTURE, {
+      typescript: { tsconfigPath: "tsconfig.diamond.json" },
+    });
+    buildDirs.push(path.dirname(path.dirname(entryPath)));
+    const entry = fs.readFileSync(entryPath, "utf-8");
+    expect(entry).toContain("Tilde import");
+    expect(entry).not.toContain("Custom base world");
+  }, 120_000);
+
+  // Turbopack excludes `.json` from baseUrl resolution, keeping the query and
+  // fragment apart from the request path.
+  it("leaves .json requests with a query or hash to standard resolution", async () => {
+    const plugin = createTsconfigBaseUrlPlugin({ getBaseUrl: () => FIXTURE });
+    const resolveId = plugin.resolveId as {
+      handler: (this: unknown, id: string, importer: string, options: object) => Promise<unknown>;
+    };
+    const resolve = vi.fn(async (id: string) => ({ id }));
+    const importer = path.join(FIXTURE, "pages/hello.js");
+    for (const id of ["data.json?raw", "data.json#part"]) {
+      expect(await resolveId.handler.call({ resolve }, id, importer, {})).toBeNull();
+    }
+    expect(resolve).not.toHaveBeenCalled();
+  });
 });
