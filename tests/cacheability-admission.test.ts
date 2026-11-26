@@ -9,6 +9,7 @@ import {
 } from "../packages/vinext/src/server/cacheability-request.js";
 import {
   CACHEABILITY_REQUEST_STATE,
+  markRouteCacheabilityFinalResponseUncacheable,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
 import {
@@ -818,6 +819,66 @@ describe("single-request cacheability admission", () => {
 
       expect(response.headers.get("Cache-Control")).toBe("s-maxage=60, stale-while-revalidate=540");
       await expect(response.text()).resolves.toBe("static");
+    },
+  );
+
+  // A boundary deep in a streamed render can find that the response it is
+  // completing must stay private only after the headers left, for example a
+  // Suspense boundary whose data read failed.
+  it.each(["app-page", "app-route", "pages-api"] as const)(
+    "keeps a %s response private when its body records a final-response veto",
+    async (kind) => {
+      const adapter = new CloudflareCdnCacheAdapter();
+      setCdnCacheAdapter(adapter);
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        new Request("https://example.com/page", { headers: { Accept: "text/html" } }),
+        null,
+        "build-a",
+        true,
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind, pattern: "/page" };
+      state.explicitResponseCachePolicy = true;
+      state.outcome = {
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=540",
+        searchParamsUnread: true,
+      };
+      const chunks = ["shell", "late boundary"];
+      const body = new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            await Promise.resolve();
+            const chunk = chunks.shift();
+            if (chunk === undefined) {
+              controller.close();
+              return;
+            }
+            if (chunk === "late boundary") {
+              await runWithExecutionContext(context, () =>
+                markRouteCacheabilityFinalResponseUncacheable("boundary data read failed"),
+              );
+            }
+            controller.enqueue(encoder.encode(chunk));
+          },
+        },
+        { highWaterMark: 0 },
+      );
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response(body, {
+          headers: {
+            "Cache-Control": "public, max-age=10",
+            "Cloudflare-CDN-Cache-Control": "max-age=3600",
+          },
+        }),
+        context,
+      );
+
+      expect(state.finalResponseVetoReason).toBe("boundary data read failed");
+      expect(adapter.responsePolicy.readCacheControl(response.headers)).toBe("no-store");
+      await expect(response.text()).resolves.toBe("shelllate boundary");
     },
   );
 
