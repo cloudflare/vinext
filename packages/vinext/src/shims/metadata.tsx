@@ -292,6 +292,17 @@ export type Metadata = {
     telephone?: boolean;
   };
   category?: string;
+  classification?: string;
+  abstract?: string;
+  archives?: string | string[];
+  assets?: string | string[];
+  bookmarks?: string | string[];
+  pagination?: {
+    previous?: string | URL | null;
+    next?: string | URL | null;
+  };
+  facebook?: { appId?: string; admins?: string | string[] };
+  pinterest?: { richPin?: string | boolean };
   itunes?: {
     appId: string;
     appArgument?: string;
@@ -1123,9 +1134,73 @@ export function MetadataHead({
     }
   }
 
+  // Abstract, the link rel lists and pagination, as Next.js renders them
+  // (lib/metadata/metadata-elements.tsx).
+  if (metadata.abstract) {
+    elements.push(<meta key={key++} name="abstract" content={metadata.abstract} />);
+  }
+  for (const rel of ["archives", "assets", "bookmarks"] as const) {
+    const hrefs = metadata[rel];
+    if (!hrefs) continue;
+    for (const href of Array.isArray(hrefs) ? hrefs : [hrefs]) {
+      elements.push(<link key={key++} rel={rel} href={href} />);
+    }
+  }
+  if (metadata.pagination) {
+    // Resolved like an alternate URL, as Next.js's resolvePagination does.
+    const { previous, next } = metadata.pagination;
+    if (previous) {
+      elements.push(
+        <link
+          key={key++}
+          rel="prev"
+          href={resolveAlternateUrl(previous, base, pathname, trailingSlash)}
+        />,
+      );
+    }
+    if (next) {
+      elements.push(
+        <link
+          key={key++}
+          rel="next"
+          href={resolveAlternateUrl(next, base, pathname, trailingSlash)}
+        />,
+      );
+    }
+  }
+
   // Category
   if (metadata.category) {
     elements.push(<meta key={key++} name="category" content={metadata.category} />);
+  }
+
+  // Classification
+  if (metadata.classification) {
+    elements.push(<meta key={key++} name="classification" content={metadata.classification} />);
+  }
+
+  // Facebook
+  if (metadata.facebook) {
+    if (metadata.facebook.appId) {
+      elements.push(<meta key={key++} property="fb:app_id" content={metadata.facebook.appId} />);
+    }
+    const admins = metadata.facebook.admins;
+    if (admins) {
+      for (const admin of Array.isArray(admins) ? admins : [admins]) {
+        elements.push(<meta key={key++} property="fb:admins" content={admin} />);
+      }
+    }
+  }
+
+  // Pinterest
+  if (metadata.pinterest && metadata.pinterest.richPin !== undefined) {
+    elements.push(
+      <meta
+        key={key++}
+        property="pinterest-rich-pin"
+        content={metadata.pinterest.richPin.toString()}
+      />,
+    );
   }
 
   // Robots
