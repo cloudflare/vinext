@@ -717,6 +717,39 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     ]);
   });
 
+  it("serves clients holding different layouts from one entry", async () => {
+    // Only a render that's never stored reads a navigation's mounted layouts,
+    // so they select no entry.
+    dispatchWithIdentity(false);
+    stages.response.mockImplementation(
+      async () => new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } }),
+    );
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const cacheStates: Array<string | null> = [];
+    for (const mountedLayouts of ["0123456789abcdef", "fedcba9876543210"]) {
+      const ctx = context();
+      const response = await handler.fetch(
+        new Request("https://example.com/page", {
+          headers: { RSC: "1", "X-Vinext-Mounted-Layouts": mountedLayouts },
+        }),
+        {} as never,
+        ctx,
+      );
+      cacheStates.push(response.headers.get("X-Vinext-Cache"));
+      await response.text();
+      await Promise.all(ctx.waitUntil.mock.calls.map(([promise]) => promise));
+    }
+
+    expect(cacheStates).toEqual(["MISS", "HIT"]);
+    expect(stages.response).toHaveBeenCalledOnce();
+    expect(
+      (stages.response.mock.calls[0]![0] as Request).headers.get("x-vinext-mounted-layouts"),
+    ).toBe("0123456789abcdef");
+    expect(entries.size).toBe(1);
+  });
+
   it("stores both parts of a page only under a query-free identity", async () => {
     stages.response.mockImplementation(async () => {
       captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));

@@ -1376,6 +1376,42 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(cacheFacingRequests[2]?.url).toBe(cacheFacingRequests[0]?.url);
   });
 
+  it("passes a navigation's mounted layouts to the render without keying them", async () => {
+    // Only a render that's never stored reads them, so every client shares
+    // one entry whatever layouts it holds.
+    const cacheFacingRequests: Request[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      async fetch(request: Request) {
+        cacheFacingRequests.push(request);
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page" }, { cache: "shared" }),
+    );
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    for (const mountedLayouts of ["0123456789abcdef", "fedcba9876543210", null]) {
+      await worker.fetch(
+        new Request("https://example.com/page", {
+          headers: {
+            RSC: "1",
+            ...(mountedLayouts ? { "X-Vinext-Mounted-Layouts": mountedLayouts } : {}),
+          },
+        }),
+        {},
+        { exports: { VinextCachedResponse: binding } },
+      );
+    }
+
+    expect(cacheFacingRequests).toHaveLength(3);
+    expect(new Set(cacheFacingRequests.map((request) => request.url)).size).toBe(1);
+    const rendered = stages.response.mock.calls.map(([request]) =>
+      (request as Request).headers.get("x-vinext-mounted-layouts"),
+    );
+    expect(rendered).toEqual(["0123456789abcdef", "fedcba9876543210", null]);
+  });
+
   it("does not expose the inner Cloudflare cache policy after gateway personalization", async () => {
     const binding = vi.fn(() => ({
       fetch: vi.fn().mockResolvedValue(

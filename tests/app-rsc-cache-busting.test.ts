@@ -119,6 +119,20 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/cached/intro", headers)).resolves.toBe("/cached/intro?_rsc");
   });
 
+  it("keeps a navigation's mounted layouts out of its canonical cache key", async () => {
+    // Only a render that's never stored reads the header, so a shared dispatch
+    // keeps it for that render, and no cache key or Vary names it.
+    const headers = createRscRequestHeaders({
+      mountedLayoutsHeader: "0123456789abcdef",
+      routerState: { pathAndSearch: "/source", routeId: "route:/source" },
+    });
+
+    expect(canonicalizePrewarmableRscRequestHeaders(headers)).toBe(true);
+    expect(headers.get("x-vinext-mounted-layouts")).toBe("0123456789abcdef");
+    await expect(createRscRequestUrl("/cached/intro", headers)).resolves.toBe("/cached/intro?_rsc");
+    expect(VINEXT_RSC_VARY_HEADER.toLowerCase()).not.toContain("x-vinext-mounted-layouts");
+  });
+
   it("does not canonicalize partial, intercepted, or mounted-slot payloads", () => {
     for (const headers of [
       createRscRequestHeaders({ renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL }),
