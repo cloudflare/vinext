@@ -37,7 +37,10 @@ import {
 } from "../packages/vinext/src/utils/asset-prefix.js";
 import { manifestFileWithAssetPrefix } from "../packages/vinext/src/utils/manifest-paths.js";
 import { createWorkerFileNames } from "../packages/vinext/src/build/client-build-config.js";
-import { resolveAppRouterAssetPath } from "../packages/vinext/src/server/prod-server.js";
+import {
+  resolveAppRouterAssetPath,
+  resolveServiceWorkerAssetPath,
+} from "../packages/vinext/src/server/prod-server.js";
 import { normalizeAssetPrefix } from "../packages/vinext/src/config/next-config.js";
 import { renderVinextBuiltUrl } from "../packages/vinext/src/utils/built-asset-url.js";
 
@@ -413,6 +416,29 @@ describe("resolveAppRouterAssetPath", () => {
         "/custom-asset-prefix",
       ),
     ).toBeNull();
+  });
+});
+
+describe("resolveServiceWorkerAssetPath", () => {
+  it("serves compiled service workers from their basePath location", () => {
+    expect(resolveServiceWorkerAssetPath("/_next/static/service-worker/sw.js", "")).toBe(
+      "/_next/static/service-worker/sw.js",
+    );
+    expect(resolveServiceWorkerAssetPath("/base/_next/static/service-worker/sw.js", "/base")).toBe(
+      "/base/_next/static/service-worker/sw.js",
+    );
+    expect(resolveServiceWorkerAssetPath("/_next/static/service-worker/sw.js", "/base")).toBeNull();
+    expect(resolveServiceWorkerAssetPath("/base/_next/static/chunk.js", "/base")).toBeNull();
+  });
+
+  it("keeps basePath where an absolute assetPrefix with the same pathname strips it", () => {
+    // The prod server tries this lookup first: the asset prefix lookup would
+    // strip `/base`, but the worker is written below it.
+    const pathname = "/base/_next/static/service-worker/sw.js";
+    expect(resolveAppRouterAssetPath(pathname, "/base", "https://cdn.example.com/base")).toBe(
+      "/_next/static/service-worker/sw.js",
+    );
+    expect(resolveServiceWorkerAssetPath(pathname, "/base")).toBe(pathname);
   });
 });
 

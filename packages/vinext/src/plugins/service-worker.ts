@@ -532,9 +532,14 @@ export function createServiceWorkerPlugin(options: { getBasePath: () => string }
             serviceWorkerOutputDir(options.getBasePath()),
             fileName,
           );
+          // Only reads that succeed stay cached, so requests for missing names
+          // don't grow the map.
           worker = fs.promises.readFile(file, "utf8").then(
             (code) => ({ code, etag: contentEtag(code) }),
-            () => null,
+            () => {
+              workers.delete(fileName);
+              return null;
+            },
           );
           workers.set(fileName, worker);
         }
