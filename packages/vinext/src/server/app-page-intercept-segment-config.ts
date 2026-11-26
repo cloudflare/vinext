@@ -2,9 +2,10 @@ import type { FetchCacheMode } from "vinext/shims/fetch-cache";
 import {
   collectAppPageStaticGenerationRuntimes,
   collectAppPageStaticParamsWalkSegments,
-  hasAppPageGenerateStaticParamsAtLastDynamicSegment,
   isAppPageStaticEligible,
   isEdgeRuntime,
+  lastDynamicSegmentHasGenerateStaticParams,
+  lastDynamicSegmentIsStaticParamsOnly,
   resolveAppPageDynamicParamsConfig,
   resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime,
@@ -67,6 +68,8 @@ export type AppPageInterceptSegmentConfig = {
   hasAnyGenerateStaticParams: boolean;
   /** Whether one sits at or below the interception's last dynamic segment. */
   hasGenerateStaticParams: boolean;
+  /** Whether `dynamicParams = false` is set at or below it. */
+  isStaticParamsOnlyAtLastDynamicSegment: boolean;
   /** Whether the interception's own segments choose the edge runtime. */
   isEdgeRuntime: boolean;
   /** Whether the interception's route has a dynamic segment. */
@@ -319,8 +322,7 @@ export function resolveAppPageInterceptSegmentConfig(
   };
   const staticParamsConfig = resolveAppPageSegmentConfig(staticParamsTreeConfig);
   const walkSegments = collectAppPageStaticParamsWalkSegments(staticGenerationTree);
-  const hasGenerateStaticParams =
-    hasAppPageGenerateStaticParamsAtLastDynamicSegment(staticGenerationTree);
+  const hasGenerateStaticParams = lastDynamicSegmentHasGenerateStaticParams(walkSegments);
   const isDynamicRoute = walkSegments.some((segment) => segment.dynamic);
   const isStaticGenerationEdgeRuntime = isEdgeRuntime(
     resolveAppPageStaticGenerationRuntime(
@@ -347,6 +349,7 @@ export function resolveAppPageInterceptSegmentConfig(
       revalidateSeconds: config.revalidateSeconds,
     }),
     isStaticGenerationEdgeRuntime,
+    isStaticParamsOnlyAtLastDynamicSegment: lastDynamicSegmentIsStaticParamsOnly(walkSegments),
     revalidateSeconds: config.revalidateSeconds,
     staticParamsDynamicConfig: staticParamsConfig.dynamicConfig,
     staticParamsRevalidateSeconds: staticParamsConfig.revalidateSeconds,

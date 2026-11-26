@@ -40,6 +40,7 @@ describe("app page request helpers", () => {
               validateAppPageRouteDynamicParams({
                 dynamicParamsConfig: false,
                 hasGenerateStaticParams: true,
+                isStaticParamsOnlyAtLastDynamicSegment: true,
                 async generateStaticParams() {
                   await (await fetch(url, { cache: "force-cache" })).text();
                   return [{ slug: "known" }];
@@ -77,6 +78,7 @@ describe("app page request helpers", () => {
             validateAppPageRouteDynamicParams({
               dynamicParamsConfig: false,
               hasGenerateStaticParams: true,
+              isStaticParamsOnlyAtLastDynamicSegment: true,
               fetchCache: "force-no-store",
               async generateStaticParams() {
                 await (await fetch(url, { cache: "force-cache" })).text();
@@ -100,10 +102,14 @@ describe("app page request helpers", () => {
   });
 
   // Next.js prerenders a route whose last dynamic segment has no generator
-  // only when every generated row has every param, whichever row the request
-  // would match.
-  it("reads every generated row for a route whose last dynamic segment has no generator", async () => {
-    const check = (secondSlugIds: Record<string, string>[]) =>
+  // only when every generated row has every param. vinext reads only the rows
+  // the request's parent params generate, so a miss runs no generator for the
+  // other parents.
+  it("decides a miss from the rows the request's parent params generate", async () => {
+    const ids = vi.fn(async ({ params }: { params: Record<string, unknown> }) =>
+      params.slug === "acme" ? [{ id: "1" }] : [],
+    );
+    const check = (params: { id: string; slug: string }) =>
       runWithRequestContext(createRequestContext(), () =>
         runStaticParamsCheckDetached(() =>
           validateAppPageRouteDynamicParams({
@@ -114,27 +120,71 @@ describe("app page request helpers", () => {
                 generateStaticParams: async () => [{ slug: "acme" }, { slug: "other" }],
                 parentParamNames: [],
               },
-              {
-                chained: true,
-                generateStaticParams: async ({ params }) =>
-                  params.slug === "acme" ? [{ id: "1" }] : secondSlugIds,
-                parentParamNames: ["slug"],
-              },
+              { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
             ],
             hasGenerateStaticParams: false,
+            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
-            params: { id: "2", slug: "acme" },
-            pathname: "/club/acme/pics/2",
+            params,
+            pathname: `/club/${params.slug}/pics/${params.id}`,
             routePattern: "/club/:slug/pics/:id",
             routeSegments: ["club", "[slug]", "(group)", "pics", "[id]"],
           }),
         ),
       );
 
-    // `other` keeps a row without `id`, so the route renders any params.
-    expect(await check([])).toBeNull();
-    expect((await check([{ id: "3" }]))?.status).toBe(404);
+    // `acme`'s rows all have `id`, so its miss is a 404 without running the
+    // generator for `other`, whose row lacks `id`.
+    expect((await check({ id: "2", slug: "acme" }))?.status).toBe(404);
+    expect(ids).toHaveBeenCalledTimes(1);
+    expect(ids).toHaveBeenLastCalledWith({ params: { slug: "acme" } });
+    // `other` keeps a row without `id`, so its params render.
+    expect(await check({ id: "2", slug: "other" })).toBeNull();
+  });
+
+  it("decides a miss under a parent no generator gives from every parent's rows", async () => {
+    const check = (slugs: string[], otherIds: Record<string, string>[]) => {
+      const ids = vi.fn(async ({ params }: { params: Record<string, unknown> }) =>
+        params.slug === "acme" ? [{ id: "1" }] : otherIds,
+      );
+      const response = runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                chained: true,
+                generateStaticParams: async () => slugs.map((slug) => ({ slug })),
+                parentParamNames: [],
+              },
+              { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
+            ],
+            hasGenerateStaticParams: false,
+            isStaticParamsOnlyAtLastDynamicSegment: true,
+            isDynamicRoute: true,
+            isProduction: true,
+            params: { id: "1", slug: "zzz" },
+            pathname: "/club/zzz/pics/1",
+            routePattern: "/club/:slug/pics/:id",
+            routeSegments: ["club", "[slug]", "(group)", "pics", "[id]"],
+          }),
+        ),
+      );
+      return { ids, response };
+    };
+
+    // `other` keeps a row without `id`, so the route renders any params,
+    // whichever parent comes first.
+    for (const slugs of [
+      ["acme", "other"],
+      ["other", "acme"],
+    ]) {
+      const { ids, response } = check(slugs, []);
+      expect(await response).toBeNull();
+      expect(ids).toHaveBeenCalledTimes(2);
+    }
+    expect((await check(["acme", "other"], [{ id: "2" }]).response)?.status).toBe(404);
   });
 
   it("calls only the request's generators when a generated row lacks a param", async () => {
@@ -149,6 +199,7 @@ describe("app page request helpers", () => {
             { chained: true, generateStaticParams: langs, parentParamNames: ["region"] },
           ],
           hasGenerateStaticParams: false,
+          isStaticParamsOnlyAtLastDynamicSegment: true,
           isDynamicRoute: true,
           isProduction: true,
           params: { lang: "fr", region: "EU", slug: "post" },
@@ -164,41 +215,6 @@ describe("app page request helpers", () => {
     expect(response).toBeNull();
     expect(regions).toHaveBeenCalledTimes(1);
     expect(langs).toHaveBeenCalledTimes(1);
-  });
-
-  it("renders a path a skipped parent's generator gives", async () => {
-    const check = (params: { a: string; b: string }) =>
-      runWithRequestContext(createRequestContext(), () =>
-        runStaticParamsCheckDetached(() =>
-          validateAppPageRouteDynamicParams({
-            dynamicParamsConfig: false,
-            generateStaticParams: [
-              {
-                chained: true,
-                generateStaticParams: async () => [{ a: "x" }, { a: "y" }],
-                parentParamNames: [],
-              },
-              {
-                chained: true,
-                generateStaticParams: async ({ params: parent }) =>
-                  parent.a === "x" ? [{ b: "1" }] : [{ a: "x", b: "2" }],
-                parentParamNames: ["a"],
-              },
-            ],
-            hasGenerateStaticParams: false,
-            isDynamicRoute: true,
-            isProduction: true,
-            params,
-            pathname: `/${params.a}/${params.b}`,
-            routePattern: "/:a/:b",
-            routeSegments: ["[a]", "[b]"],
-          }),
-        ),
-      );
-
-    // Parent `y` rewrites `a` to give `x/2`.
-    expect(await check({ a: "x", b: "2" })).toBeNull();
-    expect((await check({ a: "x", b: "3" }))?.status).toBe(404);
   });
 
   // Next.js merges every slot's rows into one chain before it checks them.
@@ -221,6 +237,7 @@ describe("app page request helpers", () => {
               },
             ],
             hasGenerateStaticParams: false,
+            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params,
@@ -251,6 +268,7 @@ describe("app page request helpers", () => {
               { generateStaticParams: async () => [], independentChain: 1, parentParamNames: [] },
             ],
             hasGenerateStaticParams: false,
+            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params,
@@ -274,6 +292,7 @@ describe("app page request helpers", () => {
             dynamicParamsConfig: false,
             generateStaticParams: async () => [{ id: "1" }],
             hasGenerateStaticParams: true,
+            isStaticParamsOnlyAtLastDynamicSegment: true,
             isDynamicRoute: true,
             isProduction: true,
             params: { id: "2" },
@@ -327,6 +346,7 @@ describe("app page request helpers", () => {
           validateAppPageRouteDynamicParams({
             dynamicParamsConfig: false,
             hasGenerateStaticParams: true,
+            isStaticParamsOnlyAtLastDynamicSegment: true,
             async generateStaticParams() {
               await (await fetch(url, { cache: "force-cache" })).text();
               return [{ slug: "known" }];
