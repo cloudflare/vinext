@@ -17,6 +17,8 @@ import {
 } from "./app-page-render-observation.js";
 import {
   buildAppPageFontLinkHeader,
+  resolveAppPageSpecialError,
+  resolveAppPageSpecialErrorStoredHeaders,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
 } from "./app-page-execution.js";
@@ -146,6 +148,23 @@ async function renderAppPageCacheArtifactsImpl(
     recordAppPageRenderError(renderSpan, error);
     return options.onSsrError(error);
   };
+  // The shell error's own document takes the status and `location` of the
+  // HTTP error that wins, which an earlier one can be.
+  const withShellStatus = (
+    error: unknown,
+    document: AppPageCacheSpecialErrorDocument,
+  ): AppPageCacheSpecialErrorDocument => {
+    const shellError = resolveAppPageSpecialError(error);
+    if (!shellError || document.status !== shellError.statusCode) return document;
+    const statusError = staticGenerationStatus.resolveShellSpecialError(shellError);
+    const headers = resolveAppPageSpecialErrorStoredHeaders(statusError, options.basePath);
+    return {
+      html: document.html,
+      ...(document.linkHeader !== undefined ? { linkHeader: document.linkHeader } : {}),
+      ...(headers ? { headers } : {}),
+      status: statusError.statusCode,
+    };
+  };
   try {
     htmlResult = await ssrHandler.handleSsr(
       rscCapture.ssrStream,
@@ -190,6 +209,7 @@ async function renderAppPageCacheArtifactsImpl(
     // outcome, stored with its status beside the page's RSC payload.
     specialErrorDocument = await options.renderShellSpecialError(error);
     if (!specialErrorDocument) throw error;
+    specialErrorDocument = withShellStatus(error, specialErrorDocument);
   }
   let html = specialErrorDocument?.html ?? "";
   let linkHeader = specialErrorDocument?.linkHeader;
@@ -210,6 +230,7 @@ async function renderAppPageCacheArtifactsImpl(
       specialErrorDocument =
         (await options.renderShellSpecialError?.(caughtShellError, { html, linkHeader })) ?? null;
       if (!specialErrorDocument) throw caughtShellError;
+      specialErrorDocument = withShellStatus(caughtShellError, specialErrorDocument);
       html = specialErrorDocument.html;
       linkHeader = specialErrorDocument.linkHeader;
     }

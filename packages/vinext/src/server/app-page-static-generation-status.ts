@@ -3,6 +3,7 @@ import {
   resolveAppPageSpecialErrorStoredHeaders,
   type AppPageSpecialError,
 } from "./app-page-execution.js";
+import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
 
 /** The status and stored headers, such as a redirect's `location`, of a render. */
 export type AppPageStaticGenerationStatus = {
@@ -18,6 +19,13 @@ export type AppPageStaticGenerationStatusCapture = {
    * its document's render reported, if any did.
    */
   get: () => AppPageStaticGenerationStatus | null;
+  /**
+   * The special error whose status and `location` a static render whose shell
+   * `shellError` rejected takes: the shell error, unless an HTTP error the
+   * document reported first wins over it. Its document is still the shell
+   * error's.
+   */
+  resolveShellSpecialError: (shellError: AppPageSpecialError) => AppPageSpecialError;
 };
 
 /**
@@ -29,6 +37,8 @@ export type AppPageStaticGenerationStatusCapture = {
  * A request-time render streams its shell first, so it stays a 200.
  *
  * A redirect wins over an access fallback. Within each, the first error wins.
+ * That holds for the error that rejects the shell too: the render sends that
+ * error's document with the status of the error that wins.
  *
  * Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
  * (`setHTTPAccessFallbackOrRedirectStatus` in `prerenderToStream`)
@@ -38,13 +48,21 @@ export function createAppPageStaticGenerationStatusCapture(
   basePath: string | undefined,
 ): AppPageStaticGenerationStatusCapture {
   let captured: AppPageSpecialError | null = null;
+  const record = (specialError: AppPageSpecialError): void => {
+    if (captured === null || (specialError.kind === "redirect" && captured.kind !== "redirect")) {
+      captured = specialError;
+    }
+  };
   return {
     capture(error) {
       const specialError = resolveAppPageSpecialError(error);
-      if (!specialError) return;
-      if (captured === null || (specialError.kind === "redirect" && captured.kind !== "redirect")) {
-        captured = specialError;
-      }
+      if (specialError) record(specialError);
+    },
+    resolveShellSpecialError(shellError) {
+      // The shell's error is usually reported already. Recording it again
+      // changes nothing, as the first error of its kind wins.
+      record(shellError);
+      return captured ?? shellError;
     },
     get() {
       if (captured === null) return null;
@@ -52,4 +70,26 @@ export function createAppPageStaticGenerationStatusCapture(
       return { status: captured.statusCode, ...(headers ? { headers } : {}) };
     },
   };
+}
+
+/**
+ * The document of the special error that rejected a static render's shell,
+ * sent with the status and `location` of `statusError`, the error that wins.
+ * A response that isn't the shell error's own document, such as a 500 from a
+ * failing boundary, is left alone.
+ */
+export function applyAppPageShellSpecialErrorStatus(
+  response: Response,
+  shellError: AppPageSpecialError,
+  statusError: AppPageSpecialError,
+  basePath: string | undefined,
+): Response {
+  if (statusError === shellError || response.status !== shellError.statusCode) return response;
+  const headers = new Headers(response.headers);
+  const location = resolveAppPageSpecialErrorStoredHeaders(statusError, basePath)?.location;
+  if (location === undefined) headers.delete("location");
+  else headers.set("location", location);
+  const statusResponse = new Response(response.body, { headers, status: statusError.statusCode });
+  copyLinkHeaderProvenance(response.headers, statusResponse.headers);
+  return statusResponse;
 }

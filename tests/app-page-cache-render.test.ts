@@ -282,6 +282,51 @@ describe("renderAppPageCacheArtifacts", () => {
     expect(new TextDecoder().decode(result.rscData)).toBe("page-flight-with-digest");
   });
 
+  // As in Next.js's static generation, an HTTP error the document reported
+  // before the shell's can win the status: here a caught redirect() over the
+  // notFound() that rejected the shell, whose document is still stored.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  it("regenerates a page whose shell's notFound() follows a caught redirect() with the redirect's status", async () => {
+    const redirectError = { digest: "NEXT_REDIRECT;replace;/target;307;" };
+    const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const result = await renderAppPageCacheArtifacts({
+      basePath: "/docs",
+      captureRscData: true,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.sideStream && options.capturedRscDataRef) {
+            options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+          }
+          options?.onSsrError?.(redirectError);
+          options?.onSsrError?.(notFoundError);
+          throw notFoundError;
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      async renderShellSpecialError(error) {
+        return error === notFoundError ? { html: "<html>not found</html>", status: 404 } : null;
+      },
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result).toMatchObject({
+      headers: { location: "/docs/target" },
+      html: "<html>not found</html>",
+      status: 307,
+      usedDynamicApi: false,
+    });
+    expect(new TextDecoder().decode(result.rscData)).toBe("page-flight-with-digest");
+  });
+
   it("stores a special error's document that slot boundaries caught it in", async () => {
     const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
     const renderShellSpecialError = vi.fn(

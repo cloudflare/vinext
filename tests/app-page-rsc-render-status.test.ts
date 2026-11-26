@@ -156,3 +156,49 @@ describe("createAppPageRscRenderStatusResolver special error a Suspense boundary
     });
   });
 });
+
+// As in Next.js's static generation, an HTTP error the document reported
+// before the one that rejected the shell can win the status.
+// Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+// https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+describe("createAppPageRscRenderStatusResolver special error that rejects the shell", () => {
+  const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+  const unauthorizedError = { digest: "NEXT_HTTP_ERROR_FALLBACK;401" };
+  const redirectError = { digest: "NEXT_REDIRECT;replace;/target;307;" };
+
+  function shellRejectingAfter(
+    caught: unknown,
+    shellError: unknown,
+  ): AppPageSsrHandler["handleSsr"] {
+    return async (_rscStream, _navigationContext, _fontData, options) => {
+      options?.onSsrError?.(caught);
+      options?.onSsrError?.(shellError);
+      throw shellError;
+    };
+  }
+
+  it.each([
+    { caught: notFoundError, shellError: unauthorizedError, status: 404, headers: undefined },
+    {
+      caught: redirectError,
+      shellError: notFoundError,
+      status: 307,
+      headers: { location: "/docs/target" },
+    },
+  ])(
+    "resolves the status of the error that wins, $caught.digest before $shellError.digest",
+    async ({ caught, shellError, status, headers }) => {
+      const result = await createAppPageRscRenderStatusResolver({
+        basePath: "/docs",
+        capturedRscData: Promise.resolve(new ArrayBuffer(0)),
+        getCapturedSpecialError: () => caught,
+        getCapturedSpecialErrors: () => [],
+        isForceStatic: false,
+        loadSsrHandler: async () => ({ handleSsr: shellRejectingAfter(caught, shellError) }),
+        navigationContext: null,
+        routePattern: "/page",
+      })();
+      expect(result).toEqual({ kind: "special-error", status, ...(headers ? { headers } : {}) });
+    },
+  );
+});

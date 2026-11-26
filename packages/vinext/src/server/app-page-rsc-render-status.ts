@@ -235,12 +235,15 @@ async function renderAppPageRscRenderStatus(
     // document, and a document request that streams metadata would store a 200
     // beside it.
     if (!specialError || specialError.fromMetadata === true) return { kind: "unstorable" };
-    const headers = resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath);
+    // As in Next.js's static generation, an HTTP error the document reported
+    // before the shell's can set the status instead.
+    const statusError = staticGenerationStatus.resolveShellSpecialError(specialError);
+    const headers = resolveAppPageSpecialErrorStoredHeaders(statusError, options.basePath);
     // A special error's own document renders as the request does, so an RSC
     // miss stores its payload alone and leaves the document to an HTML request.
     return {
       kind: "special-error",
-      status: specialError.statusCode,
+      status: statusError.statusCode,
       ...(headers ? { headers } : {}),
     };
   }
