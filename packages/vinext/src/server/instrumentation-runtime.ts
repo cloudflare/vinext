@@ -64,6 +64,23 @@ function traceInstrumentationLifecycleSpan(
   );
 }
 
+/**
+ * Emits the failed `load instrumentation module` span when importing
+ * `instrumentation.ts` threw. Like Next.js, it is only exported when a tracer
+ * provider was already installed, since `register()` never ran.
+ */
+export function traceInstrumentationModuleLoadError(
+  timing: InstrumentationLoadTiming,
+  error: unknown,
+): void {
+  traceInstrumentationLifecycleSpan(
+    "Instrumentation.loadModule",
+    "load instrumentation module",
+    timing,
+    error,
+  );
+}
+
 type InstrumentationState = {
   initialized: boolean;
   initPromise: Promise<void> | null;
@@ -141,6 +158,14 @@ export async function ensureInstrumentationRegistered(
       let error: unknown;
       try {
         await instrumentationModule.register();
+        // Extend the OTel tracer provider so that span creation inside Cache
+        // Component renders exits the workUnitAsyncStorage context. Without
+        // this, spans created during prerender / fallback-resume phases would
+        // inherit the frozen prerender work unit store, causing span IDs to be
+        // reused across requests or not generated at all. Like Next.js's
+        // afterRegistration() (instrumentation-node-extensions.ts), it is part
+        // of the timed registration.
+        extendTracerProviderForCacheComponents();
       } catch (err) {
         error = err;
         throw err;
@@ -163,16 +188,8 @@ export async function ensureInstrumentationRegistered(
         "load instrumentation module",
         moduleLoadTiming,
       );
+      extendTracerProviderForCacheComponents();
     }
-
-    // Extend the OTel tracer provider after register() so that span creation
-    // inside Cache Component renders exits the workUnitAsyncStorage context.
-    // Without this, spans created during prerender / fallback-resume phases
-    // would inherit the frozen prerender work unit store, causing span IDs to
-    // be reused across requests or not generated at all.
-    // Mirrors Next.js's afterRegistration() in
-    // packages/next/src/server/lib/router-utils/instrumentation-node-extensions.ts.
-    extendTracerProviderForCacheComponents();
 
     // Store the onRequestError handler on globalThis so it is visible to
     // reportRequestError() regardless of which Vite environment module graph

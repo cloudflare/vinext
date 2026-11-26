@@ -1,10 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type {
   FrameworkTracingBackendSpan,
   ResolvedFrameworkSpanDescriptor,
 } from "../packages/vinext/src/server/framework-tracer.js";
 import { ensureInstrumentationRegistered } from "../packages/vinext/src/server/instrumentation-runtime.js";
+import { runInstrumentation } from "../packages/vinext/src/server/instrumentation.js";
+import { extendTracerProviderForCacheComponents } from "../packages/vinext/src/server/otel-tracer-extension.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 
 // Ported from Next.js: test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
@@ -20,6 +22,10 @@ type RecordedSpan = {
   errors: unknown[];
   status?: string;
 };
+
+vi.mock("../packages/vinext/src/server/otel-tracer-extension.js", () => ({
+  extendTracerProviderForCacheComponents: vi.fn(),
+}));
 
 const context = new AsyncLocalStorage<{ detached: boolean }>();
 const spans: RecordedSpan[] = [];
@@ -49,6 +55,7 @@ registerFrameworkTracingIntegration({
 
 afterEach(() => {
   spans.length = 0;
+  vi.mocked(extendTracerProviderForCacheComponents).mockReset();
 });
 
 function lifecycleSpans() {
@@ -108,5 +115,50 @@ describe("instrumentation lifecycle spans", () => {
     expect(lifecycleSpans().map(({ descriptor }) => descriptor.type)).toEqual([
       "Instrumentation.loadModule",
     ]);
+  });
+
+  it("times the tracer provider extension as part of register()", async () => {
+    const failure = new Error("extension failed");
+    let registered = false;
+    vi.mocked(extendTracerProviderForCacheComponents).mockImplementation(() => {
+      expect(registered).toBe(true);
+      // Nothing is emitted before registration completes.
+      expect(lifecycleSpans()).toEqual([]);
+      throw failure;
+    });
+    const instrumentation = {
+      register() {
+        registered = true;
+      },
+    };
+
+    await expect(ensureInstrumentationRegistered(instrumentation)).rejects.toBe(failure);
+
+    expect(
+      lifecycleSpans().map(({ descriptor, errors, status }) => [descriptor.type, errors, status]),
+    ).toEqual([
+      ["Instrumentation.loadModule", [], undefined],
+      ["Instrumentation.register", [failure], "extension failed"],
+    ]);
+  });
+
+  it("emits a failed load span when importing the module throws", async () => {
+    const failure = new Error("import failed");
+    const runner = { import: () => Promise.reject(failure) };
+
+    await expect(runInstrumentation(runner, "/app/instrumentation.ts")).rejects.toBe(failure);
+
+    const recorded = lifecycleSpans();
+    expect(
+      recorded.map(({ descriptor, detached, errors, status }) => [
+        descriptor.type,
+        detached,
+        errors,
+        status,
+      ]),
+    ).toEqual([["Instrumentation.loadModule", true, [failure], "import failed"]]);
+    expect(recorded[0]?.descriptor.endTime).toBeGreaterThanOrEqual(
+      recorded[0]?.descriptor.startTime ?? Infinity,
+    );
   });
 });
