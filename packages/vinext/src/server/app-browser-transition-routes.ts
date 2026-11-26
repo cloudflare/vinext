@@ -1,5 +1,6 @@
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
 import { rendersSiblingIntercept } from "./app-browser-state.js";
 import {
@@ -201,12 +202,22 @@ export function resolveRouterTransitionFromRoutes(
     }
     // A layout composed only of named slots has no children branch, so the
     // route reports only its slots (Next.js explicitParallelRouteChildren).
+    // A slot-only navigation keeps the children branch that was showing, so
+    // its binding, not the latest payload's source page, names that route.
+    const childrenRoutePath =
+      children?.binding.state === "active" &&
+      children.binding.activeRouteId != null &&
+      children.binding.activeRouteId !== metadata.routeId
+        ? routePathFromId(children.binding.activeRouteId)
+        : null;
     primary =
-      children === null || children.binding.state === "active"
-        ? joinSourcePath(sourceSegments)
-        : children.binding.state === "unmatched"
-          ? null
-          : joinSourcePath([...children.owner, "default"]);
+      childrenRoutePath !== null
+        ? patternToNextFormat(childrenRoutePath)
+        : children === null || children.binding.state === "active"
+          ? joinSourcePath(sourceSegments)
+          : children.binding.state === "unmatched"
+            ? null
+            : joinSourcePath([...children.owner, "default"]);
   }
 
   const slots: string[] = [];

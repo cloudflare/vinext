@@ -37,6 +37,7 @@ beforeAll(async () => {
 type CommittedTree = {
   interception?: AppElementsInterception | null;
   interceptionContext?: string | null;
+  routeId?: string;
   slotBindings?: readonly AppElementsSlotBinding[];
   /** The committed source page, as the server renders it; null on a route miss. */
   sourcePage: string | null;
@@ -53,7 +54,7 @@ function committed(tree: CommittedTree) {
       interceptionContext: tree.interceptionContext ?? null,
       layoutIds: [...new Set(slotBindings.flatMap((binding) => binding.ownerLayoutId ?? []))],
       rootLayoutTreePath: "/",
-      routeId: "route:/ignored",
+      routeId: tree.routeId ?? "route:/ignored",
       slotBindings,
       sourcePage: tree.sourcePage,
       wholeInterceptionSource: tree.wholeInterceptionSource ?? null,
@@ -151,6 +152,28 @@ describe("resolveRouterTransitionFromRoutes", () => {
         manifest,
       ),
     ).toEqual(["/dashboard"]);
+  });
+
+  it("reports the children route a slot-only navigation kept", () => {
+    // /parallel-layouts/settings -> /parallel-layouts/modal keeps the settings
+    // children branch; the merged metadata is the modal payload's.
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          routeId: "route:/some-page",
+          slotBindings: [
+            {
+              activeRouteId: "route:/blog/:slug",
+              ownerLayoutId: "layout:/",
+              slotId: "slot:children:/",
+              state: "active",
+            },
+          ],
+          sourcePage: "/some-page/page",
+        }),
+        manifest,
+      ),
+    ).toEqual(["/blog/[slug]"]);
   });
 
   it("reports only the slots of a layout composed only of named slots", async () => {
