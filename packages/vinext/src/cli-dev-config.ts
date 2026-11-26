@@ -160,13 +160,7 @@ function configureDevServerLifecycle(server: ViteDevServer, devLock: boolean): v
   };
   const listenServer = server.listen.bind(server);
   server.listen = async (port?: number, isRestart?: boolean) => {
-    if (
-      server.config.server.middlewareMode ||
-      process.env.VINEXT_NO_DEV_LOCK === "1" ||
-      // Tests force the lock on Vite versions with their own check, so the
-      // lock and the lifecycle it observes stay covered in Vite's ecosystem CI.
-      (!devLock && process.env.VINEXT_TEST_FORCE_DEV_LOCK !== "1")
-    ) {
+    if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1" || !devLock) {
       return listenServer(port, isRestart);
     }
     const configuredPort = port ?? server.config.server.port;
