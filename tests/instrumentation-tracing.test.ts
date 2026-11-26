@@ -29,6 +29,7 @@ vi.mock("../packages/vinext/src/server/otel-tracer-extension.js", () => ({
 
 const context = new AsyncLocalStorage<{ detached: boolean }>();
 const spans: RecordedSpan[] = [];
+let onSpanEnd: ((descriptor: ResolvedFrameworkSpanDescriptor) => void) | undefined;
 
 registerFrameworkTracingIntegration({
   id: "instrumentation-tracing-test",
@@ -43,18 +44,25 @@ registerFrameworkTracingIntegration({
       errors: [],
     };
     spans.push(recorded);
-    return callback({
-      recordException: (error) => recorded.errors.push(error),
-      setAttribute() {},
-      setErrorStatus: (message) => {
-        recorded.status = message ?? "error";
-      },
-    });
+    try {
+      return callback({
+        recordException: (error) => recorded.errors.push(error),
+        setAttribute() {},
+        setErrorStatus: (message) => {
+          recorded.status = message ?? "error";
+        },
+      });
+    } finally {
+      // Like OTel span processors, which run synchronously in span.end().
+      onSpanEnd?.(descriptor);
+    }
   },
 });
 
 afterEach(() => {
   spans.length = 0;
+  onSpanEnd = undefined;
+  vi.restoreAllMocks();
   vi.mocked(extendTracerProviderForCacheComponents).mockReset();
 });
 
@@ -160,5 +168,26 @@ describe("instrumentation lifecycle spans", () => {
     expect(recorded[0]?.descriptor.endTime).toBeGreaterThanOrEqual(
       recorded[0]?.descriptor.startTime ?? Infinity,
     );
+  });
+
+  it("ends the register span before emitting the lifecycle spans", async () => {
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const instrumentation = {
+      register() {
+        clock += 10;
+      },
+    };
+    // Exporting the load span takes time of its own.
+    onSpanEnd = (descriptor) => {
+      if (descriptor.type === "Instrumentation.loadModule") clock += 1_000;
+    };
+
+    await ensureInstrumentationRegistered(instrumentation);
+
+    const register = lifecycleSpans().find(
+      ({ descriptor }) => descriptor.type === "Instrumentation.register",
+    )?.descriptor;
+    expect((register?.endTime ?? 0) - (register?.startTime ?? 0)).toBe(10);
   });
 });

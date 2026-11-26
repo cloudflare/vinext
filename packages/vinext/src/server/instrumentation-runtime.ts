@@ -170,6 +170,8 @@ export async function ensureInstrumentationRegistered(
         error = err;
         throw err;
       } finally {
+        // Before emitting: span processors run synchronously in span.end().
+        const endTime = getInstrumentationTimestamp();
         traceInstrumentationLifecycleSpan(
           "Instrumentation.loadModule",
           "load instrumentation module",
@@ -178,7 +180,7 @@ export async function ensureInstrumentationRegistered(
         traceInstrumentationLifecycleSpan(
           "Instrumentation.register",
           "register instrumentation",
-          { startTime, endTime: getInstrumentationTimestamp() },
+          { startTime, endTime },
           error,
         );
       }
