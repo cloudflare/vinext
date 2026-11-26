@@ -7,10 +7,10 @@ export function RouterPushTyped() {
   return (
     <button
       type="button"
-      data-testid="vt-push-a-typed"
-      onClick={() => router.push("/view-transitions/a", { transitionTypes: ["nav-back"] })}
+      data-testid="vt-push-b-typed"
+      onClick={() => router.push("/view-transitions/b", { transitionTypes: ["nav-back"] })}
     >
-      push A (nav-back)
+      push B (nav-back)
     </button>
   );
 }
