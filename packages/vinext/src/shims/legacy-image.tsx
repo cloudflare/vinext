@@ -16,6 +16,8 @@
  *   rather than Next.js's ImageConfigContext.
  * - The default loader builds URLs with vinext's `imageOptimizationUrl`
  *   (basePath, trailingSlash, `dpl` and `images.qualities` handling).
+ * - vinext's `/_next/image` serves only local images, so allowed remote
+ *   images load directly (no srcSet resizing).
  * - `images.loader` "imgix", "cloudinary" and "akamai" build URLs with the
  *   default loader, as vinext has no `images.path`.
  * - vinext generates no `blurDataURL` for static imports, so a static import
@@ -45,6 +47,7 @@ import {
   __imageRemotePatterns,
   imageOptimizationUrl,
   resolveCustomImageLoader,
+  validateRemoteUrl,
 } from "./image-props.js";
 
 export type { ImageLoader, ImageLoaderProps, ImageProps, StaticImageData };
@@ -138,6 +141,15 @@ function defaultLoader({ config, src, width, quality }: ImageLoaderPropsWithConf
         );
       }
     }
+  }
+
+  // vinext's /_next/image serves only local images, so a remote image that
+  // images.remotePatterns or images.domains allows loads directly, as it does
+  // with vinext's next/image. Any other remote source keeps Next.js's
+  // optimizer URL, which the endpoint rejects as Next.js rejects an
+  // unconfigured host.
+  if ((src.startsWith("http://") || src.startsWith("https://")) && validateRemoteUrl(src).allowed) {
+    return src;
   }
 
   return imageOptimizationUrl(src, width, quality);

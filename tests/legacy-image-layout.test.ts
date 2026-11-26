@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import LegacyImage from "../packages/vinext/src/shims/legacy-image.js";
@@ -272,5 +272,51 @@ describe("legacy image srcSet widths", () => {
     const tag = html.match(/<img [^>]*data-nimg[^>]*>/)?.[0] ?? "";
     expect(tag.indexOf(" src=")).toBeGreaterThan(tag.indexOf(" srcSet="));
     expect(tag.indexOf(" srcSet=")).toBeGreaterThan(tag.indexOf(" sizes="));
+  });
+});
+
+describe("legacy image remote sources", () => {
+  async function importWithRemotePatterns(nodeEnv: string) {
+    vi.stubEnv("NODE_ENV", nodeEnv);
+    vi.stubEnv(
+      "__VINEXT_IMAGE_REMOTE_PATTERNS",
+      JSON.stringify([{ protocol: "https", hostname: "images.example.com" }]),
+    );
+    vi.resetModules();
+    return (await import("../packages/vinext/src/shims/legacy-image.js")).default;
+  }
+
+  function renderWith(Image: typeof LegacyImage, src: string): string {
+    return renderToStaticMarkup(
+      React.createElement(Image, { src, alt: "", width: 64, height: 64, priority: true }),
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  // vinext's /_next/image serves only local images, so an allowed remote image
+  // loads directly instead of through Next.js's optimizer URL.
+  it("loads an allowed remote image directly", async () => {
+    const Image = await importWithRemotePatterns("production");
+    const img = image(renderWith(Image, "https://images.example.com/a.jpg"));
+    expect(img.src).toBe("https://images.example.com/a.jpg");
+  });
+
+  it("keeps the optimizer URL for an unconfigured host in production", async () => {
+    const Image = await importWithRemotePatterns("production");
+    expect(image(renderWith(Image, "https://other.example.com/a.jpg")).src).toBe(
+      "/_next/image?url=https%3A%2F%2Fother.example.com%2Fa.jpg&w=128&q=75",
+    );
+  });
+
+  // Ported from Next.js's legacy defaultLoader development checks.
+  it("throws for an unconfigured host in development", async () => {
+    const Image = await importWithRemotePatterns("development");
+    expect(() => renderWith(Image, "https://other.example.com/a.jpg")).toThrow(
+      'Invalid src prop (https://other.example.com/a.jpg) on `next/image`, hostname "other.example.com" is not configured under images in your `next.config.js`',
+    );
   });
 });
