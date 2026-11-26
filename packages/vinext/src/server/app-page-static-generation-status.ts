@@ -76,19 +76,23 @@ export function createAppPageStaticGenerationStatusCapture(
  * The document of the special error that rejected a static render's shell,
  * sent with the status and `location` of `statusError`, the error that wins.
  * A response that isn't the shell error's own document, such as a 500 from a
- * failing boundary, is left alone.
+ * failing boundary, is left alone. As on any special error's response,
+ * middleware's own `Location` stays.
  */
 export function applyAppPageShellSpecialErrorStatus(
   response: Response,
   shellError: AppPageSpecialError,
   statusError: AppPageSpecialError,
   basePath: string | undefined,
+  middlewareHeaders: Headers | null,
 ): Response {
   if (statusError === shellError || response.status !== shellError.statusCode) return response;
   const headers = new Headers(response.headers);
-  const location = resolveAppPageSpecialErrorStoredHeaders(statusError, basePath)?.location;
-  if (location === undefined) headers.delete("location");
-  else headers.set("location", location);
+  if (!middlewareHeaders?.has("location")) {
+    const location = resolveAppPageSpecialErrorStoredHeaders(statusError, basePath)?.location;
+    if (location === undefined) headers.delete("location");
+    else headers.set("location", location);
+  }
   const statusResponse = new Response(response.body, { headers, status: statusError.statusCode });
   copyLinkHeaderProvenance(response.headers, statusResponse.headers);
   return statusResponse;

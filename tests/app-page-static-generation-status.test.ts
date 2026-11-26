@@ -145,6 +145,7 @@ describe("applyAppPageShellSpecialErrorStatus", () => {
       notFound,
       redirect,
       "/docs",
+      null,
     );
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("/docs/first");
@@ -154,8 +155,20 @@ describe("applyAppPageShellSpecialErrorStatus", () => {
 
   it("leaves a response that isn't the shell error's own document alone", () => {
     const response = new Response("boom", { status: 500 });
-    expect(applyAppPageShellSpecialErrorStatus(response, notFound, redirect, undefined)).toBe(
+    expect(applyAppPageShellSpecialErrorStatus(response, notFound, redirect, undefined, null)).toBe(
       response,
     );
+  });
+
+  it("keeps middleware's own Location", () => {
+    const response = applyAppPageShellSpecialErrorStatus(
+      new Response(null, { headers: { location: "/middleware-location" }, status: 308 }),
+      resolveAppPageSpecialError(errorFor("permanent-redirect", "/second"))!,
+      redirect,
+      undefined,
+      new Headers({ location: "/middleware-location" }),
+    );
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/middleware-location");
   });
 });

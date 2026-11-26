@@ -1626,6 +1626,7 @@ async function renderAppPageLifecycleImpl(
         shellSpecialError,
         shellStatusSpecialError,
         options.basePath,
+        options.middlewareContext.headers,
       );
       shellSpecialError = shellStatusSpecialError;
     }
