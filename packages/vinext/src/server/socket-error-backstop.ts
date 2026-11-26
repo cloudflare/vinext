@@ -227,9 +227,9 @@ export function isCancelledRequestBodyEnqueueError(err: unknown): boolean {
  * worker never logs: a navigation signal (`redirect()`, `notFound()`,
  * `forbidden()`, `unauthorized()`), dynamic server usage, or a bailout to
  * client rendering. Matched by digest, without imports, because this module
- * loads with the Vite plugin. Exported for unit testing in isolation.
+ * loads with the Vite plugin.
  */
-export function isFrameworkSignalError(err: unknown): boolean {
+function isFrameworkSignalError(err: unknown): boolean {
   if (err === null || typeof err !== "object" || !("digest" in err)) return false;
   const digest = String((err as { digest: unknown }).digest);
   return (
