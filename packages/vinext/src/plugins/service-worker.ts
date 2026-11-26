@@ -165,7 +165,7 @@ function analyzeScope(
     }
   }
   if (!scopeValue) return { scope: DEFAULT_SCOPE };
-  const scope = staticStringValue(scopeValue);
+  const scope = staticStringValue(unwrapExpression(scopeValue));
   if (scope === null) return { error: "has a `scope` that is not statically analyze-able" };
   // The scope must be root-relative so it can be prefixed with `basePath` and
   // served from a stable URL. Turbopack rejects relative scopes rather than
@@ -585,11 +585,21 @@ export function createServiceWorkerPlugin(options: { getBasePath: () => string }
           }
           own.set(scope, [...sources][0]);
         }
-        registrationsByImporter.set(importer, own);
-        for (const [scope, sources] of sourcesByScope()) {
-          if (own.has(scope) && sources.size > 1) {
-            this.error(formatConflictError(this.environment.config.root, scope, sources));
+        if (this.environment.mode === "build") {
+          registrationsByImporter.set(importer, own);
+          for (const [scope, sources] of sourcesByScope()) {
+            if (own.has(scope) && sources.size > 1) {
+              this.error(formatConflictError(this.environment.config.root, scope, sources));
+            }
           }
+        } else {
+          // In dev, a module that registered a scope earlier stays known after
+          // edits make it unreachable, so the latest registration for a scope
+          // wins rather than reporting a conflict. The build reports real ones.
+          for (const registrations of registrationsByImporter.values()) {
+            for (const scope of own.keys()) registrations.delete(scope);
+          }
+          registrationsByImporter.set(importer, own);
         }
 
         const basePath = options.getBasePath();
