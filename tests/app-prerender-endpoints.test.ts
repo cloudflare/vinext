@@ -409,6 +409,18 @@ describe("App prerender endpoint helpers", () => {
       },
     );
     expect(staticParamsFromJson(await response?.json())).toEqual([{ slug: value }]);
+
+    // A value that serializes to nothing stays an invalid object too.
+    const dropped = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/static-params?pattern=/:slug*"),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        staticParamsMap: { "/:slug*": () => [{ slug: { toJSON: () => undefined } }] },
+      },
+    );
+    const [droppedParams] = staticParamsFromJson(await dropped?.json()) as [{ slug: unknown }];
+    expect(droppedParams.slug).toEqual({ __vinextParam: "value" });
   });
 
   // Next.js passes a layout's own undefined param to the child

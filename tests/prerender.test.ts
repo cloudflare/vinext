@@ -3012,6 +3012,22 @@ describe("routeStaticParamSets", () => {
     expect(routeStaticParamSets(route, [{ locale: 123 }])).toEqual([]);
   });
 
+  // A complete set stops at its first falsy param under partial prerendering
+  // too, so it names no concrete path instead of failing the build.
+  it("stops at a falsy param in a complete set under partial prerendering", () => {
+    const route = { pattern: "/:lang/:slug" };
+    const sets = [
+      { lang: "en", slug: undefined },
+      { lang: "fr", slug: "a" },
+    ];
+    expect(routeStaticParamSets(route, sets, { partialPrerender: true })).toEqual([
+      { lang: "fr", slug: "a" },
+    ]);
+    expect(() => routeStaticParamSets(route, sets)).toThrow(
+      "A required parameter (slug) was not provided as a string received undefined",
+    );
+  });
+
   it("rejects a set whose value does not fit its segment", () => {
     expect(() => routeStaticParamSets({ pattern: "/:id" }, [{ id: 1 }])).toThrow(
       "A required parameter (id) was not provided as a string received number in generateStaticParams for /[id]",

@@ -802,8 +802,12 @@ export function routeStaticParamSets(
 
   const materializable: Record<string, string | string[]>[] = [];
   for (const value of objects) {
-    const params = validateDiscoveredParams(value, route.pattern, "generateStaticParams");
-    if (patternParams.some(({ name, repeat }) => !repeat && params[name] === "")) continue;
+    const params = validateDiscoveredParams(value, route.pattern, "generateStaticParams", {
+      partialPrerender: options.partialPrerender,
+    });
+    // A set with an empty value (an empty string, or under partial
+    // prerendering any falsy one) names no concrete path.
+    if (patternParams.some(({ name }) => !params[name])) continue;
     materializable.push(params);
   }
   return materializable;

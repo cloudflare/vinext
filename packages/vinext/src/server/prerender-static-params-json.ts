@@ -31,7 +31,10 @@ function encodeValue(value: unknown): unknown {
 function decodeValue(value: unknown): unknown {
   if (!isObjectValue(value) || !(ENVELOPE_KEY in value)) return value;
   const envelope = value as ParamEnvelope;
-  return envelope[ENVELOPE_KEY] === "undefined" ? undefined : Reflect.get(envelope, "value");
+  if (envelope[ENVELOPE_KEY] === "undefined") return undefined;
+  // A wrapped value JSON dropped (a `toJSON` returning undefined) stays an
+  // invalid object rather than reading as an undefined param.
+  return Object.hasOwn(envelope, "value") ? Reflect.get(envelope, "value") : envelope;
 }
 
 function mapParamValues(params: unknown, map: (value: unknown) => unknown): unknown {
