@@ -161,7 +161,7 @@ describe("prerender server pool sizing", () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(() => pool.assertHealthy()).toThrow(/exited unexpectedly .*code 42/);
         // It exited on its own, so it isn't an out-of-memory kill.
-        expect(() => pool.assertHealthy()).toThrow(/Its error output is printed above\.$/);
+        expect(() => pool.assertHealthy()).toThrow(/Any error it printed is above\.$/);
       } finally {
         await pool.close();
       }

@@ -288,13 +288,14 @@ export async function startPrerenderServerPool(
       if (crash) {
         // Killed by a signal (the OOM killer's SIGKILL, V8's heap-limit abort)
         // the worker printed nothing useful; an exit code means it ran its
-        // own exit path and printed its error to the inherited stderr.
+        // own exit path, which may have printed an error to the inherited
+        // stderr.
         const reason =
           crash.signal !== null
             ? `This is often an out-of-memory kill — try a lower --prerender-concurrency.`
             : crash.code === FATAL_UNHANDLED_NEXT_API_EXIT_CODE
               ? `A Next.js API that uses exceptions to signal framework behavior was uncaught; its error is printed above.`
-              : `Its error output is printed above.`;
+              : `Any error it printed is above.`;
         throw new Error(
           `[vinext] A prerender render worker (port ${crash.port}) exited unexpectedly ` +
             `(code ${crash.code}, signal ${crash.signal}) during the build. ` +

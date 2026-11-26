@@ -270,8 +270,6 @@ describe("installSocketErrorBackstop listeners", () => {
     expect(result.stderr).toContain("[vinext] uncaughtException: Error: uncaught throw");
   });
 
-  // NEXT_HTTP_ERROR_FALLBACK;401 is the digest unauthorized() throws
-  // (shims/navigation-errors.ts).
   // A build keeps NODE_ENV=test for its prerender workers.
   it("logs and keeps rendering during prerender with NODE_ENV=test", () => {
     const result = runWithBackstop("installSocketErrorBackstop();", {
@@ -301,6 +299,8 @@ describe("installSocketErrorBackstop listeners", () => {
     expect(result.stderr).not.toContain("PromiseRejectionHandledWarning");
   });
 
+  // NEXT_HTTP_ERROR_FALLBACK;401 is the digest unauthorized() throws
+  // (shims/navigation-errors.ts).
   function runSignalWithBackstop(trigger: string, digest = "NEXT_HTTP_ERROR_FALLBACK;401") {
     return spawnWithBackstop(
       `

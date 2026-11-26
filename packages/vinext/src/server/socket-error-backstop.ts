@@ -63,10 +63,11 @@
  * so by the time `VINEXT_PRERENDER` is set the listener has already
  * been installed (we cannot uninstall and re-install per phase).
  *
- * During prerender every error is logged rather than absorbed silently,
- * peer disconnects included, as Next.js's export worker logs them. A
- * render that a dropped connection breaks fails on its own, so the route
- * is reported where it rendered.
+ * During prerender every other error is logged rather than absorbed
+ * silently, peer disconnects included, as Next.js's export worker logs
+ * them. Only benign asset-import errors and unhandled framework-signal
+ * rejections pass without a log line. A render that a dropped connection
+ * breaks fails on its own, so the route is reported where it rendered.
  *
  * **Test skip is install-time.** Vitest workers that import
  * `index.ts` directly should never have the listener installed —
