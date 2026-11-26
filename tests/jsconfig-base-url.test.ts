@@ -173,27 +173,42 @@ describe("jsconfig.json baseUrl", () => {
   // pre plugin's virtual module) claim a bare id before baseUrl does.
   it("lets other resolvers claim a bare id before baseUrl", async () => {
     const resolveId = createResolvedBaseUrlPlugin();
-    const resolve = vi.fn(async (id: string) => ({ id: `\0virtual:${id}` }));
+    const resolve = vi.fn(async (id: string) =>
+      path.isAbsolute(id)
+        ? { id: path.join(FIXTURE, "components/world.js") }
+        : { id: `\0virtual:${id}` },
+    );
     const importer = path.join(FIXTURE, "pages/hello.js");
     expect(await resolveId.handler.call({ resolve }, "components/world", importer, {})).toEqual({
       id: "\0virtual:components/world",
     });
-    expect(resolve).toHaveBeenCalledTimes(1);
   });
 
-  // Like Turbopack, baseUrl still takes precedence over packages.
-  it("prefers baseUrl over a package with the same name", async () => {
+  // Standard resolution can throw (an unexported package subpath, say).
+  it("resolves through baseUrl when standard resolution throws", async () => {
     const resolveId = createResolvedBaseUrlPlugin();
     const fromBaseUrl = { id: path.join(FIXTURE, "components/world.js") };
-    const resolve = vi.fn(async (id: string) =>
-      path.isAbsolute(id)
-        ? fromBaseUrl
-        : { id: path.join(FIXTURE, "node_modules", id, "index.js") },
-    );
+    const resolve = vi.fn(async (id: string) => {
+      if (path.isAbsolute(id)) return fromBaseUrl;
+      throw new Error("Missing export");
+    });
     const importer = path.join(FIXTURE, "pages/hello.js");
     expect(await resolveId.handler.call({ resolve }, "components/world", importer, {})).toBe(
       fromBaseUrl,
     );
+  });
+
+  // Like Turbopack, baseUrl still takes precedence over an installed package
+  // (`react` is installed for this repo, as a symlink under pnpm).
+  it("prefers baseUrl over an installed package with the same name", async () => {
+    const resolveId = createResolvedBaseUrlPlugin();
+    const fromBaseUrl = { id: path.join(FIXTURE, "react/index.js") };
+    const resolve = vi.fn(async (id: string) =>
+      path.isAbsolute(id) ? fromBaseUrl : { id: `\0virtual:${id}` },
+    );
+    const importer = path.join(FIXTURE, "pages/hello.js");
+    expect(await resolveId.handler.call({ resolve }, "react", importer, {})).toBe(fromBaseUrl);
+    expect(resolve).toHaveBeenCalledTimes(1);
   });
 
   // Like tsconfig `paths` in Next.js webpack, dependencies keep standard

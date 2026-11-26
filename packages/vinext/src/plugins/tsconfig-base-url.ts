@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
 import type { TsconfigBaseUrlConfig, TsconfigBaseUrlLoad } from "../config/tsconfig-paths.js";
@@ -22,6 +23,20 @@ type TsconfigBaseUrlPluginOptions = {
 const NON_RELATIVE_SPECIFIER_RE = /^[^/\\\0#]/;
 const EXCLUDED_SPECIFIER_RES = [/^\.\.?(?:$|[/\\])/, /^[a-z][\w+.-]*:/i];
 const QUERY_OR_HASH_RE = /[?#].*$/;
+
+// Whether `node_modules/<package>` (a directory or a workspace symlink) exists
+// at or above the importer, so standard resolution would find the package.
+function isInstalledPackage(id: string, importer: string): boolean {
+  const parts = id.split(/[?#]/, 1)[0].split("/");
+  const packageName = id.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+  let dir = path.dirname(toSlash(importer));
+  while (true) {
+    if (fs.existsSync(path.join(dir, "node_modules", packageName))) return true;
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
 
 function isJsonRequest(id: string): boolean {
   return id.replace(QUERY_OR_HASH_RE, "").endsWith(".json");
@@ -101,16 +116,20 @@ export function createTsconfigBaseUrlPlugin(options: TsconfigBaseUrlPluginOption
         if (!baseUrl || !importer || isJsonRequest(id)) return null;
         if (toSlash(importer).includes("/node_modules/")) return null;
         const options = { ...resolveOptions, skipSelf: true };
-        // Other resolvers (later pre plugins, virtual modules) see the bare id
-        // first, as with Vite's native resolve.tsconfigPaths; baseUrl then
-        // only takes precedence over packages.
-        const standard = await this.resolve(id, importer, options);
-        if (standard && !standard.external && !toSlash(standard.id).includes("/node_modules/")) {
-          return standard;
-        }
         const resolved = await this.resolve(path.join(baseUrl, id), importer, options);
-        if (!resolved || resolved.external || isJsonRequest(resolved.id)) return standard;
-        return resolved;
+        // No file under baseUrl: standard resolution proceeds untouched.
+        if (!resolved || resolved.external || isJsonRequest(resolved.id)) return null;
+        // Like Vite's native resolve.tsconfigPaths, other resolvers (later pre
+        // plugins, virtual modules) claim the bare id first; baseUrl still
+        // takes precedence over an installed package of that name.
+        if (isInstalledPackage(id, importer)) return resolved;
+        let standard: Awaited<ReturnType<typeof this.resolve>> = null;
+        try {
+          standard = await this.resolve(id, importer, options);
+        } catch {
+          // e.g. an unexported package subpath: baseUrl resolves it.
+        }
+        return standard && !standard.external ? standard : resolved;
       },
     },
   };
