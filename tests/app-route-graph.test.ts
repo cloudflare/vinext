@@ -631,8 +631,18 @@ describe("App Router route graph builder", () => {
       expect(members.parallelSlots.find((slot) => slot.name === "team")?.pagePath).toBe(
         canonical(appDir, "children-slot-override/@team/members/@children/page.tsx"),
       );
-      // @children is a slot-only marker, not a segment of the route's children branch.
-      expect(members.routeSegments).toEqual(["children-slot-override", "members"]);
+
+      // The route's segments end with the slot's own depth, which segment
+      // config uses to place the slot's layouts (dynamicParams on
+      // @team/[id]/layout.tsx belongs to the route's [id] segment).
+      const dynamic = findRoute(graph.routes, "/children-slot-override/:id");
+      const dynamicTeam = dynamic.parallelSlots.find((slot) => slot.name === "team");
+      expect(dynamicTeam?.pagePath).toBe(
+        canonical(appDir, "children-slot-override/@team/[id]/@children/page.tsx"),
+      );
+      expect(dynamicTeam?.routeSegments).toEqual(["[id]", "(__SLOT__)"]);
+      expect(dynamicTeam?.configLayoutTreePositions).toEqual([1]);
+      expect(dynamic.routeSegments).toEqual(["children-slot-override", "[id]", "@children"]);
 
       // Same when /members is a real page (and the owner has no default.tsx).
       const realMembers = findRoute(graph.routes, "/children-slot-override-page/members");

@@ -1440,10 +1440,6 @@ function discoverSlotSubRoutes(
       );
       if (hasStructuralConflict) continue;
 
-      // `@children` is a slot-only marker, never a segment of the route's own
-      // children branch (route discovery drops it the same way).
-      const routeSubSegments = rawSegments.filter((segment) => segment !== "@children");
-
       // Build parallel slots for this sub-route: matching slots get the sub-page,
       // non-matching slots get null pagePath (rendering falls back to defaultPath)
       const subSlots: AppRouteGraphParallelSlot[] = parentRoute.parallelSlots.map((slot) => {
@@ -1474,7 +1470,7 @@ function discoverSlotSubRoutes(
           pattern,
           pagePath: childrenFallback,
           routePath: null,
-          routeSegments: [...parentRoute.routeSegments, ...routeSubSegments],
+          routeSegments: [...parentRoute.routeSegments, ...rawSegments],
           layoutTreePositions: parentRoute.layoutTreePositions,
           templateTreePositions: parentRoute.templateTreePositions,
           slots: subSlots,
@@ -1515,7 +1511,7 @@ function discoverSlotSubRoutes(
         segmentForbiddenTreePositions: parentRoute.segmentForbiddenTreePositions,
         segmentUnauthorizedPaths: parentRoute.segmentUnauthorizedPaths,
         segmentUnauthorizedTreePositions: parentRoute.segmentUnauthorizedTreePositions,
-        routeSegments: [...parentRoute.routeSegments, ...routeSubSegments],
+        routeSegments: [...parentRoute.routeSegments, ...rawSegments],
         childrenRouteSegments: childrenDefault ? parentRoute.routeSegments : undefined,
         templateTreePositions: parentRoute.templateTreePositions,
         layoutTreePositions: parentRoute.layoutTreePositions,
