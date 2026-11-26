@@ -733,6 +733,11 @@ describe("App Router route graph builder", () => {
       expect(catchAll.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
         canonical(appDir, "nested-only-catchall/@slot/[...slot]/page.tsx"),
       );
+
+      // @slot/[id]/[...slot] needs a segment after /a, so it can't fill the
+      // slot for a/[[...slug]], which also matches /nested-only-optional/a.
+      const optional = findRoute(graph.routes, "/nested-only-optional/a/:slug*");
+      expect(optional.parallelSlots).toEqual([]);
     });
 
     it("treats a literal folder ending in + as one static segment when mirroring", async () => {
