@@ -1306,13 +1306,14 @@ function discoverSlotSubRoutes(
           subPathMap.set(normalizedSubPath, subPathEntry);
         }
 
-        const existingSlotPage = subPathEntry.slotPages.get(slot.key);
-        if (existingSlotPage) {
-          const pattern = joinRoutePattern(parentRoute.pattern, normalizedSubPath);
-          throw new Error(
-            `You cannot have two routes that resolve to the same path ("${pattern}").`,
-          );
-        }
+        // Several pages of one slot can resolve to the same URL, e.g.
+        // @foo/nested/page.tsx and @foo/nested/@a/page.tsx, which fills the
+        // nested @a slot of @foo/nested/layout.tsx. Next.js only rejects
+        // duplicate children pages, never duplicate slot pages (webpack's
+        // next-app-loader resolveParallelSegments, Turbopack's
+        // page_path_except_parallel). findSlotSubPages lists the slot's own
+        // pages first, so they win over pages that fill a nested slot.
+        if (subPathEntry.slotPages.has(slot.key)) continue;
 
         subPathEntry.slotPages.set(slot.key, pagePath);
       }
@@ -1604,8 +1605,25 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   }
 
   scan(slotDir);
-  perMatcher.set(slotDir, results);
-  return results;
+  // A page inside one of the slot's own nested slots (e.g. `nested/@a/page`
+  // under `@foo`) fills that nested slot, so it ranks after the slot's own
+  // pages: callers keep the first page they find for a URL.
+  const ordered = [
+    ...results.filter((entry) => !isNestedSlotSubPage(entry)),
+    ...results.filter(isNestedSlotSubPage),
+  ];
+  perMatcher.set(slotDir, ordered);
+  return ordered;
+}
+
+/**
+ * Whether a slot sub-page lives inside one of the slot's own nested slots
+ * (e.g. `nested/@a` under `@foo`). `@children` is transparent, as elsewhere.
+ */
+function isNestedSlotSubPage({ relativePath }: SlotSubPageEntry): boolean {
+  return relativePath
+    .split(path.sep)
+    .some((segment) => segment.startsWith("@") && segment !== "@children");
 }
 
 function findSlotConfigLayoutPaths(

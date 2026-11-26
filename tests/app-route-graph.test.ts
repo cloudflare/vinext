@@ -582,6 +582,46 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-and-interception ("should match parallel routes")
+  // https://github.com/vercel/next.js/tree/v16.4.6/test/e2e/app-dir/parallel-routes-and-interception/app/parallel
+  // test/e2e/app-dir/parallel-routes-pruned-matchers ("keeps a complete nested parallel route matcher")
+  // https://github.com/vercel/next.js/tree/v16.4.6/test/e2e/app-dir/parallel-routes-pruned-matchers/app/nested-parallel
+  describe("pages under a slot's nested slots", () => {
+    // A page inside a slot's own nested slot (e.g. @foo/nested/@a/page.tsx)
+    // fills that nested slot. It is not a second page for the outer slot at
+    // the same URL, so it can't conflict with the outer slot's own page.
+    const appDir = path.resolve(import.meta.dirname, "fixtures/app-nested-slot-pages/app");
+
+    it("keeps the slot's own page when a nested slot page resolves to the same URL", async () => {
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const nested = findRoute(graph.routes, "/parallel/nested");
+      expect(nested.pagePath).toBe(canonical(appDir, "parallel/nested/page.tsx"));
+      expect(nested.parallelSlots.find((slot) => slot.name === "foo")?.pagePath).toBe(
+        canonical(appDir, "parallel/@foo/nested/page.tsx"),
+      );
+
+      // @outer/@inner/specific/page.tsx and @outer/specific/page.tsx both
+      // resolve to /nested-parallel/specific.
+      const specific = findRoute(graph.routes, "/nested-parallel/specific");
+      expect(specific.pagePath).toBe(canonical(appDir, "nested-parallel/specific/page.tsx"));
+    });
+
+    it("gives a synthetic slot sub-route the slot's own page over a nested slot page", async () => {
+      // nested-parallel-default has no specific/page.tsx, so
+      // /nested-parallel-default/specific is built from the @outer slot's
+      // pages. `@inner` sorts before `specific` in the directory listing.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const specific = findRoute(graph.routes, "/nested-parallel-default/specific");
+      expect(specific.pagePath).toBe(canonical(appDir, "nested-parallel-default/default.tsx"));
+      expect(specific.parallelSlots.find((slot) => slot.name === "outer")?.pagePath).toBe(
+        canonical(appDir, "nested-parallel-default/@outer/specific/page.tsx"),
+      );
+    });
+  });
+
   // Regression for https://github.com/cloudflare/vinext/issues/1535
   // Ported from Next.js: test/e2e/app-dir/parallel-routes-catchall/
   // ("should match correctly when defining an explicit slot but no page").
