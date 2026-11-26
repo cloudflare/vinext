@@ -365,19 +365,20 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
     forceDynamic:
       directRequestForcesDynamic(route, forcesDynamic) ||
-      [
-        ...route.parallelSlots.flatMap((slot) =>
-          slot.interceptingRoutes.flatMap((intercept) => [
+      (!route.routePath &&
+        [
+          ...route.parallelSlots.flatMap((slot) =>
+            slot.interceptingRoutes.flatMap((intercept) => [
+              ...intercept.layoutPaths,
+              intercept.pagePath,
+              intercept.ownerDefaultPath,
+            ]),
+          ),
+          ...route.siblingIntercepts.flatMap((intercept) => [
             ...intercept.layoutPaths,
             intercept.pagePath,
-            intercept.ownerDefaultPath,
           ]),
-        ),
-        ...route.siblingIntercepts.flatMap((intercept) => [
-          ...intercept.layoutPaths,
-          intercept.pagePath,
-        ]),
-      ].some(forcesDynamic),
+        ].some(forcesDynamic)),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,
