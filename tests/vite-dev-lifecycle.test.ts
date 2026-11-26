@@ -4,16 +4,21 @@ import { createServer as createHttpServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createServer, type ViteDevServer } from "vite";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { stripVTControlCharacters } from "node:util";
+import { createServer, version as viteVersion, type ViteDevServer } from "vite";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { getLockfilePath, readLockfile } from "../packages/vinext/src/server/dev-lockfile.js";
+import { supportsNativeCommandLock } from "../packages/vinext/src/utils/vite-version.js";
 
 const originalArgv = process.argv;
 const VITE_CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.resolve("vite"))), "cli.js");
 const VINEXT_ENTRY_URL = pathToFileURL(
   path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
 ).href;
+// The same Vite that VITE_CLI_PATH runs.
+const HAS_NATIVE_COMMAND_LOCK = supportsNativeCommandLock(viteVersion);
+const originalForceDevLock = process.env.VINEXT_TEST_FORCE_DEV_LOCK;
 const roots: string[] = [];
 let server: ViteDevServer | undefined;
 let child: ChildProcess | undefined;
@@ -53,6 +58,18 @@ async function waitFor<T>(read: () => T | undefined, timeoutMs = 20_000): Promis
   }
   throw new Error("Timed out waiting for Vite dev state");
 }
+
+// Most tests below observe the CLI lifecycle through vinext's lock file. Keep
+// it on when the installed Vite has its own lock, so Vite's ecosystem CI still
+// covers the lifecycle.
+beforeAll(() => {
+  process.env.VINEXT_TEST_FORCE_DEV_LOCK = "1";
+});
+
+afterAll(() => {
+  if (originalForceDevLock === undefined) delete process.env.VINEXT_TEST_FORCE_DEV_LOCK;
+  else process.env.VINEXT_TEST_FORCE_DEV_LOCK = originalForceDevLock;
+});
 
 afterEach(async () => {
   if (child?.exitCode === null && child.signalCode === null) {
@@ -549,9 +566,59 @@ export default { plugins: [vinext()] };
     });
 
     expect(duplicate.status).toBe(1);
-    expect(duplicate.stderr).toContain("Another vinext dev server is already running");
+    // Vite's own lock runs before vinext's when the installed Vite has one.
+    expect(duplicate.stderr).toContain(
+      HAS_NATIVE_COMMAND_LOCK
+        ? "Found another Vite dev process for this project"
+        : "Another vinext dev server is already running",
+    );
     expect(duplicate.stderr).not.toContain("node:events");
   }, 30_000);
+
+  it.runIf(HAS_NATIVE_COMMAND_LOCK)(
+    "leaves duplicate detection to Vite so --bypass-lock starts a second server",
+    async () => {
+      const root = createProject();
+      fs.writeFileSync(
+        path.join(root, "vite.config.ts"),
+        `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};\nexport default { plugins: [vinext()] };\n`,
+      );
+      const env = { ...process.env };
+      Reflect.deleteProperty(env, "VINEXT_TEST_FORCE_DEV_LOCK");
+      const startServer = (args: string[]) => {
+        const proc = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0", ...args], {
+          cwd: root,
+          env,
+          stdio: "pipe",
+        });
+        let output = "";
+        proc.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+        proc.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+        const listening = waitFor(() => {
+          if (proc.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+          // CI enables colors, which would split the "Local:" line.
+          return /Local:\s+http:/.test(stripVTControlCharacters(output)) || undefined;
+        });
+        return { proc, listening };
+      };
+
+      const first = startServer([]);
+      child = first.proc;
+      await first.listening;
+      const second = startServer(["--bypass-lock"]);
+      try {
+        await second.listening;
+        expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+      } finally {
+        if (second.proc.exitCode === null && second.proc.signalCode === null) {
+          const exited = new Promise<void>((resolve) => second.proc.once("exit", () => resolve()));
+          second.proc.kill("SIGTERM");
+          await exited;
+        }
+      }
+    },
+    30_000,
+  );
 
   it("takes over a lock left behind before a restart when its PID was reused", async () => {
     const root = createProject();
@@ -1086,5 +1153,15 @@ export default { plugins: [vinext()] };
     } finally {
       await nested?.close();
     }
+  });
+});
+
+describe("supportsNativeCommandLock", () => {
+  it("detects Vite's own command lock from the first 8.4 prerelease", () => {
+    expect(supportsNativeCommandLock("8.3.8")).toBe(false);
+    expect(supportsNativeCommandLock("8.4.0-beta.1")).toBe(true);
+    expect(supportsNativeCommandLock("8.4.0")).toBe(true);
+    expect(supportsNativeCommandLock("8.5.0-beta.0")).toBe(true);
+    expect(supportsNativeCommandLock("9.0.0")).toBe(true);
   });
 });
