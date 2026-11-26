@@ -825,7 +825,8 @@ async function finalizeWorkerCacheabilityAdmission(
     } catch {
       return cacheabilityEvaluationFailureResponse(state.route.pattern);
     }
-    if (captured.kind === "fallback") {
+    // The body can veto the response it completes after the checks above.
+    if (captured.kind === "fallback" || state.finalResponseVetoReason) {
       return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
     }
     return responseWithCachePolicy(response, captured.body, outcome, browserCacheControl);
@@ -900,6 +901,11 @@ async function finalizeWorkerCacheabilityAdmission(
   }
 
   const rendererOutcome = state.completion ? await state.completion : (state.outcome ?? null);
+  // The body can veto the response it completes after the checks above, for
+  // example from a Suspense boundary that streamed after the shell.
+  if (state.finalResponseVetoReason) {
+    return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
+  }
   const outcome = completedRouteOutcome(response, state, rendererOutcome);
   if (outcome?.cacheable !== true || !outcome.cacheControl) {
     // Next.js throws a static-to-dynamic error only when the runtime render
