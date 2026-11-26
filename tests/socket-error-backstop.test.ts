@@ -212,6 +212,18 @@ describe("installSocketErrorBackstop listeners", () => {
     expect(result.stderr).toContain("[vinext] uncaughtException: Error: uncaught throw");
   });
 
+  // Jest sets NODE_ENV=test, and the Next.js deploy suite's `vinext start`
+  // inherits it; `next start` installs its handlers whatever NODE_ENV is.
+  it("logs and keeps running on a production server started with NODE_ENV=test", () => {
+    const result = runWithBackstop(
+      "installSocketErrorBackstop(); installSocketErrorBackstop({ runningServer: true });",
+      { NODE_ENV: "test" },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("still running");
+    expect(result.stderr).toContain("[vinext] unhandledRejection: Error: floating rejection");
+  });
+
   it("re-throws outside a running production server", () => {
     const result = runWithBackstop("installSocketErrorBackstop();");
     expect(result.status).not.toBe(0);
@@ -220,12 +232,55 @@ describe("installSocketErrorBackstop listeners", () => {
     expect(result.stdout).not.toContain("still running");
   });
 
-  it("re-throws during prerender even after a running server opted in", () => {
-    const result = runWithBackstop("installSocketErrorBackstop({ runningServer: true });", {
+  // Next.js's static export worker logs unhandled rejections and uncaught
+  // exceptions and keeps rendering (packages/next/src/export/worker.ts).
+  // test/e2e/react-version leaves a rejected import() floating at module scope
+  // and expects the build to succeed.
+  it("logs and keeps rendering during prerender", () => {
+    const result = runWithBackstop("installSocketErrorBackstop();", {
       VINEXT_PRERENDER: "1",
     });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("Error: floating rejection");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("app handler saw rejection");
+    expect(result.stdout).toContain("still running");
+    expect(result.stderr).toContain("[vinext] unhandledRejection: Error: floating rejection");
+    expect(result.stderr).toContain("[vinext] uncaughtException: Error: uncaught throw");
+  });
+
+  function runSignalWithBackstop(trigger: string) {
+    // The digest unauthorized() throws (shims/navigation-errors.ts).
+    const script = `
+      import { installSocketErrorBackstop } from ${JSON.stringify(backstopUrl)};
+      const unauthorized = () => {
+        throw Object.assign(new Error("NEXT_UNAUTHORIZED"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;401",
+        });
+      };
+      installSocketErrorBackstop();
+      ${trigger}
+      setTimeout(() => console.log("still running"), 50);
+    `;
+    return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, VITEST: "", NODE_ENV: "production", VINEXT_PRERENDER: "1" },
+      timeout: 10_000,
+    });
+  }
+
+  it("ignores an unhandled navigation signal during prerender", () => {
+    const result = runSignalWithBackstop("void Promise.resolve().then(() => unauthorized());");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("still running");
+    expect(result.stderr).toBe("");
+  });
+
+  it("fails the prerender with a reported error for an uncaught navigation signal", () => {
+    const result = runSignalWithBackstop("setTimeout(() => unauthorized(), 10);");
+    expect(result.status).toBe(78);
     expect(result.stdout).not.toContain("still running");
+    expect(result.stderr).toContain(
+      "A Next.js API that uses exceptions to signal framework behavior was uncaught",
+    );
+    expect(result.stderr).toContain("NEXT_UNAUTHORIZED");
   });
 });

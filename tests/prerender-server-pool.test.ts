@@ -160,6 +160,48 @@ describe("prerender server pool sizing", () => {
       try {
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(() => pool.assertHealthy()).toThrow(/exited unexpectedly .*code 42/);
+        // It exited on its own, so it isn't an out-of-memory kill.
+        expect(() => pool.assertHealthy()).toThrow(/Its error output is printed above\.$/);
+      } finally {
+        await pool.close();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("explains a worker that exits on an uncaught Next.js API signal", async () => {
+    const { dir, entry } = writeWorkerEntry(`
+      process.send({ type: "vinext:prerender-server-ready", port: 4125 });
+      setTimeout(() => process.exit(78), 25);
+    `);
+
+    try {
+      const pool = await startPrerenderServerPool(dir, 1, { entry });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(() => pool.assertHealthy()).toThrow(
+          /code 78.*A Next\.js API that uses exceptions to signal framework behavior was uncaught/,
+        );
+      } finally {
+        await pool.close();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("suggests an out-of-memory kill for a worker killed by a signal", async () => {
+    const { dir, entry } = writeWorkerEntry(`
+      process.send({ type: "vinext:prerender-server-ready", port: 4126 });
+      setTimeout(() => process.kill(process.pid, "SIGKILL"), 25);
+    `);
+
+    try {
+      const pool = await startPrerenderServerPool(dir, 1, { entry });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(() => pool.assertHealthy()).toThrow(/signal SIGKILL.*out-of-memory kill/);
       } finally {
         await pool.close();
       }

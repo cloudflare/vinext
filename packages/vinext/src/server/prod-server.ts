@@ -1484,9 +1484,9 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   // Symbol.for guard inside installSocketErrorBackstop, so index.ts may
   // already have installed it. A real production server opts into
   // Next.js's log-and-keep-serving handling of uncaught errors
-  // (router-server.ts); build-time prerender servers keep the re-throw
-  // semantics, and must not set the sticky flag when they run inside
-  // the build process.
+  // (router-server.ts). Build-time prerender servers get the prerender
+  // handling, which `VINEXT_PRERENDER` selects, and must not set the
+  // sticky flag when they run inside the build process.
   installSocketErrorBackstop({ runningServer: options.purpose !== "prerender" });
 
   // Like `vinext start` and `next start`, default to production so React and
