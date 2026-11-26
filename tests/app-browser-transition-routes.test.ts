@@ -229,6 +229,58 @@ describe("resolveRouterTransitionFromRoutes", () => {
     ).toEqual(["/gallery", "/gallery/@modal/default"]);
   });
 
+  it("reads an active slot's route by its manifest id, not as a URL", () => {
+    // As a URL, the catch-all's id "/shop/:slug*" is one segment, which a
+    // sibling /shop/:id would match first and report its default slot.
+    const catchAll = manifest.segmentGraph.routes.get("route:/shop/:slug*");
+    expect(catchAll).toBeDefined();
+    const slotId = "slot:panel:/shop";
+    const binding = (routeId: string, state: "active" | "default") => ({
+      id: `${routeId}::${slotId}`,
+      ownerLayoutId: null,
+      routeId,
+      routeSegments: state === "active" ? ["[[...slug]]"] : null,
+      slotId,
+      slotPatternParts: null,
+      state,
+    });
+    const withSibling = {
+      ...manifest,
+      segmentGraph: {
+        ...manifest.segmentGraph,
+        routes: new Map([
+          ...manifest.segmentGraph.routes,
+          [
+            "route:/shop/:id",
+            {
+              ...catchAll!,
+              id: "route:/shop/:id",
+              paramNames: ["id"],
+              patternParts: ["shop", ":id"],
+            },
+          ],
+        ]),
+        slotBindings: new Map([
+          ...manifest.segmentGraph.slotBindings,
+          [`route:/shop/:slug*::${slotId}`, binding("route:/shop/:slug*", "active")],
+          [`route:/shop/:id::${slotId}`, binding("route:/shop/:id", "default")],
+        ]),
+      },
+    } as BrowserRouteManifest;
+
+    expect(
+      resolveRouterTransitionFromRoutes(
+        committed({
+          slotBindings: [
+            { activeRouteId: "route:/shop/:slug*", ownerLayoutId: null, slotId, state: "active" },
+          ],
+          sourcePage: "/shop/[[...slug]]/page",
+        }),
+        withSibling,
+      ),
+    ).toEqual(["/shop/[[...slug]]", "/shop/@panel/[[...slug]]"]);
+  });
+
   it("reports the intercepting page for an intercepted slot", () => {
     const interception = {
       sourceMatchedUrl: "/gallery",

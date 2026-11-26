@@ -87,9 +87,13 @@ function resolveSlotSourcePath(
   if (binding.state !== "active" || binding.activeRouteId == null) {
     return joinSourcePath([...slotBase, "default"]);
   }
+  // An ordinary slot's active route id is the manifest route id (`route:`
+  // plus its pattern). Only an id that isn't one, such as a concrete
+  // interception target, is matched as a URL.
   const activeRoutePath = routePathFromId(binding.activeRouteId);
   const activeRoute =
-    activeRoutePath === null ? null : matchManifestRoute(activeRoutePath, routeManifest);
+    routeManifest?.segmentGraph.routes.get(binding.activeRouteId) ??
+    (activeRoutePath === null ? null : matchManifestRoute(activeRoutePath, routeManifest));
   const manifestBinding =
     activeRoute === null
       ? undefined
