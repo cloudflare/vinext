@@ -29,14 +29,14 @@ import * as loaderFileModule from "private-next-image-loader";
  * Image config injected at build time via Vite define.
  * Serialized as JSON — parsed once at module level.
  */
-const __imageRemotePatterns: RemotePattern[] = (() => {
+export const __imageRemotePatterns: RemotePattern[] = (() => {
   try {
     return JSON.parse(process.env.__VINEXT_IMAGE_REMOTE_PATTERNS ?? "[]");
   } catch {
     return [];
   }
 })();
-const __imageDomains: string[] = (() => {
+export const __imageDomains: string[] = (() => {
   try {
     return JSON.parse(process.env.__VINEXT_IMAGE_DOMAINS ?? "[]");
   } catch {
@@ -63,7 +63,7 @@ const __imageSizes: number[] = (() => {
 })();
 // `images.qualities`, or null when unset. Sorted ascending like Next.js's
 // image config, so a tie in findClosestQuality resolves to the lower quality.
-const __imageQualities: number[] | null = (() => {
+export const __imageQualities: number[] | null = (() => {
   try {
     const qualities: number[] | null = JSON.parse(process.env.__VINEXT_IMAGE_QUALITIES ?? "null");
     return Array.isArray(qualities) ? qualities.sort((a, b) => a - b) : null;
@@ -306,7 +306,7 @@ export function resolveImageSource(v: {
  * Configurable via `images.deviceSizes` in next.config.js.
  */
 export const RESPONSIVE_WIDTHS = [...__imageDeviceSizes].sort((left, right) => left - right);
-const ALL_IMAGE_WIDTHS = [...RESPONSIVE_WIDTHS, ...__imageSizes].sort(
+export const ALL_IMAGE_WIDTHS = [...RESPONSIVE_WIDTHS, ...__imageSizes].sort(
   (left, right) => left - right,
 );
 
@@ -407,13 +407,8 @@ export function generateImageAttributes(
   quality?: number,
   sizes?: string,
   buildUrl: ImageUrlBuilder = imageOptimizationUrl,
-  // next/legacy/image's `layout`. Its getWidths (client/legacy/image.tsx) lets
-  // `sizes` pick widths only for fill and responsive layouts, and offers every
-  // device width to a responsive image.
-  legacyLayout?: string,
 ): { src: string; srcSet: string } {
-  const legacyFullWidth = legacyLayout === "fill" || legacyLayout === "responsive";
-  if (sizes && (legacyLayout === undefined || legacyFullWidth)) {
+  if (sizes) {
     const viewportWidthPattern = /(^|\s)(1?\d?\d)vw/g;
     const viewportPercentages = Array.from(sizes.matchAll(viewportWidthPattern), (match) =>
       Number.parseInt(match[2], 10),
@@ -431,10 +426,9 @@ export function generateImageAttributes(
     };
   }
 
-  // Next.js getWidths(): an image with no width (`fill`), or a legacy fill or
-  // responsive image, offers every images.deviceSizes entry as a `w`
-  // descriptor, and `src` is the largest.
-  if (width === undefined || legacyFullWidth) {
+  // Next.js getWidths(): an image with no width (`fill`) offers every
+  // images.deviceSizes entry as a `w` descriptor, and `src` is the largest.
+  if (width === undefined) {
     return {
       src: buildUrl(src, RESPONSIVE_WIDTHS[RESPONSIVE_WIDTHS.length - 1], quality),
       srcSet: RESPONSIVE_WIDTHS.map(

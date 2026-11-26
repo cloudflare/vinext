@@ -144,10 +144,7 @@ function preloadImageResource(input: {
   });
 }
 
-/** `layout` of a next/legacy/image, which picks its srcSet widths. */
-export type LegacyImageLayout = "fill" | "fixed" | "intrinsic" | "responsive" | "raw";
-
-function ImageRender(
+const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   {
     src: srcProp,
     alt,
@@ -173,12 +170,9 @@ function ImageRender(
     objectFit,
     objectPosition,
     ...rest
-  }: ImageProps,
-  ref: React.ForwardedRef<HTMLImageElement>,
-  // Set for next/legacy/image, which never uses images.loaderFile.
-  legacyLayout: LegacyImageLayout | undefined,
+  },
+  ref,
 ) {
-  const ignoreLoaderFile = legacyLayout !== undefined;
   // Dedup refs: ensure onLoad and onError fire at most once per src per mount.
   // Matches Next.js behavior — prevents double-firing from React re-renders,
   // strict-mode double-invocation, or state updates inside the handler itself.
@@ -227,7 +221,7 @@ function ImageRender(
     height: imgHeight,
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
-  const customLoader = resolveCustomImageLoader(loader, src, ignoreLoaderFile);
+  const customLoader = resolveCustomImageLoader(loader, src);
   const shouldPreload = preload === true || priority === true;
   const priorityFetchPriority = priority ? "high" : undefined;
   // data: and blob: sources are served as-is and never lazy by default (Next.js parity).
@@ -503,7 +497,6 @@ function ImageRender(
           imgQuality,
           sizes,
           customLoader ? customLoaderUrlBuilder(customLoader) : undefined,
-          legacyLayout,
         )
       : undefined;
   const srcSet = optimizedAttributes
@@ -535,7 +528,7 @@ function ImageRender(
         }
       : undefined;
 
-  const imageSizes = sizes ?? (fill || legacyLayout === "responsive" ? "100vw" : undefined);
+  const imageSizes = sizes ?? (fill ? "100vw" : undefined);
   preloadImageResource({
     shouldPreload,
     src: optimizedSrc,
@@ -568,22 +561,6 @@ function ImageRender(
       data-nimg={fill ? "fill" : "1"}
     />
   );
-}
-
-const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(props, ref) {
-  return ImageRender(props, ref, undefined);
-});
-
-/**
- * The Image that next/legacy/image renders. Next.js's legacy Image
- * (client/legacy/image.tsx) picks its loader from `images.loader`, never
- * loading `images.loaderFile`, and its `layout` decides the srcSet widths.
- */
-export const LegacyBaseImage = forwardRef<
-  HTMLImageElement,
-  ImageProps & { legacyLayout: LegacyImageLayout }
->(function Image({ legacyLayout, ...props }, ref) {
-  return ImageRender(props, ref, legacyLayout);
 });
 
 // Annotated so declaration emit references ImageProps by name and keeps its

@@ -34,7 +34,7 @@ export default function Page() {
       />
       <img {...fromLoaderFile} />
       <img {...fromLoaderProp} />
-      <LegacyImage id="legacy" alt="legacy" src="/logo.png" width={400} height={400} />
+      <LegacyImage id="legacy" alt="legacy" src="/logo.png" width={400} height={400} priority />
     </main>
   );
 }

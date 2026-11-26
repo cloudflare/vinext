@@ -57,9 +57,12 @@ describe.each([
     const html = ReactDOMServer.renderToString(
       React.createElement(LegacyImage, { src, alt: "", width: 64, height: 64 }),
     );
-    expect(renderedSrc(html)).toBe(src);
+    // Not the intrinsic layout's sizer img.
+    const imageTag = /<img [^>]*data-nimg[^>]*>/.exec(html)?.[0] ?? "";
+    expect(renderedSrc(imageTag)).toBe(src);
     expect(html).not.toContain("/_next/image");
     expect(html).not.toContain("loading=");
+    expect(html).not.toContain("<noscript>");
   });
 
   it("getImageProps() returns the source as-is and eager", () => {
