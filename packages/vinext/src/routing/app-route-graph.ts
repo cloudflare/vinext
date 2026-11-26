@@ -407,6 +407,12 @@ export type RouteManifestSlotBinding = {
 
 export type RouteManifestInterception = {
   id: string;
+  /**
+   * The intercepting page's directory from app/ in Next.js' source-path form,
+   * route groups omitted (e.g. `/gallery/@modal/(.)photos/[id]`). Reported in
+   * the instrumentation-client router transition event's `fromRoutes`.
+   */
+  sourcePagePath?: string;
   sourcePattern: string;
   sourcePatternParts: readonly string[];
   targetPattern: string;
@@ -707,6 +713,7 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
         createAppRouteGraphInterceptionId(ir.slotId, ir.sourceMatchPattern, ir.targetPattern);
       interceptions.set(id, {
         id,
+        ...createInterceptionSourcePagePath(ir.sourcePageSegments),
         sourcePattern: ir.sourceMatchPattern,
         sourcePatternParts: splitRouteManifestPatternParts(ir.sourceMatchPattern),
         targetPattern: ir.targetPattern,
@@ -817,6 +824,7 @@ function addRouteManifestInterceptionFacts(input: {
     );
     input.interceptions.set(id, {
       id,
+      ...createInterceptionSourcePagePath(interception.sourcePageSegments),
       sourcePattern: interception.sourceMatchPattern,
       sourcePatternParts: splitRouteManifestPatternParts(interception.sourceMatchPattern),
       targetPattern: interception.targetPattern,
@@ -827,6 +835,14 @@ function addRouteManifestInterceptionFacts(input: {
       targetRouteId: input.routeIdByPattern.get(interception.targetPattern) ?? null,
     });
   }
+}
+
+function createInterceptionSourcePagePath(
+  segments: readonly string[] | undefined,
+): Pick<RouteManifestInterception, "sourcePagePath"> {
+  if (segments === undefined) return {};
+  const visible = segments.filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
+  return { sourcePagePath: `/${visible.join("/")}` };
 }
 
 function createRouteManifestInterceptionsBySlotId(

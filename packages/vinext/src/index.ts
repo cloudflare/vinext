@@ -3442,6 +3442,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_APP_NAV_FAIL_HANDLING"] = JSON.stringify(
           nextConfig.appNavFailHandling,
         );
+        // Raw boolean like Next.js define-env.ts, so the event-building path in
+        // instrumentation-client-state.ts drops out when the flag is off.
+        defines["process.env.__NEXT_INSTRUMENTATION_CLIENT_ROUTER_TRANSITION_EVENTS"] =
+          JSON.stringify(nextConfig.instrumentationClientRouterTransitionEvents);
         defines["process.env.__NEXT_TEST_MODE"] = JSON.stringify(
           process.env.__NEXT_TEST_MODE ?? false,
         );

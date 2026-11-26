@@ -1709,12 +1709,19 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
-        void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, false).finally(
-          () => {
-            setPending(false);
-            if (setter) clearLinkForCurrentNavigation(setter);
-          },
-        );
+        void navigateClientSide(
+          navigateHref,
+          replace ? "replace" : "push",
+          scroll,
+          false,
+          "transition",
+          // Next.js reports the Link's prefetch prop as the transition's
+          // prefetch intent (client/app-dir/link.tsx).
+          prefetchProp === false ? "none" : prefetchProp === true ? "full" : "auto",
+        ).finally(() => {
+          setPending(false);
+          if (setter) clearLinkForCurrentNavigation(setter);
+        });
       });
       return;
     } else if (HAS_PAGES_ROUTER) {

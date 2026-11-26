@@ -310,6 +310,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "experimental.disableOptimizedLoading": { status: "supported" },
   "experimental.gestureTransition": { status: "supported" },
   "experimental.appNavFailHandling": { status: "supported" },
+  "experimental.instrumentationClientRouterTransitionEvents": { status: "supported" },
   "experimental.rootParams": {
     status: "supported",
     detail: "no longer needed; root params are always available",

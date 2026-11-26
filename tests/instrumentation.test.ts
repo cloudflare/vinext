@@ -1184,4 +1184,61 @@ describe("client instrumentation hook state", () => {
       consoleError.mockRestore();
     }
   });
+
+  // Ported from Next.js: test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  // ("router transition start context"), pinned to client/components/router-transition.ts.
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  describe("with experimental.instrumentationClientRouterTransitionEvents", () => {
+    beforeEach(() => {
+      vi.stubEnv("__NEXT_INSTRUMENTATION_CLIENT_ROUTER_TRANSITION_EVENTS", "true");
+    });
+
+    afterEach(async () => {
+      vi.unstubAllEnvs();
+      (await import(statePath)).setRouterTransitionFromRoutesResolver(null);
+    });
+
+    it("passes a start event with a fresh id, the source routes and the prefetch intent", async () => {
+      const state = await import(statePath);
+      const onRouterTransitionStart = vi.fn();
+      state.setClientInstrumentationHooks({ onRouterTransitionStart });
+      state.setRouterTransitionFromRoutesResolver(() => ["/blog/[slug]"]);
+
+      state.notifyAppRouterTransitionStart("/about", "push", "full");
+      state.notifyAppRouterTransitionStart("/", "traverse");
+
+      const [first, second] = onRouterTransitionStart.mock.calls;
+      expect(first.slice(0, 2)).toEqual(["/about", "push"]);
+      expect(first[2]).toEqual({
+        id: expect.any(String),
+        timestamp: expect.any(Number),
+        fromRoutes: ["/blog/[slug]"],
+        prefetchIntent: "full",
+      });
+      expect(first[2].timestamp).toBeGreaterThan(0);
+      expect(second[2].prefetchIntent).toBe(null);
+      expect(second[2].id).not.toBe(first[2].id);
+    });
+
+    it("logs a failure to build the event like a throwing hook", async () => {
+      const state = await import(statePath);
+      const error = new Error("resolver failed");
+      const onRouterTransitionStart = vi.fn();
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        state.setClientInstrumentationHooks({ onRouterTransitionStart });
+        state.setRouterTransitionFromRoutesResolver(() => {
+          throw error;
+        });
+        expect(() => state.notifyAppRouterTransitionStart("/about", "push")).not.toThrow();
+        expect(onRouterTransitionStart).not.toHaveBeenCalled();
+        expect(consoleError).toHaveBeenCalledWith(
+          "An instrumentation-client router transition hook failed",
+          error,
+        );
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+  });
 });

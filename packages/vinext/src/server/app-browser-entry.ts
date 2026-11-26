@@ -20,7 +20,11 @@ import { flushSync } from "react-dom";
 import { createRoot, hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
 import { AppRouterAnnouncer } from "../client/app-router-announcer.js";
-import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
+import {
+  notifyAppRouterTransitionStart,
+  setRouterTransitionFromRoutesResolver,
+} from "../client/instrumentation-client-state.js";
+import { resolveRouterTransitionFromRoutes } from "./app-browser-transition-routes.js";
 import {
   __basePath,
   activateNavigationSnapshot,
@@ -410,6 +414,16 @@ const browserNavigationController = createAppBrowserNavigationController({
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
 });
+
+// experimental.instrumentationClientRouterTransitionEvents: report the source
+// routes of the committed tree. The flag check drops the resolver otherwise.
+if (process.env.__NEXT_INSTRUMENTATION_CLIENT_ROUTER_TRANSITION_EVENTS) {
+  setRouterTransitionFromRoutesResolver(() =>
+    hasBrowserRouterState()
+      ? resolveRouterTransitionFromRoutes(getBrowserRouterState(), getBrowserRouteManifest())
+      : [],
+  );
+}
 const discardedServerActionRefreshScheduler = hasServerActions
   ? createDiscardedServerActionRefreshScheduler({
       runRefresh() {

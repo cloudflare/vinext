@@ -36,7 +36,7 @@ test("instrumentationClientInject hooks are read at transition time and isolated
         message.startsWith("[Router Transition Start]"),
     ),
   ).toEqual([
-    "[Injected Transition Start] [push] /instrumentation-client/some-page late-hook null",
+    "[Injected Transition Start] [push] /instrumentation-client/some-page late-hook event",
     "[Injected Transition Start] [push] /instrumentation-client/some-page package-late-hook",
     "[Injected Transition Start] [push] /instrumentation-client/some-page throws",
     "[Router Transition Start] [push] /instrumentation-client/some-page",

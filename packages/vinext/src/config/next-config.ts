@@ -487,6 +487,12 @@ export type NextConfig = {
      */
     gestureTransition?: boolean;
     /**
+     * Passes a start event (`id`, `timestamp`, `fromRoutes`, `prefetchIntent`)
+     * as the third argument of the instrumentation-client
+     * `onRouterTransitionStart` hook. Without it the hook receives `null`.
+     */
+    instrumentationClientRouterTransitionEvents?: boolean;
+    /**
      * Enables App Router Segment Cache prefetch inlining. When provided as an
      * object, thresholds are resolved with Next.js defaults and non-finite
      * values are clamped to Number.MAX_SAFE_INTEGER.
@@ -591,6 +597,8 @@ export type ResolvedNextConfig = {
    * `useRouter().experimental_gesturePush()`.
    */
   gestureTransition: boolean;
+  /** `experimental.instrumentationClientRouterTransitionEvents`. */
+  instrumentationClientRouterTransitionEvents: boolean;
   /**
    * Resolved `experimental.prefetchInlining` config. Next.js normalizes `true`
    * and partial object config into concrete thresholds.
@@ -2026,6 +2034,7 @@ export async function resolveNextConfig(
       cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
+      instrumentationClientRouterTransitionEvents: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -2471,6 +2480,8 @@ export async function resolveNextConfig(
     cachedNavigations: cacheComponents && experimental?.cachedNavigations === true,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
+    instrumentationClientRouterTransitionEvents:
+      experimental?.instrumentationClientRouterTransitionEvents === true,
     prefetchInlining,
     redirects,
     rewrites,

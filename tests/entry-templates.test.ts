@@ -173,6 +173,9 @@ function pickBrowserRouteManifest(routeManifest: RouteManifest) {
   ): Map<string, Picked> => new Map(Array.from(map, ([key, value]) => [key, pick(value)]));
   const pickInterception = (interception: RouteManifestInterception) => ({
     id: interception.id,
+    ...(interception.sourcePagePath === undefined
+      ? {}
+      : { sourcePagePath: interception.sourcePagePath }),
     sourcePatternParts: interception.sourcePatternParts,
     targetPatternParts: interception.targetPatternParts,
     slotId: interception.slotId,
@@ -878,6 +881,9 @@ describe("App Router generated manifest construction", () => {
         "layout:/(protected)/admin",
       ]);
       expect(decoded.segmentGraph.interceptionsBySlotId.size).toBe(1);
+      expect([...decoded.segmentGraph.interceptions.values()][0]?.sourcePagePath).toBe(
+        "/feed/@modal/(..)photos/[photoId]",
+      );
       expect(generateBrowserRouteManifestModule(null)).toBe("export default null;");
 
       // A route id that is not `route:` plus its pattern travels explicitly.

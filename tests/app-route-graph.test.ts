@@ -1805,6 +1805,7 @@ describe("App Router route graph builder", () => {
         expect(interceptions).toEqual([
           {
             id: "interception:slot:modal:/[locale]/feed:/:locale/feed->/:locale/photos/:id",
+            sourcePagePath: "/[locale]/feed/@modal/(..)photos/[id]",
             sourcePattern: "/:locale/feed",
             sourcePatternParts: [":locale", "feed"],
             targetPattern: "/:locale/photos/:id",
