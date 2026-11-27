@@ -1102,7 +1102,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     // Exactly once: first call reads from disk, second call hits the build cache.
     // The plugin reads through canonical forward-slash paths, so compare in
     // that space while realpathSync stays native.
-    const expectedRead = toSlash(fs.realpathSync(path.join(tmpDir, "noto-sans.ttf")));
+    const expectedRead = toSlash(fs.realpathSync.native(path.join(tmpDir, "noto-sans.ttf")));
     const calls = readFileSpy.mock.calls.filter(
       (call) => typeof call[0] === "string" && toSlash(call[0]) === expectedRead,
     );
