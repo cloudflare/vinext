@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { toSlash } from "pathslash";
 import rsc from "@vitejs/plugin-rsc";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { createBuilder } from "vite";
@@ -300,9 +301,11 @@ export default function Page() {
   });
 
   it("keeps offline-computable action ids harmless by enforcing route ownership", async () => {
-    const normalizedActionPath = path.relative(
-      fixtureRoot,
-      await fs.realpath(path.join(fixtureRoot, "app/admin/actions.ts")),
+    const normalizedActionPath = toSlash(
+      path.relative(
+        await fs.realpath(fixtureRoot),
+        await fs.realpath(path.join(fixtureRoot, "app/admin/actions.ts")),
+      ),
     );
     const offlineActionId = `${createHash("sha256").update(normalizedActionPath).digest("hex").slice(0, 12)}#deleteEverything`;
 

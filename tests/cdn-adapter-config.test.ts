@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
@@ -320,7 +321,7 @@ describe("vinext cache adapter output hook", () => {
     expect(finalizeBuildOutput).toHaveBeenCalledOnce();
     expect(finalizeBuildOutput).toHaveBeenCalledWith({
       root: "/project",
-      outDir: path.resolve("/project/dist/server"),
+      outDir: toSlash(path.resolve("/project/dist/server")),
       isPrimaryServerOutput: false,
     });
   });

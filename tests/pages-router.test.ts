@@ -5159,7 +5159,7 @@ describe("Virtual server entry generation", () => {
       logLevel: "silent",
     });
     // vinext resolves the root through symlinks like Vite, so routes are keyed by real path.
-    const realAppPath = fs.realpathSync(fixture.appPath);
+    const realAppPath = toSlash(fs.realpathSync.native(fixture.appPath));
     const readAppManifest = async () => {
       const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
       return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[

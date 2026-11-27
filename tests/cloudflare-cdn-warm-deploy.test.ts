@@ -543,7 +543,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         "wrangler",
         "out",
       ),
-    ).toBe("out/server/wrangler.json");
+    ).toBe(path.normalize("out/server/wrangler.json"));
     expect(
       fs.readFileSync(path.join(tmpDir, "out/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
@@ -559,7 +559,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         { buildId: "build-a", routes: {}, version: 1 },
         "cf",
       ),
-    ).toBe(".cloudflare/output/v0/workers/default/worker.config.json");
+    ).toBe(path.normalize(".cloudflare/output/v0/workers/default/worker.config.json"));
     expect(
       fs.readFileSync(
         path.join(
@@ -582,7 +582,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         { buildId: "build-a", routes: {}, version: 1 },
         "cf",
       ),
-    ).toBe(".cloudflare/output/v1/workers/default/worker.config.json");
+    ).toBe(path.normalize(".cloudflare/output/v1/workers/default/worker.config.json"));
   });
 
   it("rejects cacheability output when Build Output has more than one version", () => {
@@ -718,7 +718,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         routes: {},
         version: 1,
       }),
-    ).toBe("dist/server/wrangler.json");
+    ).toBe(path.normalize("dist/server/wrangler.json"));
     expect(
       fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
