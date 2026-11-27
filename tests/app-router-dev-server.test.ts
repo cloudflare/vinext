@@ -1888,13 +1888,16 @@ describe("App Router integration", () => {
     const res = await fetch(`${baseUrl}/metadata-extra-fields/parent`);
     expect(res.status).toBe(200);
 
+    // generateMetadata's tags may stream into the body as plain HTML
+    // (`<meta …>`) rather than render in the head (`<meta …/>`), so match
+    // the tags without their closing characters.
     const html = await res.text();
     expect(html).toContain(
-      '<meta name="parent-assets" content="https://example.com/layout-assets"/>',
+      '<meta name="parent-assets" content="https://example.com/layout-assets"',
     );
-    expect(html).toContain('<meta name="parent-facebook-admins" content="100"/>');
-    expect(html).toContain('<link rel="assets" href="https://example.com/layout-assets"/>');
-    expect(html).toContain('<meta property="fb:admins" content="100"/>');
+    expect(html).toContain('<meta name="parent-facebook-admins" content="100"');
+    expect(html).toContain('<link rel="assets" href="https://example.com/layout-assets"');
+    expect(html).toContain('<meta property="fb:admins" content="100"');
   });
 
   it("renders viewport metadata (export const viewport) as head elements", async () => {
