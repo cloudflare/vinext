@@ -632,6 +632,48 @@ describe("matchRedirect destinations agree with Next.js", () => {
     }
   });
 
+  it("drops the prefix of a repeat param that matched nothing", () => {
+    // path-to-regexp compiles `/:path*` as one token with its `/` prefix, so
+    // an unmatched param leaves neither behind: `/old` goes to `/new`.
+    const { normalizeRepeatedSlashes } = require("next/dist/shared/lib/utils") as {
+      normalizeRepeatedSlashes: (url: string) => string;
+    };
+    for (const [destination, pathname, params] of [
+      ["/new/:path*", "/old", {}],
+      ["/new/:path*", "/old/a/b", { path: ["a", "b"] }],
+      ["/new/:path*/end", "/old", {}],
+      ["/new/:path*?x=1", "/old", {}],
+      ["/new/:path*#h", "/old", {}],
+      ["/x/:path*/y/:path*", "/old", {}],
+      ["/file.:path*", "/old", {}],
+      ["/file.:path*", "/old/txt", { path: ["txt"] }],
+      ["https://example.com/new/:path*", "/old", {}],
+    ] as const) {
+      const { parsedDestination } = prepareDestination({
+        appendParamsToQuery: false,
+        destination,
+        params,
+        query: {},
+      });
+      parsedDestination.pathname = normalizeRepeatedSlashes(parsedDestination.pathname as string);
+      const expected = formatUrl(parsedDestination);
+      expect(
+        matchRedirect(pathname, [{ source: "/old/:path*", destination, permanent: false }], ctx)
+          ?.destination,
+        `${destination} for ${pathname}`,
+      ).toBe(expected);
+    }
+    // Next.js sends an empty Location for a destination that is only the
+    // param; vinext keeps the root.
+    expect(
+      matchRedirect(
+        "/old",
+        [{ source: "/old/:path*", destination: "/:path*", permanent: false }],
+        ctx,
+      )?.destination,
+    ).toBe("/");
+  });
+
   it("substitutes destinations Next.js throws on instead of failing the request", () => {
     // Next.js 16.2.7 throws on each of these; vinext substitutes the params.
     for (const [destination, pathname, expected] of [
