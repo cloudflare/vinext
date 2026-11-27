@@ -349,6 +349,72 @@ function directRequestForcesDynamic(route: AppRoute, forcesDynamic: ForcesDynami
     : appPageSegmentConfigPaths(route).some(forcesDynamic);
 }
 
+type AppRouteSlot = AppRoute["parallelSlots"][number];
+type AppRouteIntercept = AppRoute["siblingIntercepts"][number];
+
+/**
+ * Whether the render of an intercept takes a `dynamic = "force-dynamic"` file.
+ * Next.js renders it as the intercepting route's own app path, so these are
+ * the files `resolveAppPageInterceptSegmentConfig` reads for it: the owner's
+ * layouts, the intercepted slot's layout, the intercept's layouts and page,
+ * and the other slots of the owner's layouts. The source route's page is not
+ * among them. The owner's `default` and the other slots' defaults only take
+ * part when the request renders the intercepting route whole; they are read
+ * either way.
+ */
+function interceptForcesDynamic(
+  route: AppRoute,
+  intercept: AppRouteIntercept,
+  slot: AppRouteSlot | null,
+  forcesDynamic: ForcesDynamic,
+): boolean {
+  const ownerPosition = slot
+    ? (slot.ownerTreePosition ??
+      route.layoutTreePositions[slot.layoutIndex] ??
+      route.routeSegments.length)
+    : intercept.sourcePageSegments
+      ? intercept.sourcePageSegments.length - (intercept.branchSegments ?? []).length
+      : route.routeSegments.length;
+  const ownerLayouts = route.layouts.filter(
+    (_, index) => (route.layoutTreePositions[index] ?? 0) <= ownerPosition,
+  );
+  const otherSlots = route.parallelSlots.filter(
+    (other) =>
+      other !== slot &&
+      (other.ownerTreePosition ?? route.layoutTreePositions[other.layoutIndex] ?? 0) <=
+        ownerPosition,
+  );
+  return [
+    ...ownerLayouts,
+    slot?.layoutPath,
+    ...intercept.layoutPaths,
+    intercept.pagePath,
+    ...(slot ? [intercept.ownerDefaultPath] : []),
+    ...otherSlots.flatMap((other) => [
+      ...(other.pagePath
+        ? [other.layoutPath, ...(other.configLayoutPaths ?? []), other.pagePath]
+        : []),
+      other.defaultPath,
+    ]),
+  ].some(forcesDynamic);
+}
+
+/**
+ * Whether the route's layouts, or its parallel slots, take a
+ * `dynamic = "force-dynamic"` file. A sibling intercept whose owner only
+ * stands in for its marker directory renders in this route's place, with all
+ * of them around it.
+ */
+function layoutTreeForcesDynamic(route: AppRoute, forcesDynamic: ForcesDynamic): boolean {
+  return [
+    ...route.layouts,
+    ...route.parallelSlots.flatMap((slot) => [
+      ...(slot.pagePath ? [slot.layoutPath, ...(slot.configLayoutPaths ?? []), slot.pagePath] : []),
+      slot.defaultPath,
+    ]),
+  ].some(forcesDynamic);
+}
+
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   const readSource = createSegmentSourceReader();
   const forcesDynamic = createForcesDynamicReader(readSource);
@@ -363,21 +429,15 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
 
   return routes.map((route) => ({
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
-    forceDynamic:
-      directRequestForcesDynamic(route, forcesDynamic) ||
-      [
-        ...route.parallelSlots.flatMap((slot) =>
-          slot.interceptingRoutes.flatMap((intercept) => [
-            ...intercept.layoutPaths,
-            intercept.pagePath,
-            intercept.ownerDefaultPath,
-          ]),
-        ),
-        ...route.siblingIntercepts.flatMap((intercept) => [
-          ...intercept.layoutPaths,
-          intercept.pagePath,
-        ]),
-      ].some(forcesDynamic),
+    // Next.js rewrites an intercepted request to the intercepting route's own
+    // app path, which collects segment config from its own tree. So an
+    // interceptor's config applies only to the render it intercepts (its
+    // `forceDynamic` below), never to a direct request to this route.
+    forceDynamic: directRequestForcesDynamic(route, forcesDynamic),
+    // A sibling intercept whose owner only stands in for its marker directory
+    // renders from the concrete source route, under that route's layouts and
+    // slots.
+    layoutTreeForceDynamic: layoutTreeForcesDynamic(route, forcesDynamic),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,
@@ -403,6 +463,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
           slotPatternParts: slot.slotPatternParts ?? null,
           slotParamNames: slot.slotParamNames ?? null,
           intercepts: slot.interceptingRoutes.map((intercept) => ({
+            forceDynamic: interceptForcesDynamic(route, intercept, slot, forcesDynamic),
             id: intercept.id ?? null,
             targetPattern: intercept.targetPattern,
             sourceMatchPattern: intercept.sourceMatchPattern,
@@ -431,6 +492,8 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       ]),
     ),
     siblingIntercepts: route.siblingIntercepts.map((intercept) => ({
+      forceDynamic: interceptForcesDynamic(route, intercept, null, forcesDynamic),
+      branchForceDynamic: [...intercept.layoutPaths, intercept.pagePath].some(forcesDynamic),
       id: intercept.id ?? null,
       targetPattern: intercept.targetPattern,
       sourceMatchPattern: intercept.sourceMatchPattern,
@@ -676,6 +739,7 @@ const __requestHandler = createAppRscRequestHandler({
       interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
       interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
       interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
+      interceptionForceDynamic: intercept.forceDynamic === true,
       route,
       params: pickParams(route, intercept.sourceMatchedParams),
     };

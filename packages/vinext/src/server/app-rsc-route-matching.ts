@@ -26,6 +26,11 @@ export const SIBLING_PAGE_INTERCEPT_SLOT_KEY = "__vinext_page_intercept";
 type AppRscRouteParams = RoutePatternParams;
 
 type AppRscInterceptForMatching = {
+  /**
+   * Whether the intercepted render takes a `dynamic = "force-dynamic"` file
+   * of the intercept's own (request-stage metadata only).
+   */
+  forceDynamic?: boolean;
   targetPattern: string;
   /**
    * URL pattern of the *intercepting route* (the path that owns the slot,
@@ -85,6 +90,13 @@ type AppRscSlotForMatching = {
 
 type AppRscSiblingInterceptForMatching = {
   id?: string | null;
+  /**
+   * Whether the intercepted render takes a `dynamic = "force-dynamic"` file
+   * of the intercept's own (request-stage metadata only).
+   */
+  forceDynamic?: boolean;
+  /** The same for the intercept's own layouts and page alone. */
+  branchForceDynamic?: boolean;
   targetPattern: string;
   sourceMatchPattern: string | null;
   sourcePageSegments?: readonly string[];
@@ -126,6 +138,11 @@ type AppRscRouteForMatching = {
   ids?: {
     route?: string | null;
   } | null;
+  /**
+   * Whether the route's layouts or its slots force dynamic (request-stage
+   * metadata only).
+   */
+  layoutTreeForceDynamic?: boolean;
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
@@ -201,6 +218,9 @@ type AppRscInterceptLookupEntry = {
    * interception marker, so the owner is the intercepting route itself.
    */
   ownerIsInterceptingRoute: boolean;
+  forceDynamic: boolean;
+  /** A sibling intercept's flag for its own layouts and page alone. */
+  branchForceDynamic?: boolean;
   slotKey: string;
   targetPattern: string;
   targetPatternParts: string[];
@@ -560,9 +580,37 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           renderedSourceParams && entry.sourceMatchPatternParts !== null
             ? pickPatternParams(renderedSourceParams, entry.sourceMatchPatternParts)
             : (renderedSourceParams ?? createRouteParams());
-        const renderedSourceSegments =
-          routes[rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex]
-            ?.routeSegments;
+        const renderedSourceRouteIndex = rendersOwnerRoute
+          ? entry.sourceRouteIndex
+          : concreteSourceRouteIndex;
+        const renderedSourceRoute = routes[renderedSourceRouteIndex];
+        const renderedSourceSegments = renderedSourceRoute?.routeSegments;
+        // A descendant that inherits the slot renders its own pages in the
+        // owner's other slots, so its copy of the intercept holds the config
+        // of that render.
+        const renderedInterceptCopy =
+          entry.slotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY
+            ? undefined
+            : renderedSourceRoute?.slots?.[entry.slotKey]?.intercepts?.find(
+                (intercept) =>
+                  intercept.targetPattern === entry.targetPattern &&
+                  (intercept.sourceMatchPattern ?? null) === entry.sourceMatchPattern &&
+                  (intercept.sourcePageSegments ?? []).join("/") ===
+                    (entry.sourcePageSegments ?? []).join("/"),
+              );
+        // A sibling intercept whose owner only stands in for the marker
+        // directory renders in the source route's place, under all of its
+        // layouts and slots, including those below the owner folder.
+        const renderedLayoutTreeForceDynamic =
+          entry.slotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY && !entry.ownerIsInterceptingRoute
+            ? renderedSourceRoute?.layoutTreeForceDynamic
+            : undefined;
+        const forceDynamic =
+          typeof renderedLayoutTreeForceDynamic === "boolean"
+            ? entry.branchForceDynamic === true || renderedLayoutTreeForceDynamic
+            : typeof renderedInterceptCopy?.forceDynamic === "boolean"
+              ? renderedInterceptCopy.forceDynamic
+              : entry.forceDynamic;
         const match = {
           ...entry,
           page: entry.__loadState.page,
@@ -600,7 +648,8 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
             entry.sourceMatchPatternParts?.length === 0,
           sourceRouteLacksSlot,
           rendersWholeInterceptingRoute,
-          sourceRouteIndex: rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex,
+          forceDynamic,
+          sourceRouteIndex: renderedSourceRouteIndex,
           // The params above the interception marker, the owner's and those of
           // the slot's folders, take the values the interception rewrite
           // captures from the source pathname, as the root params do. Where
@@ -893,6 +942,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             interceptionGraphId: null,
             sourceRouteIndex: ownerRouteIndex,
             ownerIsInterceptingRoute: false,
+            forceDynamic: intercept.forceDynamic === true,
             slotKey,
             slotId: typeof slotModule.id === "string" ? slotModule.id : null,
             targetRouteGraphId: resolveTargetRouteGraphId(intercept.targetPattern),
@@ -956,6 +1006,8 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           ownerIsInterceptingRoute:
             !isAppRouteHandlerRoute(route) &&
             isInterceptingRoute(route.routeSegments, intercept.sourcePageSegments),
+          forceDynamic: intercept.forceDynamic === true,
+          branchForceDynamic: intercept.branchForceDynamic === true,
           slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
           slotId: typeof intercept.slotId === "string" ? intercept.slotId : null,
           targetRouteGraphId: resolveTargetRouteGraphId(intercept.targetPattern),

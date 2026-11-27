@@ -442,6 +442,12 @@ type AppRscRouteMatch<TRoute> = {
   interceptionRawRendersTargetLayouts?: boolean;
   interceptionSourceIsConcrete?: boolean;
   /**
+   * The intercept's own files force a dynamic render. Next.js renders an
+   * intercepted request from the intercepting route's app path, so this
+   * applies to the intercepted render alone, never to `route`'s direct loads.
+   */
+  interceptionForceDynamic?: boolean;
+  /**
    * /_not-found names no route, so a root-level intercept's own owner stands
    * in for it, for that context alone.
    */
@@ -3087,6 +3093,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         // in beforeFiles, so a target reached only after them is not
         // intercepted; render it as a direct request instead.
         interceptionSourceContext = null;
+      } else {
+        // The same source can own another intercept, with its own segment
+        // config, for the target the rewrite reached.
+        interceptionSourceMatch = finalInterceptionSourceMatch;
       }
       bypassInterceptionContextCache = !hasVerifiedFinalInterceptionSource;
       setInterceptionResponseUncacheable(bypassInterceptionContextCache);
@@ -3223,6 +3233,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     interceptionResponseUncacheableBeforeMatch = interceptionResponseUncacheable;
     match = renderedRouteMatch(match);
     const { route, params } = match;
+    // A target with a route of its own matches directly, but still renders the
+    // intercept its verified source context selects. Next.js renders that as
+    // the intercepting route's own app path, so only the intercept's config
+    // tree applies, not the target's or the source page's.
+    // A Route Handler never renders an intercept, so it keeps its own config.
+    const activeInterception =
+      interceptionSourceContext !== null && !isAppRouteHandlerRoute(route)
+        ? interceptionSourceMatch
+        : null;
+    const forceDynamic = activeInterception
+      ? activeInterception.interceptionForceDynamic === true
+      : route.forceDynamic === true || match.interceptionForceDynamic === true;
     const requestPathnameDiffersFromCachePath = requestPathname !== cleanPathname;
     const rawRequestPathnameIsObservable =
       isInterceptionMatch ||
@@ -3371,7 +3393,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           canonicalPathname,
           cleanPathname,
           draftModeCookie,
-          forceDynamic: route.forceDynamic === true,
+          forceDynamic,
           interceptionContext: interceptionContextHeader,
           interceptionId: interceptionIdHeader,
           isRscRequest,
@@ -3454,7 +3476,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           canonicalPathname,
           cleanPathname,
           draftModeCookie,
-          forceDynamic: route.forceDynamic === true,
+          forceDynamic,
           interceptionContext: interceptionSourceContext,
           interceptionId: interceptionIdHeader,
           isRscRequest,
