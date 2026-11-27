@@ -756,9 +756,43 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
     }
     // If both are static or both dynamic, keep the first one found
   }
-  cachedMetadataRoutes = Array.from(byUrl.values());
+  // Request matching takes the first route that matches, so order routes the
+  // way Next.js matches them rather than in directory-scan order (where "["
+  // sorts before letters and a [slug] sibling would shadow a static segment).
+  cachedMetadataRoutes = Array.from(byUrl.values()).sort((a, b) =>
+    compareMetadataRouteUrls(a.servedUrl, b.servedUrl),
+  );
   cachedMetadataAppDir = appDir;
   return cachedMetadataRoutes;
+}
+
+function metadataSegmentRank(segment: string): number {
+  if (!segment.startsWith("[") || !segment.endsWith("]")) return 0;
+  if (segment.startsWith("[[...")) return 3;
+  if (segment.startsWith("[...")) return 2;
+  return 1;
+}
+
+/**
+ * Order served URLs the way Next.js' `getSortedRoutes` flattens its route
+ * tree (`UrlNode.smoosh` in shared/lib/router/utils/sorted-routes.ts): at the
+ * first differing segment, static segments (alphabetically) come before
+ * `[param]`, then `[...param]`, then `[[...param]]`; a route comes before the
+ * routes nested under it.
+ */
+function compareMetadataRouteUrls(a: string, b: string): number {
+  const aParts = a.split("/").filter(Boolean);
+  const bParts = b.split("/").filter(Boolean);
+  const length = Math.min(aParts.length, bParts.length);
+  for (let i = 0; i < length; i++) {
+    const aPart = aParts[i];
+    const bPart = bParts[i];
+    if (aPart === bPart) continue;
+    const rankDiff = metadataSegmentRank(aPart) - metadataSegmentRank(bPart);
+    if (rankDiff !== 0) return rankDiff;
+    return aPart < bPart ? -1 : 1;
+  }
+  return aParts.length - bParts.length;
 }
 
 function resolveStaticMetadataAltFilePath(dir: string, baseName: string): string | undefined {

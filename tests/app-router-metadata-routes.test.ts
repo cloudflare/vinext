@@ -479,6 +479,30 @@ describe("metadata routes integration (App Router)", () => {
     expect(text).toBe("og:my-post");
   });
 
+  // Next.js matches static segments before [param] (getSortedRoutes), so a
+  // static metadata route is not shadowed by a [slug] sibling.
+  it("serves a static-segment metadata route before its [slug] sibling", async () => {
+    const res = await fetch(`${baseUrl}/metadata-static-sibling/custom-font/opengraph-image`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("static custom-font");
+  });
+
+  it("still serves other params from the [slug] sibling metadata route", async () => {
+    const res = await fetch(`${baseUrl}/metadata-static-sibling/other/opengraph-image`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("dynamic other");
+  });
+
+  it("scanMetadataFiles orders a static-segment metadata route before its [slug] sibling", async () => {
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+    const servedUrls = scanMetadataFiles(appDir).map((r: { servedUrl: string }) => r.servedUrl);
+    const staticIndex = servedUrls.indexOf("/metadata-static-sibling/custom-font/opengraph-image");
+    const dynamicIndex = servedUrls.indexOf("/metadata-static-sibling/[slug]/opengraph-image");
+    expect(staticIndex).toBeGreaterThanOrEqual(0);
+    expect(dynamicIndex).toBeGreaterThan(staticIndex);
+  });
+
   it("honors dynamicParams = false for dynamic metadata images", async () => {
     const publicImage = await fetch(
       `${baseUrl}/metadata-static-params/public-post/opengraph-image`,
