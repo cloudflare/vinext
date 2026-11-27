@@ -61,8 +61,14 @@ const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setC
 const { consumeDynamicUsage, setHeadersContext } =
   await import("../packages/vinext/src/shims/headers.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
-const { closeAfterResponse, createRequestContext, getRequestContext, runWithRequestContext } =
-  await import("../packages/vinext/src/shims/unified-request-context.js");
+const {
+  closeAfterResponse,
+  closeAfterResponseWithBody,
+  createRequestContext,
+  getRequestContext,
+  markFullyBufferedBody,
+  runWithRequestContext,
+} = await import("../packages/vinext/src/shims/unified-request-context.js");
 const { registerFrameworkTracingIntegration } =
   await import("../packages/vinext/src/server/tracer.js");
 const { _peekRequestScopedCacheLife } =
@@ -854,6 +860,32 @@ describe("fetch cache shim", () => {
         const afterClose = await fetch("https://api.example.com/release-on-close");
         expect((await afterClose.json()).count).toBe(2);
         expect(entries.size).toBe(0);
+      }),
+    );
+  });
+
+  it("keeps no dedupe entries after a fully buffered response is returned", async () => {
+    const ctx = createRequestContext();
+    await runWithRequestContext(ctx, () =>
+      runWithFetchDedupe(async () => {
+        const first = await fetch("https://api.example.com/release-buffered");
+        expect((await first.json()).count).toBe(1);
+        const entries = getRequestContext().currentFetchDedupeEntries;
+
+        // A fully buffered body with no after() work skips close tracking, so
+        // the response never reports closing.
+        const response = markFullyBufferedBody(new Response("done"));
+        expect(closeAfterResponseWithBody(response, ctx)).toBe(response);
+        expect(ctx.afterContext.responseClosed).toBe(false);
+        expect(entries.size).toBe(0);
+
+        // A continuation still in the request's context keeps nothing either.
+        const later = await fetch("https://api.example.com/release-buffered");
+        expect((await later.json()).count).toBe(2);
+        const again = await fetch("https://api.example.com/release-buffered");
+        expect((await again.json()).count).toBe(3);
+        expect(entries.size).toBe(0);
+        expect(ctx.afterContext.fetchDedupeMaps).toBeNull();
       }),
     );
   });

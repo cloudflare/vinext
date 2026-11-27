@@ -101,7 +101,8 @@ export type AfterRequestContext = {
   cancelled?: boolean;
   /**
    * The fetch dedupe maps this request's renders used, including those of
-   * nested scopes, released once the response closes.
+   * nested scopes, released once the response closes. `null` once released:
+   * fetches from then on are not memoized.
    */
   fetchDedupeMaps?: Set<Map<string, FetchDedupeEntry[]>> | null;
 };
@@ -279,8 +280,8 @@ export function bindRequestContextSnapshot<T>(
  */
 function releaseFetchDedupeEntries(ctx: UnifiedRequestContext): void {
   const maps = ctx.afterContext.fetchDedupeMaps;
-  if (!maps) return;
   ctx.afterContext.fetchDedupeMaps = null;
+  if (!maps) return;
   for (const entriesByUrl of maps) {
     for (const entries of entriesByUrl.values()) {
       for (const entry of entries) {

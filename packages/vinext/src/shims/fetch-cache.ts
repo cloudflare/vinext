@@ -1175,10 +1175,11 @@ function dedupeFetch(
 ): Promise<Response> {
   const state = _getState();
   const afterContext = isInsideUnifiedScope() ? getRequestContext().afterContext : null;
-  // Once the response has closed, the dedupe maps have been released (see
-  // releaseFetchDedupeEntries); work that outlives the response, like after()
-  // callbacks, fetches without memoization.
-  if (!state.isFetchDedupeActive || afterContext?.responseClosed) {
+  // Once the request's dedupe entries have been released, at response close or
+  // when a fully buffered response is returned (see releaseFetchDedupeEntries),
+  // work that outlives the response, like after() callbacks, fetches without
+  // memoization: an entry kept now would have nothing left to release it.
+  if (!state.isFetchDedupeActive || afterContext?.fetchDedupeMaps === null) {
     return originalFetch(input, init);
   }
 
@@ -1227,7 +1228,7 @@ function dedupeFetch(
     (response) => {
       // The response closed before this fetch settled: its entries are already
       // released, so keep no branch for future callers.
-      if (afterContext?.responseClosed) return response;
+      if (afterContext?.fetchDedupeMaps === null) return response;
       // entry.response holds an unconsumed tee'd branch until the request's
       // response closes, when releaseFetchDedupeEntries cancels and drops it.
       // Waiting for the GC is not enough: on workerd the branch's stream keeps
