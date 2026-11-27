@@ -3078,7 +3078,8 @@ describe("createAppRscHandler", () => {
           if (pathname.startsWith("/photos/")) {
             return { params: { id: pathname.slice(8) }, route: targetRoute };
           }
-          if (pathname === "/feed") return { params: {}, route: sourceRoute };
+          if (pathname === "/feed")
+            return { params: {} as Record<string, string>, route: sourceRoute };
           return null;
         },
       });
