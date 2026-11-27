@@ -20,6 +20,7 @@ import {
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
 import { withBasePath } from "vinext/shims/url-utils";
+import { addNavigationTransitionTypes } from "vinext/shims/internal/navigation-transition-types";
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import { stripBasePath } from "../utils/base-path.js";
 import {
@@ -147,6 +148,12 @@ type BrowserNavigationPayloadOptions = {
   suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHistoryIndex?: number | null;
   targetHref: string;
+  /**
+   * View transition types of the navigation (`<Link transitionTypes>`,
+   * `router.push(href, { transitionTypes })`). Its visible commit runs in a
+   * later Transition than the one that started it, so it is tagged again.
+   */
+  transitionTypes?: readonly string[];
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
 };
 
@@ -815,6 +822,7 @@ export function createAppBrowserNavigationController(
     pendingRouterState: PendingBrowserRouterState | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode,
     republishPendingRouterState: boolean,
+    transitionTypes: readonly string[] | undefined,
   ): void {
     const setter = getBrowserRouterStateSetter();
     const pendingCommit = pendingNavigationCommits.get(renderId);
@@ -849,6 +857,7 @@ export function createAppBrowserNavigationController(
       }
       if (republishPendingRouterState) {
         startTransition(() => {
+          addNavigationTransitionTypes(transitionTypes);
           setter(committedState);
         });
       }
@@ -872,6 +881,7 @@ export function createAppBrowserNavigationController(
     }
 
     startTransition(() => {
+      addNavigationTransitionTypes(transitionTypes);
       const committedState = captureCandidateState(
         applyApprovedVisibleCommit(getBrowserRouterState(), commit),
       );
@@ -1164,6 +1174,7 @@ export function createAppBrowserNavigationController(
         options.pendingRouterState,
         options.visibleCommitMode ?? "transition",
         shouldRepublishPendingRouterState(options),
+        options.transitionTypes,
       );
       if (options.navigationResponseCompletion) {
         // Keep the live Flight branch streaming. If React commits it normally,
@@ -1182,6 +1193,7 @@ export function createAppBrowserNavigationController(
             const committedState = pendingCommit?.committedState;
             if (!committedState) return;
             startTransition(() => {
+              addNavigationTransitionTypes(options.transitionTypes);
               getBrowserRouterStateSetter()(committedState);
             });
           },

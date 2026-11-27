@@ -936,6 +936,7 @@ type RenderNavigationPayloadOptions = {
   scrollIntent?: AppRouterScrollIntent | null;
   suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHref: string;
+  transitionTypes?: readonly string[];
   traversalIntent?: HistoryTraversalIntent | null;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
 };
@@ -966,6 +967,7 @@ async function renderNavigationPayload(
     suppliedInterceptionSource: options.suppliedInterceptionSource ?? null,
     targetHistoryIndex: options.traversalIntent?.targetHistoryIndex,
     targetHref: options.targetHref,
+    transitionTypes: options.transitionTypes,
     visibleCommitMode: options.visibleCommitMode ?? "transition",
   });
 }
@@ -2328,6 +2330,7 @@ function bootstrapHydration(
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
     initialBypassNavigationCache?: boolean,
+    transitionTypes?: readonly string[],
   ): Promise<void> {
     serverActionSupplementalRefreshCoordinator.abortAll();
     const navigationAbortHandle = navigationAbortCoordinator.begin();
@@ -2730,6 +2733,7 @@ function bootstrapHydration(
                 ? resolveCommittedInterceptionSource(cachedRoute.elements)
                 : null,
             targetHref: currentHref,
+            transitionTypes,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
           });
@@ -2866,6 +2870,7 @@ function bootstrapHydration(
                 reuseCurrentBfcacheIds,
                 scrollIntent,
                 targetHref: currentHref,
+                transitionTypes,
                 traversalIntent: activeTraversalIntent,
                 visibleCommitMode,
               }).catch((error) => {
@@ -3189,6 +3194,7 @@ function bootstrapHydration(
           reuseCurrentBfcacheIds,
           scrollIntent,
           targetHref: currentHref,
+          transitionTypes,
           traversalIntent: activeTraversalIntent,
           // A settled prefetch still commits as a transition, as in Next.js:
           // its decoded elements can reference client modules that are still

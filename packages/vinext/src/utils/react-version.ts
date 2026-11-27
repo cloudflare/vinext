@@ -122,3 +122,20 @@ export function findPackageVersion(resolvedEntry: string, packageName: string): 
   }
   return null;
 }
+
+/**
+ * Whether the project's React exports `ViewTransition` and `addTransitionType`
+ * itself (React 19.2 and later), so the `vinext:react-canary` shim must leave
+ * its imports alone.
+ */
+export function reactExportsViewTransitionApis(root: string): boolean {
+  try {
+    const react = createRequire(path.join(root, "package.json"))("react") as Record<
+      string,
+      unknown
+    >;
+    return react.ViewTransition !== undefined && typeof react.addTransitionType === "function";
+  } catch {
+    return false;
+  }
+}

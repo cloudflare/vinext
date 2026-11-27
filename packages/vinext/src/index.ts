@@ -439,7 +439,11 @@ import {
 } from "./utils/vite-cli-invocation.js";
 import { resolvePluginReactPath } from "./utils/plugin-react-version.js";
 import { assertPluginRscVersion, needsAppReactServerDom } from "./utils/plugin-rsc-version.js";
-import { getReactUpgradeDeps, reactUpgradeRequiredMessage } from "./utils/react-version.js";
+import {
+  getReactUpgradeDeps,
+  reactExportsViewTransitionApis,
+  reactUpgradeRequiredMessage,
+} from "./utils/react-version.js";
 import {
   canonicalizeFilePath,
   isPathInside,
@@ -1997,6 +2001,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     (output) => output !== undefined,
   );
   let root: string;
+  let projectReactExportsViewTransitionApis: boolean | undefined;
   let pagesDir: string;
   let canonicalPagesDir: string;
   let appDir: string;
@@ -6458,7 +6463,8 @@ export const loadServerActionClient = ${
     mdxConfigProxyPlugin,
     createCssModuleImportCompatibilityPlugin({ compiledMdx: true }),
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
-    // that exist in Next.js's bundled React canary but not in stable React 19.
+    // that exist in Next.js's bundled React canary but not in a React that
+    // predates them (React 19.2 exports both).
     // Provides graceful no-op fallbacks so projects using these APIs degrade
     // instead of crashing with "does not provide an export named 'ViewTransition'".
     {
@@ -6497,6 +6503,12 @@ export const loadServerActionClient = ${
           code: /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/,
         },
         handler(code) {
+          // A React that exports both APIs needs no shim. The rewrite would only
+          // cost exports: in dev, Vite cannot interop the shim's
+          // `export * from "react"` against React's CommonJS build on the
+          // server, so `Suspense` imported beside `ViewTransition` was undefined.
+          projectReactExportsViewTransitionApis ??= reactExportsViewTransitionApis(root);
+          if (projectReactExportsViewTransitionApis) return null;
           // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
           // This is safe because the virtual module re-exports everything from
           // react, so non-canary imports continue to work.

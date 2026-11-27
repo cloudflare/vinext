@@ -687,6 +687,7 @@ describe("Link App Router navigation scheduling", () => {
       }),
       "transition",
       false,
+      undefined,
     );
     expect(transitionStates).toEqual([true]);
   });

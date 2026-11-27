@@ -45,8 +45,8 @@
  * `experimental.gestureTransition` is enabled, matching Next.js.
  */
 type AppRouterPublicInstance = {
-  push: (href: string, options?: { scroll?: boolean }) => void;
-  replace: (href: string, options?: { scroll?: boolean }) => void;
+  push: (href: string, options?: { scroll?: boolean; transitionTypes?: string[] }) => void;
+  replace: (href: string, options?: { scroll?: boolean; transitionTypes?: string[] }) => void;
   back: () => void;
   forward: () => void;
   refresh: () => void;
