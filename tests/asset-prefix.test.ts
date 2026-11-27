@@ -172,6 +172,29 @@ describe("renderVinextBuiltUrl", () => {
     expect(renderBuiltUrl("_next/static/chunk.js", {})).toBe("/_next/static/chunk.js?dpl=dpl_123");
   });
 
+  it.each([
+    { assetPrefix: "/cdn" },
+    { assetPrefix: "https://cdn.example.com", basePath: "/docs" },
+    { deploymentId: "dpl_123" },
+  ])("defers public/ files to Vite's base URL (%o)", async (nextConfig) => {
+    const plugins = vinext({ nextConfig: () => nextConfig }) as any[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    const config = await configPlugin.config(
+      { root: APP_FIXTURE_DIR, plugins: [] },
+      { command: "build", mode: "production" },
+    );
+    const renderBuiltUrl = config.experimental?.renderBuiltUrl;
+
+    expect(renderBuiltUrl).toBeTypeOf("function");
+    for (const hostType of ["css", "js", "html"] as const) {
+      // `undefined` makes Vite fall back to `base + url`, so public/ files
+      // stay under basePath with no assetPrefix, `_next/static` or `?dpl=`.
+      expect(
+        renderBuiltUrl("icon.svg", { type: "public", hostType, hostId: "x", ssr: false }),
+      ).toBeUndefined();
+    }
+  });
+
   it.each(["array", "factory"] as const)(
     "preserves %s worker plugins and output arrays without duplication",
     async (pluginShape) => {
@@ -522,6 +545,30 @@ function directoryContainsFileWithExtension(dir: string, extension: string): boo
   return false;
 }
 
+/**
+ * Return the `url(...)` emitted for `url(/heart-mask.svg)` in
+ * `app/asset-prefix-public-css/public-css.css`. The file lives in `public/`,
+ * so Next.js never applies `assetPrefix` (or `_next/static`, or `?dpl=`) to it.
+ */
+function findPublicCssMaskUrl(clientDir: string): string {
+  const cssFiles: string[] = [];
+  const collect = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) collect(entryPath);
+      else if (entry.isFile() && entry.name.endsWith(".css")) cssFiles.push(entryPath);
+    }
+  };
+  collect(clientDir);
+  for (const file of cssFiles) {
+    const css = fs.readFileSync(file, "utf8");
+    if (!css.includes(".public-css-mask")) continue;
+    const match = css.match(/url\(\s*["']?([^"')]*heart-mask\.svg[^"')]*)["']?\s*\)/);
+    if (match) return match[1];
+  }
+  throw new Error(`no built CSS under ${clientDir} references heart-mask.svg`);
+}
+
 // Pages Router build pipeline — server then client. Matches the pattern
 // in tests/pages-router.test.ts for the SSR-manifest basePath test.
 async function buildInlinePagesApp(root: string): Promise<string> {
@@ -581,6 +628,8 @@ describe("assetPrefix end-to-end build", () => {
     for (const file of builtFiles.filter((file) => /\.[cm]?js$/.test(file))) {
       expect(fs.readFileSync(file, "utf8"), file).not.toContain("?dpl=dpl_123");
     }
+    // public/ files are not versioned build assets.
+    expect(findPublicCssMaskUrl(clientDir)).toBe("/heart-mask.svg");
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
     const { server } = await startProdServer({
@@ -675,6 +724,13 @@ describe("assetPrefix end-to-end build", () => {
       const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);
       expect(bundleRes.status).toBe(200);
       expect(bundleRes.headers.get("content-type")).toContain("javascript");
+
+      // CSS references to public/ files keep their public URL, which the
+      // server actually serves, instead of a non-existent _next/static path.
+      const publicCssUrl = findPublicCssMaskUrl(path.join(built.outDir, "client"));
+      expect(publicCssUrl).toBe("/heart-mask.svg");
+      const publicRes = await fetch(`${baseUrl}${publicCssUrl}`);
+      expect(publicRes.status).toBe(200);
     } finally {
       server.close();
     }
@@ -709,6 +765,9 @@ describe("assetPrefix end-to-end build", () => {
 
       // No emitted asset URL should leak the historical /assets/ default.
       expect(html).not.toMatch(/<script[^>]+src="\/assets\//);
+
+      // public/ files are served by the deployment, not the CDN prefix.
+      expect(findPublicCssMaskUrl(path.join(built.outDir, "client"))).toBe("/heart-mask.svg");
     } finally {
       server.close();
     }
@@ -749,6 +808,12 @@ describe("assetPrefix end-to-end build", () => {
       // Fetching the asset URL succeeds (no basePath redirect).
       const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);
       expect(bundleRes.status).toBe(200);
+
+      // public/ files are served under basePath, never under assetPrefix.
+      const publicCssUrl = findPublicCssMaskUrl(path.join(built.outDir, "client"));
+      expect(publicCssUrl).toBe("/app/heart-mask.svg");
+      const publicRes = await fetch(`${baseUrl}${publicCssUrl}`);
+      expect(publicRes.status).toBe(200);
     } finally {
       server.close();
     }
@@ -800,6 +865,12 @@ describe("assetPrefix end-to-end build", () => {
       const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);
       expect(bundleRes.status).toBe(200);
       expect(bundleRes.headers.get("content-type")).toContain("javascript");
+
+      // The basePath fallback for assetPrefix must not move public/ files.
+      const publicCssUrl = findPublicCssMaskUrl(path.join(built.outDir, "client"));
+      expect(publicCssUrl).toBe("/app/heart-mask.svg");
+      const publicRes = await fetch(`${baseUrl}${publicCssUrl}`);
+      expect(publicRes.status).toBe(200);
     } finally {
       server.close();
     }
