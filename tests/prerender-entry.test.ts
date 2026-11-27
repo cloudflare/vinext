@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 const startProdServer = vi.hoisted(() =>
@@ -46,7 +47,7 @@ describe("App prerender entry", () => {
 
     expect(startProdServer).toHaveBeenCalledWith(
       expect.objectContaining({
-        outDir: path.join(root, "dist"),
+        outDir: toSlash(path.join(root, "dist")),
         rscEntryPath: rscBundlePath,
         serverDir,
       }),

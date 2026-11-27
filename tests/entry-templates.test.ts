@@ -8,6 +8,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import vm from "node:vm";
+import { toSlash } from "pathslash";
 import { parseAst } from "vite";
 import { describe, it, expect } from "vite-plus/test";
 import {
@@ -574,14 +575,15 @@ describe("App Router generated manifest construction", () => {
         layouts = [layoutPath],
       ): AppRoute => {
         const patternParts = pattern.split("/").filter(Boolean);
+        const routeSegments = patternParts.map((part) =>
+          part.startsWith(":") ? `[${part.slice(1)}]` : part,
+        );
         return {
           ...minimalAppRoutes[0],
           pattern,
           patternParts,
-          routeSegments: patternParts.map((part) =>
-            part.startsWith(":") ? `[${part.slice(1)}]` : part,
-          ),
-          pagePath: writeSource(`${patternParts.join("/")}/page.tsx`, pageSource),
+          routeSegments,
+          pagePath: writeSource(`${routeSegments.join("/")}/page.tsx`, pageSource),
           layouts,
           layoutTreePositions: layouts.map((_, index) => index),
           isDynamic,
@@ -3318,7 +3320,7 @@ describe("Pages Router entry template", () => {
       );
       const globalsImportIndex = code.indexOf("/server-globals.js");
       const firstUserImportIndex = code.indexOf(
-        `import * as page_0 from ${JSON.stringify(path.join(pagesDir, "index.tsx"))}`,
+        `import * as page_0 from ${JSON.stringify(toSlash(path.join(pagesDir, "index.tsx")))}`,
       );
 
       expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
@@ -3503,8 +3505,8 @@ describe("Pages Router entry template", () => {
         instrumentationPath,
       );
 
-      expect(code).toContain(JSON.stringify(pagePath));
-      expect(code).toContain(JSON.stringify(apiPath));
+      expect(code).toContain(JSON.stringify(toSlash(pagePath)));
+      expect(code).toContain(JSON.stringify(toSlash(apiPath)));
       expect(code).toContain("createPagesPageHandler");
       expect(code).toContain("handlePagesApiRoute");
       expect(code).toContain("return _reportRequestError(");
@@ -3548,7 +3550,9 @@ describe("Pages Router entry template", () => {
         '__registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs"',
       );
       const registrationIndex = code.indexOf("await __ensureInstrumentationRegistered(");
-      const userModuleIndex = code.indexOf(`page_0 = await import(${JSON.stringify(pagePath)})`);
+      const userModuleIndex = code.indexOf(
+        `page_0 = await import(${JSON.stringify(toSlash(pagePath))})`,
+      );
 
       expect(loaderIndex).toBeGreaterThanOrEqual(0);
       expect(registrationIndex).toBeGreaterThan(loaderIndex);
@@ -3557,7 +3561,9 @@ describe("Pages Router entry template", () => {
       expect(code).toContain(
         "return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx)",
       );
-      expect(code).not.toContain(`const page_0 = await import(${JSON.stringify(pagePath)})`);
+      expect(code).not.toContain(
+        `const page_0 = await import(${JSON.stringify(toSlash(pagePath))})`,
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -3638,7 +3644,9 @@ describe("Pages Router entry template", () => {
         createValidFileMatcher(nextConfig.pageExtensions),
       );
 
-      expect(clientCode).toContain(`"/_error": () => import(${JSON.stringify(errorFilePath)})`);
+      expect(clientCode).toContain(
+        `"/_error": () => import(${JSON.stringify(toSlash(errorFilePath))})`,
+      );
       expect(clientCode).not.toContain('"/_error": () => import("next/error")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -3680,7 +3688,9 @@ describe("Pages Router entry template", () => {
       // The user's `instrumentation-client.ts` must be imported as a
       // side-effect import (no `from`, no `as`) so its top-level statements
       // execute when the client entry module is evaluated.
-      const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const userImportIndex = code.indexOf(
+        `import ${JSON.stringify(toSlash(instrumentationClientPath))}`,
+      );
       const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
       const hydrateRootIndex = code.indexOf("hydrateRoot(");
 

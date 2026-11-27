@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import type { ViteBuilder } from "vite";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -11,7 +12,7 @@ import { resolveVinextPackageRoot } from "../packages/vinext/src/utils/vinext-ro
 describe("Vite build lifecycle cleanup", () => {
   it("checks the standalone prerequisite before dependency upgrades", () => {
     const onPrepare = vi.fn();
-    const vinextDist = path.join(resolveVinextPackageRoot(), "dist");
+    const vinextDist = toSlash(path.join(resolveVinextPackageRoot(), "dist"));
     const existsSync = fs.existsSync;
     const existsSpy = vi
       .spyOn(fs, "existsSync")
