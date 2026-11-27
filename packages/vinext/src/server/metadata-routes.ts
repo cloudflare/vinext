@@ -760,7 +760,7 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
   // way Next.js matches them rather than in directory-scan order (where "["
   // sorts before letters and a [slug] sibling would shadow a static segment).
   cachedMetadataRoutes = Array.from(byUrl.values()).sort((a, b) =>
-    compareMetadataRouteUrls(a.servedUrl, b.servedUrl),
+    compareMetadataRouteDirectories(a.servedUrl, b.servedUrl),
   );
   cachedMetadataAppDir = appDir;
   return cachedMetadataRoutes;
@@ -774,15 +774,17 @@ function metadataSegmentRank(segment: string): number {
 }
 
 /**
- * Order served URLs the way Next.js' `getSortedRoutes` flattens its route
- * tree (`UrlNode.smoosh` in shared/lib/router/utils/sorted-routes.ts): at the
- * first differing segment, static segments (alphabetically) come before
- * `[param]`, then `[...param]`, then `[[...param]]`; a route comes before the
- * routes nested under it.
+ * Order metadata routes by the URL directory they are served from, the way
+ * Next.js' `getSortedRoutes` flattens its route tree (`UrlNode.smoosh` in
+ * shared/lib/router/utils/sorted-routes.ts): at the first differing segment,
+ * static segments (alphabetically) come before `[param]`, then `[...param]`,
+ * then `[[...param]]`; a directory comes before the directories nested under
+ * it. Routes served from the same directory compare equal, so the stable sort
+ * keeps their discovery order, which is the order their head tags render in.
  */
-function compareMetadataRouteUrls(a: string, b: string): number {
-  const aParts = a.split("/").filter(Boolean);
-  const bParts = b.split("/").filter(Boolean);
+function compareMetadataRouteDirectories(a: string, b: string): number {
+  const aParts = a.split("/").filter(Boolean).slice(0, -1);
+  const bParts = b.split("/").filter(Boolean).slice(0, -1);
   const length = Math.min(aParts.length, bParts.length);
   for (let i = 0; i < length; i++) {
     const aPart = aParts[i];
