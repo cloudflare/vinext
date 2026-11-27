@@ -1201,8 +1201,9 @@ function dedupeFetch(
     if (entry.key !== candidate.key) continue;
 
     // Snapshot the request now, as native fetch would: the caller may mutate a
-    // shared URL or Headers while this waits on the first fetch.
-    const request = candidate.request === input ? input.clone() : candidate.request;
+    // shared URL or Headers while this waits on the first fetch. Copy through
+    // the constructor, not the instance's own (overridable) clone().
+    const request = candidate.request === input ? new Request(input) : candidate.request;
     return entry.promise.then(() => {
       // Released when the response closed while this caller waited.
       if (!entry.response) {

@@ -881,6 +881,18 @@ describe("fetch cache shim", () => {
     );
   });
 
+  it("dedupes a Request input without calling its own clone()", async () => {
+    const request = new Request("https://api.example.com/request-clone-override");
+    request.clone = () => {
+      throw new Error("clone() called");
+    };
+    const [res1, res2] = await Promise.all([fetch(request), fetch(request)]);
+
+    expect((await res1.json()).count).toBe(1);
+    expect((await res2.json()).count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("refetches a released deduped caller with the URL and headers it was called with", async () => {
     let resolveFirst!: (response: Response) => void;
     fetchMock.mockImplementationOnce(
