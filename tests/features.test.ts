@@ -2926,6 +2926,22 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain("email=no");
   });
 
+  it("renders format-detection date and url keys in Next.js order", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: { formatDetection: { url: false, email: false, date: false } },
+      }),
+    );
+    expect(html).toContain('<meta name="format-detection" content="date=no, email=no, url=no"/>');
+  });
+
+  it("renders format-detection when only date is false", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, { metadata: { formatDetection: { date: false } } }),
+    );
+    expect(html).toContain('<meta name="format-detection" content="date=no"/>');
+  });
+
   it("renders googlebot meta tag separately from robots", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {

@@ -180,8 +180,9 @@ describe("Next.js compat: metadata", () => {
 
   it("should render format-detection meta tag", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
-    expect(html).toMatch(/meta\s+name="format-detection"/);
-    expect(html).toMatch(/telephone=no/);
+    expect(html).toContain(
+      '<meta name="format-detection" content="telephone=no, date=no, address=no, email=no, url=no"/>',
+    );
   });
 
   // ── OpenGraph ────────────────────────────────────────────────
