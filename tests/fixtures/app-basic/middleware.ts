@@ -423,6 +423,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       status: 404,
     });
   }
+  if (pathname === "/middleware-rewrite-status-gssp-redirect") {
+    return NextResponse.rewrite(new URL("/middleware-status-gssp-redirect", request.url), {
+      status: 404,
+    });
+  }
   if (pathname === "/middleware-status-permanent-redirect") {
     return NextResponse.next({ status: 404 });
   }
@@ -746,6 +751,7 @@ export const config = {
     "/middleware-rewrite-status-redirect",
     "/middleware-status-permanent-redirect",
     "/middleware-rewrite-status-redirect-route",
+    "/middleware-rewrite-status-gssp-redirect",
     "/middleware-rewrite-unprefixed/:path*",
     "/middleware-rewrite-prefetch-target",
     "/middleware-blocked",

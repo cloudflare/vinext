@@ -8823,6 +8823,12 @@ describe("Production server middleware (Pages Router)", () => {
     }
   });
 
+  it("keeps a getServerSideProps redirect's 307 over middleware's status in production", async () => {
+    const res = await fetch(`${prodUrl}/middleware-status-gssp-redirect`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/gssp-redirect-target");
+  });
+
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
   it("preserves upstream status for external middleware rewrites in production", async () => {

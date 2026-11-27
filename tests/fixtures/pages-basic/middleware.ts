@@ -277,6 +277,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite("https://api.example.com/from-middleware?ok=1");
   }
 
+  // Middleware sets a status, then getServerSideProps returns a redirect.
+  // The redirect's own 307 wins, as in Next.js.
+  if (url.pathname === "/middleware-status-gssp-redirect") {
+    return NextResponse.rewrite(new URL("/gssp-redirect", request.url), { status: 404 });
+  }
+
   if (url.pathname === "/external-middleware-rewrite-status") {
     const target =
       request.headers.get("x-middleware-test-rewrite-target") ??
@@ -446,6 +452,7 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
+    "/middleware-status-gssp-redirect",
     "/api/edge-search-params",
     "/api/edge-request-signal",
     "/api/append-header",
