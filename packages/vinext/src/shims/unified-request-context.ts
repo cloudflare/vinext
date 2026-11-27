@@ -285,6 +285,9 @@ function releaseFetchDedupeEntries(ctx: UnifiedRequestContext): void {
   for (const entriesByUrl of maps) {
     for (const entries of entriesByUrl.values()) {
       for (const entry of entries) {
+        // Callers that joined before the release still share the response;
+        // the last of them takes the kept branch (see dedupeFetch).
+        if (entry.waiters > 0) continue;
         const body = entry.response?.body;
         if (body && !body.locked) body.cancel().catch(() => {});
         entry.response = null;

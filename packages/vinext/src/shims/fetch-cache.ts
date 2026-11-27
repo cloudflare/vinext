@@ -1077,7 +1077,7 @@ function buildFetchDedupeKey(request: Request, resolveOverride: unknown): string
 function createFetchDedupeCandidate(
   input: string | URL | Request,
   init: RequestInit | undefined,
-): { url: string; key: string; request: Request } | null {
+): { url: string; key: string } | null {
   if (init?.signal) {
     return null;
   }
@@ -1103,7 +1103,6 @@ function createFetchDedupeCandidate(
   return {
     url: request.url,
     key: buildFetchDedupeKey(request, getResolveOverride(input, init)),
-    request,
   };
 }
 
@@ -1201,14 +1200,19 @@ function dedupeFetch(
   for (const entry of entries) {
     if (entry.key !== candidate.key) continue;
 
-    // Snapshot the request now, as native fetch would: the caller may mutate a
-    // shared URL or Headers while this waits on the first fetch. Copy through
-    // the constructor, not the instance's own (overridable) clone().
-    const request = candidate.request === input ? new Request(input) : candidate.request;
+    // Count this caller, so a release while it waits keeps the response for it.
+    entry.waiters += 1;
     return entry.promise.then(() => {
-      // Released when the response closed while this caller waited.
+      entry.waiters -= 1;
       if (!entry.response) {
-        return originalFetch(request);
+        throw new Error("[vinext] Missing deduped fetch response");
+      }
+      // Released: the last caller that joined before the release takes the
+      // kept branch itself, so none outlives the callers.
+      if (entry.waiters === 0 && afterContext?.fetchDedupeMaps === null) {
+        const response = entry.response;
+        entry.response = null;
+        return response;
       }
       const [responseForCaller, responseForFutureCaller] = cloneDedupeResponse(entry.response);
       entry.response = responseForFutureCaller;
@@ -1221,14 +1225,15 @@ function dedupeFetch(
     key: candidate.key,
     promise,
     response: null,
+    waiters: 0,
   };
   entries.push(entry);
 
   return promise.then(
     (response) => {
-      // The response closed before this fetch settled: its entries are already
-      // released, so keep no branch for future callers.
-      if (afterContext?.fetchDedupeMaps === null) return response;
+      // The entries were released before this fetch settled: no later caller
+      // can join, so keep a branch only for the callers already waiting.
+      if (afterContext?.fetchDedupeMaps === null && entry.waiters === 0) return response;
       // entry.response holds an unconsumed tee'd branch until the request's
       // response closes, when releaseFetchDedupeEntries cancels and drops it.
       // Waiting for the GC is not enough: on workerd the branch's stream keeps
