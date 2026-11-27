@@ -18,7 +18,8 @@ export type RootParamsState = {
 export type RootParamsUsage =
   | { kind: "route" }
   | { kind: "server-action" }
-  | { kind: "route-handler"; routePattern: string };
+  | { kind: "route-handler"; routePattern: string }
+  | { kind: "generate-static-params"; route: string; rootParamNames: readonly string[] };
 
 type RootParamsUsageState = RootParamsUsage & {
   phase: "active" | "render";
@@ -92,6 +93,15 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
       `Route ${usage.routePattern} used \`import('next/root-params').${name}()\` inside a Route Handler. Support for this API in Route Handlers is planned for a future version of Next.js.`,
     );
   }
+  if (
+    usage?.kind === "generate-static-params" &&
+    usage.rootParamNames.includes(name) &&
+    !Object.hasOwn(getState().rootParams ?? {}, name)
+  ) {
+    throw createRootParamsUsageError(
+      `Route ${usage.route} used \`import('next/root-params').${name}()\` inside \`generateStaticParams\`, but the \`${name}\` parameter was not provided by a parent \`generateStaticParams\`. In \`generateStaticParams\`, root params are only available for segments nested below the segment that provides them.`,
+    );
+  }
   const unstableCacheScope = getUnstableCacheScope();
   if (unstableCacheScope === "callback") {
     throw createRootParamsUsageError(
@@ -156,4 +166,26 @@ export function runWithRootParamsScope<T>(
   } else {
     return _als.run({ rootParams: params }, fn);
   }
+}
+
+/**
+ * Runs a `generateStaticParams` with only the root params its parent
+ * generators provided. As in Next.js's `build-time-generator` work unit,
+ * reading a root param no parent provided throws instead of resolving to
+ * `undefined`.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/root-params.ts
+ */
+export function runGenerateStaticParamsWithRootParams<T>(
+  route: string,
+  parentParams: RootParams,
+  rootParamNames: readonly string[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  const provided: RootParams = {};
+  for (const name of rootParamNames) {
+    if (Object.hasOwn(parentParams, name)) provided[name] = parentParams[name];
+  }
+  return runWithRootParamsScope(provided, () =>
+    runWithRootParamsUsage({ kind: "generate-static-params", route, rootParamNames }, fn),
+  );
 }
