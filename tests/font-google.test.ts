@@ -1880,6 +1880,15 @@ describe("_findBalancedObject", () => {
     expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
   });
 
+  it.each([
+    ["\\r", "\r"],
+    ["U+2028", "\u2028"],
+    ["U+2029", "\u2029"],
+  ])("ends a line comment at a %s line terminator", (_name, terminator) => {
+    const code = `{ a: 1, // c${terminator} b: 2 }`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
   it("ignores braces inside block comments", () => {
     const code = `{ a: 1, /* } { */ b: 2 }`;
     expect(findBalancedObject(code, 0)).toEqual([0, code.length]);

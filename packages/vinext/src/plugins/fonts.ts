@@ -601,8 +601,10 @@ export function _findBalancedObject(code: string, searchStart: number): [number,
   const skipComment = (at: number): number => {
     if (code[at] !== "/") return at;
     if (code[at + 1] === "/") {
-      const end = code.indexOf("\n", at + 2);
-      return end === -1 ? code.length : end + 1;
+      // A line comment ends at any ECMAScript line terminator.
+      let end = at + 2;
+      while (end < code.length && !/[\n\r\u2028\u2029]/.test(code[end])) end++;
+      return end;
     }
     if (code[at + 1] === "*") {
       const end = code.indexOf("*/", at + 2);
