@@ -7,6 +7,8 @@ import { createRequire, Module } from "node:module";
 // oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { ESTree } from "vite";
+import { forEachAstChild, parseProgram, walkAst } from "../plugins/ast-utils.js";
 
 type CompilableCommonJsModule = Module & {
   _compile(content: string, filename: string): void;
@@ -55,19 +57,88 @@ export function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boo
     const canonicalFramePath = canonicalPath(framePath);
     if (!canonicalFramePath.endsWith(".js")) continue;
 
-    let sourceLine: string | undefined;
+    let source: string;
     try {
-      sourceLine = fs.readFileSync(canonicalFramePath, "utf8").split(/\r?\n/)[
-        Number(lineNumberText) - 1
-      ];
+      source = fs.readFileSync(canonicalFramePath, "utf8");
     } catch {
       continue;
     }
-    const column = Number(columnNumberText) - 1;
-    if (sourceLine?.slice(column, column + identifier.length) === identifier) return true;
+    const offset = sourceOffset(source, Number(lineNumberText), Number(columnNumberText));
+    if (offset !== null && statementReferencesGlobal(source, offset, identifier)) return true;
   }
 
   return false;
+}
+
+/** The UTF-16 offset of a 1-based line and column, or `null` when out of range. */
+function sourceOffset(source: string, lineNumber: number, columnNumber: number): number | null {
+  const lineBreak = /\r\n?|\n|\u2028|\u2029/g;
+  let lineStart = 0;
+  for (let current = 1; current < lineNumber; current++) {
+    if (!lineBreak.exec(source)) return null;
+    lineStart = lineBreak.lastIndex;
+  }
+  const offset = lineStart + columnNumber - 1;
+  return offset >= lineStart && offset <= source.length ? offset : null;
+}
+
+function isStatementNode(node: ESTree.Node): boolean {
+  return /(?:Statement|Declaration)$/.test(node.type);
+}
+
+/**
+ * Whether the innermost statement containing `offset` reads `name` as a
+ * variable. V8 reports a missing global at the enclosing expression, not at
+ * the identifier: `log` in `console.log(require("x"))`, or the start of
+ * `module.exports = { plugins: [require("x")] }`. It always stays inside the
+ * statement that threw, so a column match would miss those shapes, while
+ * strings, comments and property names (`obj.require`, `{ require: 1 }`) of
+ * that statement still don't count.
+ */
+function statementReferencesGlobal(source: string, offset: number, name: string): boolean {
+  let program: ESTree.Program;
+  try {
+    program = parseProgram(source, { lang: "jsx", sourceType: "unambiguous" });
+  } catch {
+    return false;
+  }
+
+  let statement: ESTree.Node | null = null;
+  let node: ESTree.Node | null = program;
+  while (node) {
+    const parent: ESTree.Node = node;
+    node = null;
+    forEachAstChild(parent, (child) => {
+      if (!node && child.start <= offset && offset < child.end) node = child;
+    });
+    if (node && isStatementNode(node)) statement = node;
+  }
+  if (!statement) return false;
+
+  let found = false;
+  const visit = (current: ESTree.Node): boolean | void => {
+    if (found) return false;
+    if (current.type === "Identifier" && current.name === name) {
+      found = true;
+      return false;
+    }
+    // A non-computed property name is not a variable reference.
+    if (current.type === "MemberExpression" && !current.computed) {
+      walkAst(current.object, visit);
+      return false;
+    }
+    if (
+      (current.type === "Property" ||
+        current.type === "MethodDefinition" ||
+        current.type === "PropertyDefinition") &&
+      !current.computed
+    ) {
+      if (current.value) walkAst(current.value, visit);
+      return false;
+    }
+  };
+  walkAst(statement, visit);
+  return found;
 }
 
 function compileCommonJsModule(resolvedPath: string, parent?: Module): unknown {
