@@ -94,7 +94,8 @@ describe("metadata routes integration (App Router)", () => {
     const routes = scanMetadataFiles(appDir);
 
     const iconRoute = routes.find(
-      (r: { type: string; isDynamic: boolean }) => r.type === "icon" && r.isDynamic,
+      (r: { type: string; isDynamic: boolean; routePrefix: string }) =>
+        r.type === "icon" && r.isDynamic && r.routePrefix === "",
     );
     expect(iconRoute).toBeDefined();
     expect(iconRoute!.isDynamic).toBe(true);
@@ -107,7 +108,9 @@ describe("metadata routes integration (App Router)", () => {
     const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
-    const appleIcon = routes.find((r: { type: string }) => r.type === "apple-icon");
+    const appleIcon = routes.find(
+      (r: { type: string; routePrefix: string }) => r.type === "apple-icon" && r.routePrefix === "",
+    );
     expect(appleIcon).toBeDefined();
     expect(appleIcon!.isDynamic).toBe(false);
     expect(appleIcon!.servedUrl).toBe("/apple-icon.png");
@@ -501,6 +504,34 @@ describe("metadata routes integration (App Router)", () => {
     const dynamicIndex = servedUrls.indexOf("/metadata-static-sibling/[slug]/opengraph-image");
     expect(staticIndex).toBeGreaterThanOrEqual(0);
     expect(dynamicIndex).toBeGreaterThan(staticIndex);
+  });
+
+  // Next.js serves generated image ids at icon/[__metadata_id__], so the exact
+  // nested route icon/icon wins over the generated id "icon".
+  it("serves an exact nested metadata route before a generated image id of its parent", async () => {
+    const nested = await fetch(`${baseUrl}/metadata-static-sibling/icon/icon`);
+    expect(nested.status).toBe(200);
+    expect(await nested.text()).toBe("nested icon");
+
+    const generated = await fetch(`${baseUrl}/metadata-static-sibling/icon/small`);
+    expect(generated.status).toBe(200);
+    expect(await generated.text()).toBe("generated small");
+  });
+
+  it("scanMetadataFiles keeps metadata files of one dynamic segment in discovery order", async () => {
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+    const icons = scanMetadataFiles(appDir)
+      .filter(
+        (r: { type: string; routePrefix: string }) =>
+          r.type === "icon" && r.routePrefix === "/metadata-static-sibling/[slug]",
+      )
+      .map((r: { servedUrl: string }) => r.servedUrl);
+    // The order their <link rel="icon"> tags render in: icon.tsx, then icon1.png.
+    expect(icons).toEqual([
+      "/metadata-static-sibling/[slug]/icon",
+      "/metadata-static-sibling/-/icon1.png",
+    ]);
   });
 
   it("honors dynamicParams = false for dynamic metadata images", async () => {
