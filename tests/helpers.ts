@@ -289,13 +289,22 @@ export async function createIsolatedFixture(
   return tmpDir;
 }
 
-export type WorkerdWorker = { baseUrl: string; teardown(): Promise<void> };
+export type WorkerdWorker = {
+  baseUrl: string;
+  /** The worker's inspector, when started with `{ inspector: true }`. */
+  inspectorUrl?: URL;
+  teardown(): Promise<void>;
+};
 
 /**
  * Runs a built Worker in workerd through the wrangler copy under `root`'s
  * node_modules (wrangler's unstable_startWorker).
  */
-export async function startWorkerdWorker(root: string, config: string): Promise<WorkerdWorker> {
+export async function startWorkerdWorker(
+  root: string,
+  config: string,
+  options: { inspector?: boolean } = {},
+): Promise<WorkerdWorker> {
   const wranglerPath = path.join(root, "node_modules/wrangler/wrangler-dist/cli.js");
   const wrangler = (await import(pathToFileURL(wranglerPath).href)) as {
     unstable_startWorker(options: {
@@ -306,10 +315,11 @@ export async function startWorkerdWorker(root: string, config: string): Promise<
         logLevel: "none";
         watch: false;
         server: { hostname: string; port: 0 };
-        inspector: false;
+        inspector: false | { port: 0 };
       };
     }): Promise<{
       url: Promise<URL>;
+      inspectorUrl: Promise<URL | undefined>;
       raw: {
         once(
           event: "error",
@@ -327,16 +337,17 @@ export async function startWorkerdWorker(root: string, config: string): Promise<
       logLevel: "none",
       watch: false,
       server: { hostname: "127.0.0.1", port: 0 },
-      // The tests never use the inspector. With it on, wrangler probes for a
-      // free port near 9229, which parallel test processes can race for, and
-      // waits on an inspector WebSocket that never settles `url` if it errors.
-      inspector: false,
+      // Most tests never use the inspector. Without an explicit port, wrangler
+      // probes for a free one near 9229, which parallel test processes can race
+      // for, so an opted-in inspector takes an OS-assigned port instead.
+      inspector: options.inspector ? { port: 0 } : false,
     },
   });
   // `dispose()` waits for a startup that may never finish; tear down directly.
   const teardown = () => started.raw.teardown();
-  // wrangler reports startup failures as `error` events and leaves `url`
-  // pending, so fail with the cause instead of waiting out the hook timeout.
+  // wrangler reports startup failures as `error` events and leaves `url` (and
+  // `inspectorUrl`) pending, so fail with the cause instead of waiting out the
+  // hook timeout.
   const startupError = new Promise<never>((_, reject) => {
     started.raw.once("error", (error) => {
       reject(
@@ -348,6 +359,11 @@ export async function startWorkerdWorker(root: string, config: string): Promise<
   });
   try {
     const url = await Promise.race([started.url, startupError]);
+    if (options.inspector) {
+      const inspectorUrl = await Promise.race([started.inspectorUrl, startupError]);
+      if (!inspectorUrl) throw new Error("The worker started without an inspector");
+      return { baseUrl: url.origin, inspectorUrl, teardown };
+    }
     return { baseUrl: url.origin, teardown };
   } catch (error) {
     await teardown().catch(() => {});
