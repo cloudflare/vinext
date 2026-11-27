@@ -756,9 +756,39 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
     }
     // If both are static or both dynamic, keep the first one found
   }
-  cachedMetadataRoutes = Array.from(byUrl.values());
+  // Requests take the first metadata route that matches, so a more specific
+  // route has to come first: app/blog/opengraph-image must win over
+  // app/[slug]/opengraph-image for /blog/opengraph-image. The directory scan
+  // alone puts "[slug]" before "blog".
+  cachedMetadataRoutes = Array.from(byUrl.values()).sort((a, b) =>
+    compareMetadataRoutePaths(a.servedUrl, b.servedUrl),
+  );
   cachedMetadataAppDir = appDir;
   return cachedMetadataRoutes;
+}
+
+function metadataSegmentRank(part: string): number {
+  // An interception marker, as in "(.)[id]", comes before the segment.
+  const segment = part.startsWith("(") && part.includes("[") ? part.slice(part.indexOf("[")) : part;
+  if (segment.startsWith("[[...")) return 3;
+  if (segment.startsWith("[...")) return 2;
+  if (segment.startsWith("[")) return 1;
+  return 0;
+}
+
+/**
+ * Like Next.js's route sorting, compares segment by segment: at the first
+ * segment where the kinds differ, static beats `[param]`, which beats
+ * `[...param]`, which beats `[[...param]]`.
+ */
+function compareMetadataRoutePaths(a: string, b: string): number {
+  const aParts = a.split("/").filter(Boolean);
+  const bParts = b.split("/").filter(Boolean);
+  for (let i = 0; i < Math.min(aParts.length, bParts.length); i++) {
+    const diff = metadataSegmentRank(aParts[i]) - metadataSegmentRank(bParts[i]);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 function resolveStaticMetadataAltFilePath(dir: string, baseName: string): string | undefined {
