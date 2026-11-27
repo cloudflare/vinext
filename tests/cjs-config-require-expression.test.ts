@@ -36,8 +36,12 @@ describe("CommonJS config with require() inside an expression in a type:module p
     expect(loadCommonJsModule(configPath)).toEqual({ plugins: ["postcss/plugin"] });
   });
 
-  it("does not retry when the global only appears as a property name", () => {
-    const filePath = path.join(fixtureRoot, "property-names.js");
+  it.each([
+    ["only appears as a property name", "property-names.js"],
+    ["is only used by a caller of the throwing frame", "caller-require.js"],
+    ["is a local binding", "shadowed-require.js"],
+  ])("does not retry a look-alike error when the global %s", (_, fileName) => {
+    const filePath = path.join(fixtureRoot, fileName);
     const error = nativeLoadError(filePath);
     expect((error as Error).message).toBe("require is not defined in ES module scope");
     expect(shouldRetryAsCommonJs(error, filePath)).toBe(false);

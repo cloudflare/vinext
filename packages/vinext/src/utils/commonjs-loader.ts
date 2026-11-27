@@ -8,6 +8,7 @@ import { createRequire, Module } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ESTree } from "vite";
+import { findAstBindingScope, walkAstScopes } from "../plugins/ast-scope.js";
 import { forEachAstChild, parseProgram, walkAst } from "../plugins/ast-utils.js";
 
 type CompilableCommonJsModule = Module & {
@@ -50,21 +51,23 @@ export function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boo
   // This validation intentionally assumes the executed config/plugin source
   // is byte-identical to the on-disk file. Current callers load raw user files;
   // transformed modules should not use this fallback without source-map logic.
+  // A missing global is thrown where it is read, so only the first frame with
+  // a location counts: a caller's statement says nothing about the error.
   for (const line of error.stack.split("\n").slice(1)) {
     const location = line.match(/(?:\(|at )(.+):(\d+):(\d+)\)?$/);
     if (!location) continue;
     const [, framePath, lineNumberText, columnNumberText] = location;
     const canonicalFramePath = canonicalPath(framePath);
-    if (!canonicalFramePath.endsWith(".js")) continue;
+    if (!canonicalFramePath.endsWith(".js")) return false;
 
     let source: string;
     try {
       source = fs.readFileSync(canonicalFramePath, "utf8");
     } catch {
-      continue;
+      return false;
     }
     const offset = sourceOffset(source, Number(lineNumberText), Number(columnNumberText));
-    if (offset !== null && statementReferencesGlobal(source, offset, identifier)) return true;
+    return offset !== null && statementReadsGlobal(source, offset, identifier);
   }
 
   return false;
@@ -87,15 +90,15 @@ function isStatementNode(node: ESTree.Node): boolean {
 }
 
 /**
- * Whether the innermost statement containing `offset` reads `name` as a
- * variable. V8 reports a missing global at the enclosing expression, not at
- * the identifier: `log` in `console.log(require("x"))`, or the start of
- * `module.exports = { plugins: [require("x")] }`. It always stays inside the
- * statement that threw, so a column match would miss those shapes, while
- * strings, comments and property names (`obj.require`, `{ require: 1 }`) of
- * that statement still don't count.
+ * Whether the innermost statement containing `offset` reads `name` as an
+ * unbound variable. V8 reports a missing global at the enclosing expression,
+ * not at the identifier: `log` in `console.log(require("x"))`, or the start of
+ * `const c = { plugins: [require("x")] }`. It always stays inside the
+ * statement that threw, so a column match would miss those shapes. Strings,
+ * comments, property names (`obj.require`, `{ require: 1 }`) and names bound
+ * in scope (a `require` parameter) don't count.
  */
-function statementReferencesGlobal(source: string, offset: number, name: string): boolean {
+function statementReadsGlobal(source: string, offset: number, name: string): boolean {
   let program: ESTree.Program;
   try {
     program = parseProgram(source, { lang: "jsx", sourceType: "unambiguous" });
@@ -114,30 +117,36 @@ function statementReferencesGlobal(source: string, offset: number, name: string)
     if (node && isStatementNode(node)) statement = node;
   }
   if (!statement) return false;
+  const { start, end } = statement;
+
+  // Non-computed property names are identifiers that never read a variable.
+  const propertyNames = new Set<ESTree.Node>();
+  walkAst(statement, (current) => {
+    if (current.type === "MemberExpression" && !current.computed) {
+      propertyNames.add(current.property);
+    } else if (
+      (current.type === "Property" && !current.computed && !current.shorthand) ||
+      ((current.type === "MethodDefinition" || current.type === "PropertyDefinition") &&
+        !current.computed)
+    ) {
+      propertyNames.add(current.key);
+    }
+  });
 
   let found = false;
-  const visit = (current: ESTree.Node): boolean | void => {
-    if (found) return false;
-    if (current.type === "Identifier" && current.name === name) {
-      found = true;
-      return false;
-    }
-    // A non-computed property name is not a variable reference.
-    if (current.type === "MemberExpression" && !current.computed) {
-      walkAst(current.object, visit);
-      return false;
-    }
+  walkAstScopes(program, (current, scope) => {
     if (
-      (current.type === "Property" ||
-        current.type === "MethodDefinition" ||
-        current.type === "PropertyDefinition") &&
-      !current.computed
+      !found &&
+      current.type === "Identifier" &&
+      current.name === name &&
+      current.start >= start &&
+      current.end <= end &&
+      !propertyNames.has(current) &&
+      !findAstBindingScope(scope, name)
     ) {
-      if (current.value) walkAst(current.value, visit);
-      return false;
+      found = true;
     }
-  };
-  walkAst(statement, visit);
+  });
   return found;
 }
 
