@@ -2351,6 +2351,11 @@ function bootstrapHydration(
     let detachedNavigationCommits = false;
     // The optimistic shell this navigation committed, if any.
     let optimisticShellElements: AppElements | null = null;
+    // The view transition types for this navigation's first visible commit.
+    // Like Next.js, which tags the navigation once and fills its loading shell
+    // in place, a committed optimistic shell consumes them: the authoritative
+    // payload that replaces it commits untyped.
+    let uncommittedTransitionTypes = transitionTypes;
     const keepOptimisticShellMetadata = (
       payload: Promise<AppElements> | AppElements,
     ): Promise<AppElements> | AppElements => {
@@ -2740,7 +2745,7 @@ function bootstrapHydration(
                 ? resolveCommittedInterceptionSource(cachedRoute.elements)
                 : null,
             targetHref: currentHref,
-            transitionTypes,
+            transitionTypes: uncommittedTransitionTypes,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
           });
@@ -2875,9 +2880,12 @@ function bootstrapHydration(
                 previousNextUrl: requestPreviousNextUrl,
                 restoredBfcacheIds,
                 reuseCurrentBfcacheIds,
+                onCommittedState: () => {
+                  uncommittedTransitionTypes = undefined;
+                },
                 scrollIntent,
                 targetHref: currentHref,
-                transitionTypes,
+                transitionTypes: uncommittedTransitionTypes,
                 traversalIntent: activeTraversalIntent,
                 visibleCommitMode,
               }).catch((error) => {
@@ -3201,7 +3209,7 @@ function bootstrapHydration(
           reuseCurrentBfcacheIds,
           scrollIntent,
           targetHref: currentHref,
-          transitionTypes,
+          transitionTypes: uncommittedTransitionTypes,
           traversalIntent: activeTraversalIntent,
           // A settled prefetch still commits as a transition, as in Next.js:
           // its decoded elements can reference client modules that are still

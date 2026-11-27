@@ -129,4 +129,48 @@ test.describe("App Router view transition types", () => {
     const types = await readRecordedTypes(page);
     expect(types.every((entry) => entry?.includes("early-push"))).toBe(true);
   });
+
+  test("a navigation that commits an optimistic loading shell first tags only that commit", async ({
+    page,
+  }) => {
+    await openSource(page);
+
+    // Settle a prefetch of a sibling URL so the route's loading-shell template
+    // is learned. Dev links do not prefetch on viewport entry.
+    const prefetchResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes("/view-transition-types/slow/1") && response.url().includes("_rsc"),
+    );
+    await page.evaluate(() => {
+      (window as any).next.router.prefetch("/view-transition-types/slow/1");
+    });
+    await (await prefetchResponse).finished();
+    // The template is learned once the prefetch cache entry settles.
+    await page.waitForTimeout(500);
+
+    // Hold the navigation's response so the shell commits before it lands.
+    let releaseNavigation!: () => void;
+    const navigationGate = new Promise<void>((resolve) => {
+      releaseNavigation = resolve;
+    });
+    await page.route("**/view-transition-types/slow/2?_rsc*", async (route) => {
+      await navigationGate;
+      await route.continue();
+    });
+
+    await page.getByTestId("typed-slow-link").click();
+    await expect(page.getByTestId("vt-slow-loading")).toBeVisible();
+    await expect.poll(async () => (await readRecordedTypes(page)).length).toBeGreaterThan(0);
+    const shell = await readRecordedTypes(page);
+    expect(shell.every((entry) => entry?.includes("nav-shell"))).toBe(true);
+
+    releaseNavigation();
+    await expect(page.getByTestId("vt-slow-2")).toBeVisible({ timeout: 10_000 });
+    await expect
+      .poll(async () => (await readRecordedTypes(page)).length)
+      .toBeGreaterThan(shell.length);
+    // Like Next.js, the content filling in after the shell is not tagged again.
+    const fill = (await readRecordedTypes(page)).slice(shell.length);
+    expect(fill.every((entry) => entry === null)).toBe(true);
+  });
 });
