@@ -3093,6 +3093,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         // in beforeFiles, so a target reached only after them is not
         // intercepted; render it as a direct request instead.
         interceptionSourceContext = null;
+      } else {
+        // The same source can own another intercept, with its own segment
+        // config, for the target the rewrite reached.
+        interceptionSourceMatch = finalInterceptionSourceMatch;
       }
       bypassInterceptionContextCache = !hasVerifiedFinalInterceptionSource;
       setInterceptionResponseUncacheable(bypassInterceptionContextCache);

@@ -3045,6 +3045,73 @@ describe("createAppRscHandler", () => {
     expect(await dispatch(false)).toEqual({ cache: "shared", forceDynamic: false });
   });
 
+  it("takes force-dynamic from the intercept a late rewrite reaches", async () => {
+    const targetRoute = createPageRoute({
+      isDynamic: true,
+      params: ["id"],
+      pattern: "/photos/:id",
+      routeSegments: ["photos", "[id]"],
+    });
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const dispatch = async (forceDynamicTarget: string) => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("stage")),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/photos/1", destination: "/photos/2" }],
+          fallback: [],
+        },
+        matchInterceptRoute: (pathname, sourcePathname) =>
+          sourcePathname === "/feed" && (pathname === "/photos/1" || pathname === "/photos/2")
+            ? {
+                interceptionForceDynamic: pathname === forceDynamicTarget,
+                interceptionRendersTargetLayouts: true,
+                interceptionSourceIsConcrete: true,
+                params: {},
+                route: sourceRoute,
+              }
+            : null,
+        matchRoute: (pathname: string) => {
+          if (pathname.startsWith("/photos/")) {
+            return { params: { id: pathname.slice(8) }, route: targetRoute };
+          }
+          if (pathname === "/feed") return { params: {}, route: sourceRoute };
+          return null;
+        },
+      });
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+      const url = await createRscRequestUrl("/docs/photos/1", headers);
+      await handler(
+        new Request(`https://example.test${url}`, { headers }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      expect(dispatchResponseStage).toHaveBeenCalledOnce();
+      const [, props, init] = dispatchResponseStage.mock.calls[0]!;
+      return {
+        cache: init?.cache,
+        cleanPathname: props.kind === "app-page" ? props.cleanPathname : null,
+        forceDynamic: props.kind === "app-page" && props.forceDynamic,
+      };
+    };
+
+    // The rewrite reaches /photos/2, whose intercept the render shows.
+    expect(await dispatch("/photos/2")).toEqual({
+      cache: "bypass",
+      cleanPathname: "/photos/2",
+      forceDynamic: true,
+    });
+    expect(await dispatch("/photos/1")).toEqual({
+      cache: "shared",
+      cleanPathname: "/photos/2",
+      forceDynamic: false,
+    });
+  });
+
   it("keeps a force-dynamic route shared when next.config supplies a public cache policy", async () => {
     const route = createPageRoute({ forceDynamic: true });
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
