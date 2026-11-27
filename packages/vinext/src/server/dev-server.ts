@@ -1685,7 +1685,8 @@ export function createSSRHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
-            routeUrl: requestAsPath,
+            // Render path only; see the matching note in pages-page-handler.
+            routeUrl: requestAsPath.split("?")[0],
             clientMiddlewareMatcher,
           },
         };

@@ -973,7 +973,11 @@ export function createPagesPageHandler(
             pageModuleUrl,
             appModuleUrl,
             hasMiddleware,
-            routeUrl: renderRouteUrl,
+            // The client reads routeUrl only to replace a fallback render's
+            // route, so it carries the render path alone. Keeping the query
+            // would echo request search state into every non-getStaticProps
+            // document, where Next.js only exposes it through `query`.
+            routeUrl: renderRouteUrl.split("?")[0],
           },
         };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
