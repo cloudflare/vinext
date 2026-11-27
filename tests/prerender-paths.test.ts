@@ -2526,8 +2526,9 @@ describe("prerender path manifest", () => {
     expect(manifest?.paths).toEqual(["/news/foo"]);
     expect(manifest?.rscPaths).toEqual(["/news/foo"]);
     expect(manifest?.loadingShellPaths).toEqual(["/news/foo"]);
+    // The layout key carries the route being built, which its root param errors name.
     expect(fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=layouts%3A%5Bcategory%5D",
+      "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=layouts%3A%5Bcategory%5D&route=%2F%3Acategory%2Ffoo",
       expect.any(Object),
     );
   });
