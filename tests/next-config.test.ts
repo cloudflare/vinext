@@ -319,6 +319,19 @@ describe("loadNextConfig with CJS next.config.js under type:module", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/app-dir/next-config/next.config.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config/next.config.js
+  it("loads a require() nested in a call's arguments", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `Object.keys(require('node:path').posix);\n` +
+        `module.exports = { basePath: require('node:path').posix.join('/', 'docs') };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+    expect(config?.basePath).toBe("/docs");
+  });
+
   it("loads module.exports + require() from a .js file", async () => {
     fs.writeFileSync(
       path.join(tmpDir, "next.config.js"),
