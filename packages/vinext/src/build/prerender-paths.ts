@@ -11,6 +11,7 @@ import {
   appRouter,
   matchAppRoute,
 } from "../routing/app-router.js";
+import { findFileWithExts } from "../routing/file-matcher.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
 import {
   normalizeStaticPathname,
@@ -1407,13 +1408,11 @@ function findMiddlewareConventionFile(
   // Compare real paths: `root` is resolved through symlinks, a user appDir may not be.
   const conventionDir =
     canonicalDir(routeRoot) === canonicalDir(path.join(root, "src")) ? routeRoot : root;
-  for (const name of ["proxy", "middleware"]) {
-    for (const extension of pageExtensions) {
-      const filePath = path.join(conventionDir, `${name}.${extension}`);
-      if (fs.existsSync(filePath)) return filePath;
-    }
-  }
-  return null;
+  const matcher = { dottedExtensions: pageExtensions.map((extension) => `.${extension}`) };
+  return (
+    findFileWithExts(conventionDir, "proxy", matcher) ??
+    findFileWithExts(conventionDir, "middleware", matcher)
+  );
 }
 
 /** @internal Match the pathname forms and locale provenance used by middleware runtime. */

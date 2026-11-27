@@ -19,10 +19,9 @@
  */
 
 import type { ModuleRunner } from "vite/module-runner";
-import fs from "node:fs";
 import path from "pathslash";
 import type { NextI18nConfig } from "../config/next-config.js";
-import { ValidFileMatcher } from "../routing/file-matcher.js";
+import { findFileWithExts, type ValidFileMatcher } from "../routing/file-matcher.js";
 import {
   runGeneratedMiddleware,
   type MiddlewareModule,
@@ -67,23 +66,8 @@ export function findMiddlewareFile(
   fileMatcher: ValidFileMatcher,
   conventionDir = root,
 ): string | null {
-  let proxyPath: string | null = null;
-  for (const ext of fileMatcher.dottedExtensions) {
-    const fullPath = path.join(conventionDir, `proxy${ext}`);
-    if (fs.existsSync(fullPath)) {
-      proxyPath = fullPath;
-      break;
-    }
-  }
-
-  let middlewarePath: string | null = null;
-  for (const ext of fileMatcher.dottedExtensions) {
-    const fullPath = path.join(conventionDir, `middleware${ext}`);
-    if (fs.existsSync(fullPath)) {
-      middlewarePath = fullPath;
-      break;
-    }
-  }
+  const proxyPath = findFileWithExts(conventionDir, "proxy", fileMatcher);
+  const middlewarePath = findFileWithExts(conventionDir, "middleware", fileMatcher);
 
   if (proxyPath && middlewarePath) {
     const relativeProxyPath = `./${path.relative(root, proxyPath)}`;

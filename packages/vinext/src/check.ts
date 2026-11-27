@@ -6,7 +6,7 @@
  */
 
 import { detectPackageManager, findDir, findViteConfigPath } from "./utils/project.js";
-import { normalizePageExtensions } from "./routing/file-matcher.js";
+import { findFileWithExts, normalizePageExtensions } from "./routing/file-matcher.js";
 import { POSTCSS_CONFIG_FILES } from "./plugins/postcss.js";
 import { parseProgram, unwrapExpression } from "./plugins/ast-utils.js";
 import type { ESTree } from "vite";
@@ -67,10 +67,8 @@ function isAppRouterFile(relFile: string, type: AppRouterFileType, exts: string[
 
 /** The first `<name><ext>` file found in `dir` for the given page extensions. */
 function findConventionFile(dir: string, name: string, exts: string[]): string | null {
-  for (const ext of exts) {
-    if (fs.existsSync(path.join(dir, `${name}${ext}`))) return `${name}${ext}`;
-  }
-  return null;
+  const file = findFileWithExts(dir, name, { dottedExtensions: exts });
+  return file ? path.basename(file) : null;
 }
 
 // ── Import support map ─────────────────────────────────────────────────────
