@@ -190,6 +190,7 @@ import {
 } from "vinext/shims/error-boundary";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
+import { addNavigationTransitionTypes } from "vinext/shims/internal/navigation-transition-types";
 import {
   BfcacheIdentityMapContext,
   bindAppElementsRenderedSearch,
@@ -935,6 +936,7 @@ type RenderNavigationPayloadOptions = {
   reuseCurrentBfcacheIds?: boolean;
   scrollIntent?: AppRouterScrollIntent | null;
   suppliedInterceptionSource?: InterceptionSourceIdentity | null;
+  takeTransitionTypes?: () => readonly string[] | undefined;
   targetHref: string;
   traversalIntent?: HistoryTraversalIntent | null;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
@@ -964,6 +966,7 @@ async function renderNavigationPayload(
     reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
     scrollIntent: options.scrollIntent ?? null,
     suppliedInterceptionSource: options.suppliedInterceptionSource ?? null,
+    takeTransitionTypes: options.takeTransitionTypes,
     targetHistoryIndex: options.traversalIntent?.targetHistoryIndex,
     targetHref: options.targetHref,
     visibleCommitMode: options.visibleCommitMode ?? "transition",
@@ -2328,6 +2331,7 @@ function bootstrapHydration(
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
     initialBypassNavigationCache?: boolean,
+    transitionTypes?: readonly string[],
   ): Promise<void> {
     serverActionSupplementalRefreshCoordinator.abortAll();
     const navigationAbortHandle = navigationAbortCoordinator.begin();
@@ -2347,6 +2351,20 @@ function bootstrapHydration(
     let detachedNavigationCommits = false;
     // The optimistic shell this navigation committed, if any.
     let optimisticShellElements: AppElements | null = null;
+    // The view transition types for this navigation's first visible commit.
+    // Like Next.js, which tags the navigation once, they are handed to React
+    // once: the first commit dispatch takes them when it runs, and later ones
+    // (the authoritative payload replacing an optimistic shell, a recovery
+    // publish) commit untyped. React queues a Transition's types on the root
+    // and claims them all when it starts the next Transition commit, so they
+    // still tag the first commit if React renders a later payload before the
+    // first one commits.
+    let uncommittedTransitionTypes = transitionTypes;
+    const takeTransitionTypes = () => {
+      const types = uncommittedTransitionTypes;
+      uncommittedTransitionTypes = undefined;
+      return types;
+    };
     const keepOptimisticShellMetadata = (
       payload: Promise<AppElements> | AppElements,
     ): Promise<AppElements> | AppElements => {
@@ -2414,7 +2432,13 @@ function bootstrapHydration(
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
         if (shouldUsePendingRouterState) {
-          pendingRouterState = beginPendingBrowserRouterState();
+          // After the await this no longer runs inside the transition that
+          // started the navigation: publish the pending state in one of its
+          // own, tagged with the navigation's view transition types.
+          startTransition(() => {
+            addNavigationTransitionTypes(transitionTypes);
+            pendingRouterState = beginPendingBrowserRouterState();
+          });
         }
       }
 
@@ -2730,6 +2754,7 @@ function bootstrapHydration(
                 ? resolveCommittedInterceptionSource(cachedRoute.elements)
                 : null,
             targetHref: currentHref,
+            takeTransitionTypes,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
           });
@@ -2866,6 +2891,7 @@ function bootstrapHydration(
                 reuseCurrentBfcacheIds,
                 scrollIntent,
                 targetHref: currentHref,
+                takeTransitionTypes,
                 traversalIntent: activeTraversalIntent,
                 visibleCommitMode,
               }).catch((error) => {
@@ -3189,6 +3215,7 @@ function bootstrapHydration(
           reuseCurrentBfcacheIds,
           scrollIntent,
           targetHref: currentHref,
+          takeTransitionTypes,
           traversalIntent: activeTraversalIntent,
           // A settled prefetch still commits as a transition, as in Next.js:
           // its decoded elements can reference client modules that are still

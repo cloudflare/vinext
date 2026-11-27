@@ -122,3 +122,39 @@ export function findPackageVersion(resolvedEntry: string, packageName: string): 
   }
   return null;
 }
+
+const VIEW_TRANSITION_API_NAMES = ["ViewTransition", "addTransitionType"] as const;
+export type ViewTransitionApiName = (typeof VIEW_TRANSITION_API_NAMES)[number];
+
+/**
+ * Which of `ViewTransition` and `addTransitionType` the project's React
+ * exports itself, for the default entry or the `react-server` one. React 19.2
+ * exports both from its default entry, but its `react-server` entry has no
+ * `addTransitionType`. The `vinext:react-canary` shim only has to cover the
+ * names that are missing.
+ */
+export function reactViewTransitionExports(
+  root: string,
+  condition: "default" | "react-server",
+): ReadonlySet<ViewTransitionApiName> {
+  try {
+    const req = createRequire(path.join(root, "package.json"));
+    let entry = "react";
+    if (condition === "react-server") {
+      const pkgPath = req.resolve("react/package.json");
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+        exports?: Record<string, unknown>;
+      };
+      const dotExport = pkg.exports?.["."];
+      const serverEntry =
+        dotExport && typeof dotExport === "object"
+          ? (dotExport as Record<string, unknown>)["react-server"]
+          : null;
+      if (typeof serverEntry === "string") entry = path.join(path.dirname(pkgPath), serverEntry);
+    }
+    const react = req(entry) as Record<string, unknown>;
+    return new Set(VIEW_TRANSITION_API_NAMES.filter((name) => react[name] !== undefined));
+  } catch {
+    return new Set();
+  }
+}

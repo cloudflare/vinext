@@ -20,6 +20,7 @@ import {
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
 import { withBasePath } from "vinext/shims/url-utils";
+import { addNavigationTransitionTypes } from "vinext/shims/internal/navigation-transition-types";
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import { stripBasePath } from "../utils/base-path.js";
 import {
@@ -147,6 +148,15 @@ type BrowserNavigationPayloadOptions = {
   suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHistoryIndex?: number | null;
   targetHref: string;
+  /**
+   * Takes the view transition types of the navigation (`<Link
+   * transitionTypes>`, `router.push(href, { transitionTypes })`), which a
+   * navigation hands to React once (see `takeTransitionTypes` in
+   * `navigateRsc`). Its visible commit runs in a later Transition than the one
+   * that started it, so the dispatch takes them when it runs and tags that
+   * Transition with them.
+   */
+  takeTransitionTypes?: () => readonly string[] | undefined;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
 };
 
@@ -815,8 +825,16 @@ export function createAppBrowserNavigationController(
     pendingRouterState: PendingBrowserRouterState | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode,
     republishPendingRouterState: boolean,
+    takeTransitionTypes: (() => readonly string[] | undefined) | undefined,
   ): void {
     const setter = getBrowserRouterStateSetter();
+    // Every dispatch takes the types, whichever branch it runs. React claims
+    // the queued types when it starts the next Transition commit, so adding
+    // them again later (for instance from the response-completion recovery
+    // below, while the first commit's view transition is still starting) would
+    // tag another commit. A pending router state was published in the
+    // Transition that started the navigation, which already added them.
+    const transitionTypes = takeTransitionTypes?.();
     const pendingCommit = pendingNavigationCommits.get(renderId);
 
     const captureCandidateState = (state: AppRouterState): AppRouterState => {
@@ -849,6 +867,7 @@ export function createAppBrowserNavigationController(
       }
       if (republishPendingRouterState) {
         startTransition(() => {
+          addNavigationTransitionTypes(transitionTypes);
           setter(committedState);
         });
       }
@@ -872,6 +891,7 @@ export function createAppBrowserNavigationController(
     }
 
     startTransition(() => {
+      addNavigationTransitionTypes(transitionTypes);
       const committedState = captureCandidateState(
         applyApprovedVisibleCommit(getBrowserRouterState(), commit),
       );
@@ -1164,6 +1184,7 @@ export function createAppBrowserNavigationController(
         options.pendingRouterState,
         options.visibleCommitMode ?? "transition",
         shouldRepublishPendingRouterState(options),
+        options.takeTransitionTypes,
       );
       if (options.navigationResponseCompletion) {
         // Keep the live Flight branch streaming. If React commits it normally,
@@ -1174,7 +1195,8 @@ export function createAppBrowserNavigationController(
         // transition: the cache tee can end while the payload is still
         // resolving (a client module still loading, or a busy main thread),
         // and a sync render that suspends replaces the visible page with the
-        // nearest Suspense fallback.
+        // nearest Suspense fallback. It adds no view transition types: the
+        // dispatch above already handed them to React.
         void options.navigationResponseCompletion.then(
           () => {
             if (!isCurrentNavigation(options.navId) || !hasBrowserRouterState()) return;

@@ -14,6 +14,7 @@
  */
 
 import * as React from "react";
+import { addNavigationTransitionTypes } from "./internal/navigation-transition-types.js";
 import {
   __basePath,
   commitClientNavigationState,
@@ -90,7 +91,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   type AppRscRenderMode,
 } from "../server/app-rsc-render-mode.js";
-import type { AppRouterInstance } from "./internal/app-router-context.js";
+import type { AppRouterInstance, NavigateOptions } from "./internal/app-router-context.js";
 import {
   resolveDirectHybridClientRouteOwner,
   type HybridClientOwner,
@@ -2226,7 +2227,11 @@ export async function navigateClientSide(
   scroll: boolean,
   programmaticTransition = false,
   visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+  callerTransitionTypes?: readonly string[],
 ): Promise<void> {
+  // Like Next.js, read the caller's array once, at call time: the commit
+  // transitions that re-tag this navigation run after the fetch.
+  const transitionTypes = callerTransitionTypes ? [...callerTransitionTypes] : undefined;
   notifyAppNavigationStart(href);
 
   // Normalize same-origin absolute URLs to local paths for SPA navigation
@@ -2365,6 +2370,7 @@ export async function navigateClientSide(
         scrollIntent,
         visibleCommitMode,
         earlyIntent.bypassNavigationCache,
+        transitionTypes,
       );
     } else {
       if (mode === "replace") {
@@ -2462,7 +2468,7 @@ function pingVisibleLinksOnceNavigationsSettle(): void {
  */
 const _appRouter: AppRouterInstance = {
   bfcacheId: INITIAL_BFCACHE_ID,
-  push(href: string, options?: { scroll?: boolean }): void {
+  push(href: string, options?: NavigateOptions): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
     // An imperative navigation supersedes any <Link>-owned pending state.
@@ -2472,7 +2478,16 @@ const _appRouter: AppRouterInstance = {
     const releaseNavigation = trackScheduledAppRouterNavigation();
     try {
       React.startTransition(() => {
-        void navigateClientSide(href, "push", options?.scroll !== false, true);
+        // Next.js adds the types inside the navigation's transition.
+        addNavigationTransitionTypes(options?.transitionTypes);
+        void navigateClientSide(
+          href,
+          "push",
+          options?.scroll !== false,
+          true,
+          undefined,
+          options?.transitionTypes,
+        );
       });
     } catch (error) {
       releaseNavigation();
@@ -2480,14 +2495,22 @@ const _appRouter: AppRouterInstance = {
     }
     releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   },
-  replace(href: string, options?: { scroll?: boolean }): void {
+  replace(href: string, options?: NavigateOptions): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
     notifyAppNavigationStart(href);
     const releaseNavigation = trackScheduledAppRouterNavigation();
     try {
       React.startTransition(() => {
-        void navigateClientSide(href, "replace", options?.scroll !== false, true);
+        addNavigationTransitionTypes(options?.transitionTypes);
+        void navigateClientSide(
+          href,
+          "replace",
+          options?.scroll !== false,
+          true,
+          undefined,
+          options?.transitionTypes,
+        );
       });
     } catch (error) {
       releaseNavigation();

@@ -439,7 +439,12 @@ import {
 } from "./utils/vite-cli-invocation.js";
 import { resolvePluginReactPath } from "./utils/plugin-react-version.js";
 import { assertPluginRscVersion, needsAppReactServerDom } from "./utils/plugin-rsc-version.js";
-import { getReactUpgradeDeps, reactUpgradeRequiredMessage } from "./utils/react-version.js";
+import {
+  getReactUpgradeDeps,
+  reactViewTransitionExports,
+  type ViewTransitionApiName,
+  reactUpgradeRequiredMessage,
+} from "./utils/react-version.js";
 import {
   canonicalizeFilePath,
   isPathInside,
@@ -1997,6 +2002,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     (output) => output !== undefined,
   );
   let root: string;
+  const projectReactViewTransitionExports = new Map<
+    "default" | "react-server",
+    ReadonlySet<ViewTransitionApiName>
+  >();
   let pagesDir: string;
   let canonicalPagesDir: string;
   let appDir: string;
@@ -6458,7 +6467,8 @@ export const loadServerActionClient = ${
     mdxConfigProxyPlugin,
     createCssModuleImportCompatibilityPlugin({ compiledMdx: true }),
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
-    // that exist in Next.js's bundled React canary but not in stable React 19.
+    // that exist in Next.js's bundled React canary but not in a React that
+    // predates them (React 19.2 exports both).
     // Provides graceful no-op fallbacks so projects using these APIs degrade
     // instead of crashing with "does not provide an export named 'ViewTransition'".
     {
@@ -6497,6 +6507,27 @@ export const loadServerActionClient = ${
           code: /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/,
         },
         handler(code) {
+          // A React that exports both APIs needs no shim. The rewrite would only
+          // cost exports: in dev, Vite cannot interop the shim's
+          // `export * from "react"` against React's CommonJS build on the
+          // server, so `Suspense` imported beside `ViewTransition` was undefined.
+          // The RSC environment resolves React's `react-server` entry, which has
+          // `ViewTransition` but no `addTransitionType`: keep the shim for the
+          // names this module imports that its React lacks.
+          const condition = this.environment.config.resolve.conditions.includes("react-server")
+            ? "react-server"
+            : "default";
+          let exported = projectReactViewTransitionExports.get(condition);
+          if (!exported) {
+            exported = reactViewTransitionExports(root, condition);
+            projectReactViewTransitionExports.set(condition, exported);
+          }
+          const requested = new Set<ViewTransitionApiName>();
+          for (const match of code.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"]react['"]/g)) {
+            if (/\bViewTransition\b/.test(match[1])) requested.add("ViewTransition");
+            if (/\baddTransitionType\b/.test(match[1])) requested.add("addTransitionType");
+          }
+          if ([...requested].every((name) => exported.has(name))) return null;
           // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
           // This is safe because the virtual module re-exports everything from
           // react, so non-canary imports continue to work.

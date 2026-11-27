@@ -45,6 +45,7 @@ import {
 } from "./url-utils.js";
 import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
 import { getI18nContext } from "./i18n-context.js";
+import { addNavigationTransitionTypes } from "./internal/navigation-transition-types.js";
 import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-next-data.js";
 import {
   navigatePagesRouterLinkWithFallback,
@@ -1296,7 +1297,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     unstable_dynamicOnHover = false,
     legacyBehavior = false,
     passHref = false,
-    transitionTypes: _transitionTypes,
+    transitionTypes,
     locale,
     ...anchorProps
   },
@@ -1668,6 +1669,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }
     }
 
+    // Read the types at click time: after onClick and onNavigate, which may
+    // still change them (as in Next.js), but before the module loads below
+    // can yield.
+    const clickTransitionTypes = transitionTypes ? [...transitionTypes] : undefined;
+
     // Hybrid ownership check: when the App Router runtime is installed and
     // the target URL is owned by the Pages Router, soft-navigating with RSC
     // would either (a) hit the App catch-all, or (b) bounce off
@@ -1709,12 +1715,19 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
-        void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, false).finally(
-          () => {
-            setPending(false);
-            if (setter) clearLinkForCurrentNavigation(setter);
-          },
-        );
+        // Next.js adds the types inside the navigation's transition.
+        addNavigationTransitionTypes(clickTransitionTypes);
+        void navigateClientSide(
+          navigateHref,
+          replace ? "replace" : "push",
+          scroll,
+          false,
+          undefined,
+          clickTransitionTypes,
+        ).finally(() => {
+          setPending(false);
+          if (setter) clearLinkForCurrentNavigation(setter);
+        });
       });
       return;
     } else if (HAS_PAGES_ROUTER) {
