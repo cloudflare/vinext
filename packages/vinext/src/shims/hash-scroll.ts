@@ -1,3 +1,5 @@
+import { disableSmoothScrollDuringRouteTransition } from "./disable-smooth-scroll.js";
+
 export function decodeHashFragment(fragment: string): string {
   try {
     return decodeURIComponent(fragment);
@@ -48,7 +50,7 @@ export function retryScrollTo(
   let attempts = 0;
   const restore = () => {
     if (!shouldContinue()) return;
-    window.scrollTo(x, y);
+    disableSmoothScrollDuringRouteTransition(() => window.scrollTo(x, y));
     const reachedTarget = Math.abs(window.scrollY - y) <= 1;
     if (!shouldContinue() || (reachedTarget && attempts >= minFrames) || attempts >= 60) {
       return;
