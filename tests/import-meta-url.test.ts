@@ -21,7 +21,7 @@ function expectSourceCjsGlobal(
   name: "__filename" | "__dirname",
   id: string,
 ): void {
-  const filename = toSlash(fs.realpathSync(id));
+  const filename = toSlash(fs.realpathSync.native(id));
   const value = name === "__filename" ? filename : path.posix.dirname(filename);
   expect(code).toContain(`var ${name} = ${JSON.stringify(value)};`);
 }
@@ -396,7 +396,9 @@ describe("vinext:import-meta-url plugin", () => {
       source,
       esmDependencyPath,
     );
-    expect(devResult?.code).toContain(pathToFileURL(fs.realpathSync(esmDependencyPath)).href);
+    expect(devResult?.code).toContain(
+      pathToFileURL(fs.realpathSync.native(esmDependencyPath)).href,
+    );
     expect(devResult?.code).not.toContain("__VINEXT_EMITTED_MODULE_URL_");
 
     const buildResult = transform.call(

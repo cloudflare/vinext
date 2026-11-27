@@ -296,7 +296,9 @@ describe("Vite tsconfig paths support", () => {
     const alias = aliasEntriesToRecord(resolvedConfig?.resolve?.alias);
     expect(alias["@"]).toBeDefined();
     expect(path.isAbsolute(alias["@"])).toBe(true);
-    expect(alias["@"].replace(/\\/g, "/")).toContain(root.replace(/\\/g, "/"));
+    expect(alias["@"].replace(/\\/g, "/")).toContain(
+      fs.realpathSync.native(root).replace(/\\/g, "/"),
+    );
   });
 
   it("uses custom aliases without auto-enabling native tsconfig discovery", async () => {

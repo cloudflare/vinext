@@ -22,7 +22,11 @@ function write(root: string, file: string, contents: string): void {
 }
 
 function createHybridProject(configFile = "vite.config.ts"): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-command-contract-"));
+  // Vite keys virtual entries in the manifest relative to the cwd, not the
+  // resolved root, so build from the root's real spelling (no 8.3 short names).
+  const root = fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-command-contract-")),
+  );
   temporaryProjects.push(root);
   fs.symlinkSync(
     path.resolve(import.meta.dirname, "../node_modules"),
