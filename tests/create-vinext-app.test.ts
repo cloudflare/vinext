@@ -491,6 +491,7 @@ describe("create-vinext-app CLI", () => {
   it("accepts a space-separated Worker name before the app directory", async () => {
     const appPath = path.join(tmpDir, "named-app");
     // Resolve a misparsed "storefront" directory inside tmpDir, not the repo root.
+    const testCwd = process.cwd();
     const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tmpDir);
     try {
       await withQuietConsole(() =>
@@ -511,6 +512,8 @@ describe("create-vinext-app CLI", () => {
       expect(fs.existsSync(path.join(tmpDir, "storefront"))).toBe(false);
     } finally {
       cwdSpy.mockRestore();
+      // Loading next.config changes into the mocked cwd and back.
+      process.chdir(testCwd);
     }
   });
 

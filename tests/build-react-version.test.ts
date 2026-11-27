@@ -79,14 +79,15 @@ function createAppWithReact(
 
 describe("vinext build React version check", () => {
   let root: string | undefined;
+  let workspace: string | undefined;
   // Loading next.config changes into the (mocked) cwd and back, so restore it.
   const testCwd = process.cwd();
 
   afterEach(() => {
     vi.restoreAllMocks();
     process.chdir(testCwd);
-    if (root) fs.rmSync(root, { recursive: true, force: true });
-    root = undefined;
+    for (const dir of [root, workspace]) if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    root = workspace = undefined;
     pluginRsc.version = undefined;
   });
 
@@ -153,17 +154,13 @@ describe("vinext build React version check", () => {
   it("checks the working directory plugin-rsc crawls, not the Vite root", async () => {
     pluginRsc.version = "0.5.37";
     root = createAppWithReact("19.3.1");
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-react-version-cwd-"));
-    fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ name: "workspace" }));
-    vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-react-version-cwd-"));
+    fs.writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ name: "workspace" }));
+    vi.spyOn(process, "cwd").mockReturnValue(workspace);
 
-    try {
-      await expect(createAppBuilder(root)).rejects.toThrow(
-        "Run: npm install react-server-dom-webpack@latest",
-      );
-    } finally {
-      fs.rmSync(cwd, { recursive: true, force: true });
-    }
+    await expect(createAppBuilder(root)).rejects.toThrow(
+      "Run: npm install react-server-dom-webpack@latest",
+    );
   });
 
   it("checks the package that owns the working directory", async () => {
@@ -177,27 +174,23 @@ describe("vinext build React version check", () => {
   it("checks the RSDW version in the working directory plugin-rsc crawls", async () => {
     pluginRsc.version = "0.5.37";
     root = createAppWithReact("19.3.1");
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-react-version-cwd-"));
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-build-react-version-cwd-"));
     fs.writeFileSync(
-      path.join(cwd, "package.json"),
+      path.join(workspace, "package.json"),
       JSON.stringify({ name: "workspace", dependencies: { "react-server-dom-webpack": "19.3.0" } }),
     );
-    const rsdw = path.join(cwd, "node_modules", "react-server-dom-webpack");
+    const rsdw = path.join(workspace, "node_modules", "react-server-dom-webpack");
     fs.mkdirSync(rsdw, { recursive: true });
     fs.writeFileSync(
       path.join(rsdw, "package.json"),
       JSON.stringify({ name: "react-server-dom-webpack", version: "19.3.0", main: "index.js" }),
     );
     fs.writeFileSync(path.join(rsdw, "index.js"), "module.exports = {};");
-    vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    vi.spyOn(process, "cwd").mockReturnValue(workspace);
 
-    try {
-      await expect(createAppBuilder(root)).rejects.toThrow(
-        "Run: npm install react-server-dom-webpack@latest",
-      );
-    } finally {
-      fs.rmSync(cwd, { recursive: true, force: true });
-    }
+    await expect(createAppBuilder(root)).rejects.toThrow(
+      "Run: npm install react-server-dom-webpack@latest",
+    );
   });
 
   it("uses plugin-rsc's bundled RSDW once it is at the floor", async () => {
