@@ -292,6 +292,22 @@ export type Metadata = {
     telephone?: boolean;
   };
   category?: string;
+  classification?: string | null;
+  abstract?: string | null;
+  archives?: string | string[] | null;
+  assets?: string | string[] | null;
+  bookmarks?: string | string[] | null;
+  pagination?: {
+    previous?: string | URL | null;
+    next?: string | URL | null;
+  };
+  facebook?: {
+    appId?: string;
+    admins?: string | string[];
+  } | null;
+  pinterest?: {
+    richPin?: string | boolean;
+  } | null;
   itunes?: {
     appId: string;
     appArgument?: string;
@@ -1128,6 +1144,11 @@ export function MetadataHead({
     elements.push(<meta key={key++} name="category" content={metadata.category} />);
   }
 
+  // Classification
+  if (metadata.classification) {
+    elements.push(<meta key={key++} name="classification" content={metadata.classification} />);
+  }
+
   // Robots
   if (metadata.robots) {
     if (typeof metadata.robots === "string") {
@@ -1159,6 +1180,48 @@ export function MetadataHead({
           }
         }
       }
+    }
+  }
+
+  // Abstract
+  if (metadata.abstract) {
+    elements.push(<meta key={key++} name="abstract" content={metadata.abstract} />);
+  }
+
+  // Link rel lists. Next.js accepts a string or an array and renders each
+  // href as written, without resolving it against metadataBase.
+  const linkRelLists = [
+    ["archives", metadata.archives],
+    ["assets", metadata.assets],
+    ["bookmarks", metadata.bookmarks],
+  ] as const;
+  for (const [rel, value] of linkRelLists) {
+    if (!value) continue;
+    for (const href of Array.isArray(value) ? value : [value]) {
+      elements.push(<link key={key++} rel={rel} href={href} />);
+    }
+  }
+
+  // Pagination resolves like an alternate URL (Next.js's resolvePagination).
+  if (metadata.pagination) {
+    const { previous, next } = metadata.pagination;
+    if (previous) {
+      elements.push(
+        <link
+          key={key++}
+          rel="prev"
+          href={resolveAlternateUrl(previous, base, pathname, trailingSlash)}
+        />,
+      );
+    }
+    if (next) {
+      elements.push(
+        <link
+          key={key++}
+          rel="next"
+          href={resolveAlternateUrl(next, base, pathname, trailingSlash)}
+        />,
+      );
     }
   }
 
@@ -1542,6 +1605,30 @@ export function MetadataHead({
       content += `, app-argument=${appArgument}`;
     }
     elements.push(<meta key={key++} name="apple-itunes-app" content={content} />);
+  }
+
+  // Facebook
+  if (metadata.facebook) {
+    const { appId, admins } = metadata.facebook;
+    if (appId) {
+      elements.push(<meta key={key++} property="fb:app_id" content={appId} />);
+    }
+    if (admins) {
+      for (const admin of Array.isArray(admins) ? admins : [admins]) {
+        elements.push(<meta key={key++} property="fb:admins" content={admin} />);
+      }
+    }
+  }
+
+  // Pinterest
+  if (metadata.pinterest && metadata.pinterest.richPin !== undefined) {
+    elements.push(
+      <meta
+        key={key++}
+        property="pinterest-rich-pin"
+        content={String(metadata.pinterest.richPin)}
+      />,
+    );
   }
 
   // App Links

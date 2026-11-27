@@ -3536,6 +3536,27 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('href="http://trailingslash.com/docs/" hreflang="en"');
     expect(html).toContain('href="http://trailingslash.com/docs?source=print" media="print"');
   });
+
+  it("resolves pagination like alternates and renders facebook and pinterest", () => {
+    // Ported from Next.js: resolvePagination in packages/next/src/lib/metadata/resolvers/resolve-basics.ts
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        pagination: {
+          previous: new URL("http://trailingslash.com/base?page=1"),
+          next: "./page/3",
+        },
+        facebook: { admins: "120" },
+        pinterest: { richPin: false },
+      },
+      "/docs",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('<link rel="prev" href="http://trailingslash.com/docs?page=1">');
+    expect(html).toContain('<link rel="next" href="http://trailingslash.com/docs/page/3/">');
+    expect(html).toContain('<meta property="fb:admins" content="120">');
+    expect(html).toContain('<meta property="pinterest-rich-pin" content="false">');
+  });
 });
 
 describe("createAppPageRouteBodyMetadata (body-placement canonical)", () => {
