@@ -757,7 +757,14 @@ describe("Link App Router navigation scheduling", () => {
     ReactDOMServer.renderToString(
       React.createElement(
         IsolatedLink,
-        { href: "/target", prefetch: false, transitionTypes },
+        {
+          href: "/target",
+          prefetch: false,
+          transitionTypes,
+          // Like Next.js, the Link's own click handler runs before the types
+          // are read, so it can still add one.
+          onClick: () => transitionTypes.push("from-onclick"),
+        },
         "target",
       ),
     );
@@ -782,7 +789,7 @@ describe("Link App Router navigation scheduling", () => {
 
     expect(navigate).toHaveBeenCalledTimes(1);
     const navigatedTypes = (navigate.mock.calls[0] as unknown[]).at(-1);
-    expect(navigatedTypes).toEqual(["nav-forward"]);
+    expect(navigatedTypes).toEqual(["nav-forward", "from-onclick"]);
     expect(navigatedTypes).not.toBe(transitionTypes);
     expect(transitionStates).toEqual([true]);
   });
