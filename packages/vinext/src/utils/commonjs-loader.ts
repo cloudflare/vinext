@@ -7,6 +7,9 @@ import { createRequire, Module } from "node:module";
 // oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { ESTree } from "vite";
+import { findAstBindingScope, walkAstScopes } from "../plugins/ast-scope.js";
+import { forEachAstChild, parseProgram, walkAst } from "../plugins/ast-utils.js";
 
 type CompilableCommonJsModule = Module & {
   _compile(content: string, filename: string): void;
@@ -48,26 +51,104 @@ export function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boo
   // This validation intentionally assumes the executed config/plugin source
   // is byte-identical to the on-disk file. Current callers load raw user files;
   // transformed modules should not use this fallback without source-map logic.
+  // A missing global is thrown where it is read, so only the first frame with
+  // a location counts: a caller's statement says nothing about the error.
   for (const line of error.stack.split("\n").slice(1)) {
-    const location = line.match(/(?:\(|at )(.+):(\d+):(\d+)\)?$/);
+    // A named frame is `at fn (path:line:col)`; an anonymous one `at path:line:col`.
+    const location = line.match(/\((.+):(\d+):(\d+)\)$/) ?? line.match(/^\s*at (.+):(\d+):(\d+)$/);
     if (!location) continue;
     const [, framePath, lineNumberText, columnNumberText] = location;
     const canonicalFramePath = canonicalPath(framePath);
-    if (!canonicalFramePath.endsWith(".js")) continue;
+    if (!canonicalFramePath.endsWith(".js")) return false;
 
-    let sourceLine: string | undefined;
+    let source: string;
     try {
-      sourceLine = fs.readFileSync(canonicalFramePath, "utf8").split(/\r?\n/)[
-        Number(lineNumberText) - 1
-      ];
+      source = fs.readFileSync(canonicalFramePath, "utf8");
     } catch {
-      continue;
+      return false;
     }
-    const column = Number(columnNumberText) - 1;
-    if (sourceLine?.slice(column, column + identifier.length) === identifier) return true;
+    const offset = sourceOffset(source, Number(lineNumberText), Number(columnNumberText));
+    return offset !== null && statementReadsGlobal(source, offset, identifier);
   }
 
   return false;
+}
+
+/** The UTF-16 offset of a 1-based line and column, or `null` when out of range. */
+function sourceOffset(source: string, lineNumber: number, columnNumber: number): number | null {
+  const lineBreak = /\r\n?|\n|\u2028|\u2029/g;
+  let lineStart = 0;
+  for (let current = 1; current < lineNumber; current++) {
+    if (!lineBreak.exec(source)) return null;
+    lineStart = lineBreak.lastIndex;
+  }
+  const offset = lineStart + columnNumber - 1;
+  return offset >= lineStart && offset <= source.length ? offset : null;
+}
+
+function isStatementNode(node: ESTree.Node): boolean {
+  return /(?:Statement|Declaration)$/.test(node.type);
+}
+
+/**
+ * Whether the innermost statement containing `offset` reads `name` as an
+ * unbound variable. V8 reports a missing global at the enclosing expression,
+ * not at the identifier: `log` in `console.log(require("x"))`, or the start of
+ * `const c = { plugins: [require("x")] }`. It always stays inside the
+ * statement that threw, so a column match would miss those shapes. Strings,
+ * comments, property names (`obj.require`, `{ require: 1 }`) and names bound
+ * in scope (a `require` parameter) don't count.
+ */
+function statementReadsGlobal(source: string, offset: number, name: string): boolean {
+  let program: ESTree.Program;
+  try {
+    program = parseProgram(source, { lang: "jsx", sourceType: "unambiguous" });
+  } catch {
+    return false;
+  }
+
+  let statement: ESTree.Node | null = null;
+  let node: ESTree.Node | null = program;
+  while (node) {
+    const parent: ESTree.Node = node;
+    node = null;
+    forEachAstChild(parent, (child) => {
+      if (!node && child.start <= offset && offset < child.end) node = child;
+    });
+    if (node && isStatementNode(node)) statement = node;
+  }
+  if (!statement) return false;
+  const { start, end } = statement;
+
+  // Non-computed property names are identifiers that never read a variable.
+  const propertyNames = new Set<ESTree.Node>();
+  walkAst(statement, (current) => {
+    if (current.type === "MemberExpression" && !current.computed) {
+      propertyNames.add(current.property);
+    } else if (
+      (current.type === "Property" && !current.computed && !current.shorthand) ||
+      ((current.type === "MethodDefinition" || current.type === "PropertyDefinition") &&
+        !current.computed)
+    ) {
+      propertyNames.add(current.key);
+    }
+  });
+
+  let found = false;
+  walkAstScopes(program, (current, scope) => {
+    if (
+      !found &&
+      current.type === "Identifier" &&
+      current.name === name &&
+      current.start >= start &&
+      current.end <= end &&
+      !propertyNames.has(current) &&
+      !findAstBindingScope(scope, name)
+    ) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 function compileCommonJsModule(resolvedPath: string, parent?: Module): unknown {

@@ -1,0 +1,5 @@
+{
+  "name": "cjs-config-require-expression",
+  "private": true,
+  "type": "module"
+}
