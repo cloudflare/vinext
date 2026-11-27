@@ -761,9 +761,10 @@ describe("Link App Router navigation scheduling", () => {
           href: "/target",
           prefetch: false,
           transitionTypes,
-          // Like Next.js, the Link's own click handler runs before the types
-          // are read, so it can still add one.
+          // Like Next.js, the Link's onClick and onNavigate run before the
+          // types are read, so they can still add one.
           onClick: () => transitionTypes.push("from-onclick"),
+          onNavigate: () => transitionTypes.push("from-onnavigate"),
         },
         "target",
       ),
@@ -789,7 +790,7 @@ describe("Link App Router navigation scheduling", () => {
 
     expect(navigate).toHaveBeenCalledTimes(1);
     const navigatedTypes = (navigate.mock.calls[0] as unknown[]).at(-1);
-    expect(navigatedTypes).toEqual(["nav-forward", "from-onclick"]);
+    expect(navigatedTypes).toEqual(["nav-forward", "from-onclick", "from-onnavigate"]);
     expect(navigatedTypes).not.toBe(transitionTypes);
     expect(transitionStates).toEqual([true]);
   });

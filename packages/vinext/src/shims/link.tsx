@@ -1581,9 +1581,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // See: .nextjs-ref/packages/next/src/client/link.tsx (legacyBehavior branch).
     if (!options.skipLinkOnClick && onClick) onClick(e);
     if (e.defaultPrevented) return;
-    // Read the types at click time: after the click handler, which may still
-    // change them (as in Next.js), but before the module loads below can yield.
-    const clickTransitionTypes = transitionTypes ? [...transitionTypes] : undefined;
 
     // Native download links must keep the browser's default behavior.
     if (e.currentTarget.hasAttribute("download")) {
@@ -1671,6 +1668,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         // Ignore URL parsing errors for relative/hash hrefs
       }
     }
+
+    // Read the types at click time: after onClick and onNavigate, which may
+    // still change them (as in Next.js), but before the module loads below
+    // can yield.
+    const clickTransitionTypes = transitionTypes ? [...transitionTypes] : undefined;
 
     // Hybrid ownership check: when the App Router runtime is installed and
     // the target URL is owned by the Pages Router, soft-navigating with RSC
