@@ -4261,14 +4261,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig.assetPrefix || nextConfig.deploymentId
             ? {
                 experimental: {
+                  // Vite also calls this for public/ files (e.g. `url(/icon.svg)`
+                  // in CSS). Those are not emitted under `_next/static`, and
+                  // Next.js never applies `assetPrefix` or `?dpl=` to them:
+                  // return undefined so Vite keeps its `base + url` default.
                   renderBuiltUrl: (filename: string, context) =>
-                    renderVinextBuiltUrl(
-                      filename,
-                      nextConfig.assetPrefix,
-                      nextConfig.deploymentId,
-                      context.hostType,
-                      context.hostId,
-                    ),
+                    context.type === "public"
+                      ? undefined
+                      : renderVinextBuiltUrl(
+                          filename,
+                          nextConfig.assetPrefix,
+                          nextConfig.deploymentId,
+                          context.hostType,
+                          context.hostId,
+                        ),
                 },
               }
             : {}),

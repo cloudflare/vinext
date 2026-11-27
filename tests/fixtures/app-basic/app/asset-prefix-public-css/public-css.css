@@ -1,0 +1,8 @@
+/* References a file in public/. Its URL must stay a public URL under every
+   assetPrefix/deploymentId config: it is not an emitted _next/static asset. */
+.public-css-mask {
+  width: 24px;
+  height: 24px;
+  background-color: currentColor;
+  mask: url(/heart-mask.svg) center / contain no-repeat;
+}
