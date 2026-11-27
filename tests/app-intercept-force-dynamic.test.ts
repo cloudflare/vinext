@@ -46,6 +46,13 @@ describe("intercepting route force-dynamic", () => {
     expect(boardModal?.intercepts).toEqual([
       expect.objectContaining({ forceDynamic: false, targetPattern: "/board/card/:id" }),
     ]);
+    // The owner's force-dynamic layout is part of the intercept's tree.
+    const deckModal = Object.values(byPattern["/deck"]!.slots).find(
+      (slot) => slot.name === "modal",
+    );
+    expect(deckModal?.intercepts).toEqual([
+      expect.objectContaining({ forceDynamic: true, targetPattern: "/deck/slide/:id" }),
+    ]);
     // The request stage's intercept match carries the intercept's own flag.
     expect(code).toContain("interceptionForceDynamic: intercept.forceDynamic === true");
   });
