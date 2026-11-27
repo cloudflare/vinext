@@ -1,0 +1,5 @@
+{
+  "name": "app-cjs-nested-module-scope-fixture",
+  "private": true,
+  "type": "commonjs"
+}
