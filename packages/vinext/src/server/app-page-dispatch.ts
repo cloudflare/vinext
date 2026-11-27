@@ -788,7 +788,7 @@ type AppPageInterceptStaticParams = {
   rootParamNames: readonly string[];
   routeSegments: readonly string[];
   /** The interception's own route, which its root param errors name. */
-  staticParamsRoutePattern: string | undefined;
+  staticParamsRoutePattern: string;
 };
 
 /**
@@ -852,13 +852,9 @@ async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
     routeSegments: config.routeSegments,
     // Next.js renders an interception as its own page, and names it as
     // normalizeAppPath does: without groups and slots, with the marker.
-    staticParamsRoutePattern: interceptState.intercept.sourcePageSegments
-      ? filesystemRoutePattern(
-          interceptState.intercept.sourcePageSegments
-            .filter((segment) => !isInvisibleSegment(segment))
-            .join("/"),
-        )
-      : undefined,
+    staticParamsRoutePattern: filesystemRoutePattern(
+      config.routeSegments.filter((segment) => !isInvisibleSegment(segment)).join("/"),
+    ),
   };
   if (interceptState.kind === "source-route") {
     return { ...options, interceptState, interceptStaticParams };

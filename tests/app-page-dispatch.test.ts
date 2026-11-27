@@ -5824,19 +5824,16 @@ describe("app page dispatch", () => {
         ],
         rootParamNames: ["slug"],
       });
-      const { options } = createClubOptions(
-        sourceRoute,
-        {
-          dynamicParams: false,
-          async generateStaticParams() {
-            const slug = await getRootParam("slug");
-            seen.push(slug);
-            return [{ id: slug === "acme" ? "2" : "1" }];
-          },
+      // The intercept carries no `sourcePageSegments`, as the matcher's older
+      // shape doesn't: the route comes from the interception's own segments.
+      const { options } = createClubOptions(sourceRoute, {
+        dynamicParams: false,
+        async generateStaticParams() {
+          const slug = await getRootParam("slug");
+          seen.push(slug);
+          return [{ id: slug === "acme" ? "2" : "1" }];
         },
-        {},
-        { sourcePageSegments: ["club", "[slug]", "@modal", "(.)pics", "[id]"] },
-      );
+      });
       const response = await runWithRequestContext(
         createRequestContext({ rootParams: { slug: "other" } }),
         () => dispatchAppPage({ ...options, rootParams: { slug: "other" } }),
