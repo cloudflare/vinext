@@ -828,6 +828,10 @@ async function finalizeWorkerCacheabilityAdmission(
     if (captured.kind === "fallback") {
       return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
     }
+    // The body can record a final-response veto while it streams.
+    if (state.finalResponseVetoReason) {
+      return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
+    }
     return responseWithCachePolicy(response, captured.body, outcome, browserCacheControl);
   }
 
@@ -900,6 +904,11 @@ async function finalizeWorkerCacheabilityAdmission(
   }
 
   const rendererOutcome = state.completion ? await state.completion : (state.outcome ?? null);
+  // A late boundary can record a final-response veto while the body streams.
+  // It keeps the completed response private, never a static-to-dynamic 500.
+  if (state.finalResponseVetoReason) {
+    return responseWithCachePolicy(response, captured.body, null, browserCacheControl);
+  }
   const outcome = completedRouteOutcome(response, state, rendererOutcome);
   if (outcome?.cacheable !== true || !outcome.cacheControl) {
     // Next.js throws a static-to-dynamic error only when the runtime render

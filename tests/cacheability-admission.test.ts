@@ -9,6 +9,7 @@ import {
 } from "../packages/vinext/src/server/cacheability-request.js";
 import {
   CACHEABILITY_REQUEST_STATE,
+  markRouteCacheabilityFinalResponseUncacheable,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
 import {
@@ -2285,6 +2286,113 @@ describe("single-request cacheability admission", () => {
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Set-Cookie")).toBe(setCookie);
     await expect(response.text()).resolves.toBe("pages");
+  });
+});
+
+describe("final-response veto recorded while the body streams", () => {
+  /** A body whose second chunk records a final-response veto, as a late Suspense boundary would. */
+  function streamingBodyWithLateVeto(context: object): ReadableStream<Uint8Array> {
+    let step = 0;
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        if (step === 0) {
+          controller.enqueue(encoder.encode("<html>shell"));
+        } else if (step === 1) {
+          void runWithExecutionContext(context as never, () =>
+            markRouteCacheabilityFinalResponseUncacheable("late Suspense boundary is private"),
+          );
+          controller.enqueue(encoder.encode("private content</html>"));
+        } else {
+          controller.close();
+        }
+        step++;
+      },
+    });
+  }
+
+  it("keeps an App page private", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/page", { headers: { Accept: "text/html" } }),
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = {
+      cacheable: true,
+      searchParamsUnread: true,
+      cacheControl: "s-maxage=60, stale-while-revalidate=540",
+    };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response(streamingBodyWithLateVeto(context), {
+        headers: { "Content-Type": "text/html" },
+      }),
+      context,
+    );
+
+    expect(state.finalResponseVetoReason).toBe("late Suspense boundary is private");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("Cache-Control")).not.toContain("s-maxage");
+    await expect(response.text()).resolves.toBe("<html>shellprivate content</html>");
+  });
+
+  it("keeps a certified static App page private instead of reporting static-to-dynamic", async () => {
+    const { raw } = staticManifestRoute();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/page", { headers: { Accept: "text/html" } }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = { cacheable: false, dynamicUsage: true };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response(streamingBodyWithLateVeto(context), {
+        headers: { "Content-Type": "text/html" },
+      }),
+      context,
+    );
+
+    expect(state.finalResponseVetoReason).toBe("late Suspense boundary is private");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("<html>shellprivate content</html>");
+  });
+
+  it.each(["pages-api", "app-route"] as const)("keeps a %s response private", async (kind) => {
+    const adapter = new CloudflareCdnCacheAdapter();
+    setCdnCacheAdapter(adapter);
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/data", { headers: { Accept: "*/*" } }),
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind, pattern: "/api/data" };
+    state.explicitResponseCachePolicy = true;
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response(streamingBodyWithLateVeto(context), {
+        headers: {
+          "Cache-Control": "public, max-age=10",
+          "Cloudflare-CDN-Cache-Control": "max-age=3600",
+        },
+      }),
+      context,
+    );
+
+    expect(state.finalResponseVetoReason).toBe("late Suspense boundary is private");
+    expect(adapter.responsePolicy.readCacheControl(response.headers)).toContain("no-store");
+    await expect(response.text()).resolves.toBe("<html>shellprivate content</html>");
   });
 });
 
