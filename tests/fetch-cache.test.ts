@@ -881,6 +881,35 @@ describe("fetch cache shim", () => {
     );
   });
 
+  it("refetches a released deduped caller with the URL and headers it was called with", async () => {
+    let resolveFirst!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => (resolveFirst = resolve)),
+    );
+    const url = new URL("https://api.example.com/release-snapshot");
+    const headers = new Headers({ "x-token": "original" });
+    const ctx = createRequestContext();
+    await runWithRequestContext(ctx, () =>
+      runWithFetchDedupe(async () => {
+        const first = fetch(url, { headers });
+        const waiter = fetch(url, { headers });
+        // Let both calls reach the dedupe map before the caller mutates its
+        // arguments, as native fetch has already read them by then.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        url.pathname = "/mutated";
+        headers.set("x-token", "mutated");
+        await closeAfterResponse(ctx);
+        resolveFirst(new Response("first"));
+
+        expect(await (await first).text()).toBe("first");
+        expect((await (await waiter).json()).url).toBe("https://api.example.com/release-snapshot");
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        const [refetchInput, refetchInit] = fetchMock.mock.calls[1];
+        expect(new Request(refetchInput, refetchInit).headers.get("x-token")).toBe("original");
+      }),
+    );
+  });
+
   it("does not dedupe Request inputs that differ in non-trace headers", async () => {
     const [res1, res2] = await Promise.all([
       fetch(

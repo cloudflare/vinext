@@ -1077,7 +1077,7 @@ function buildFetchDedupeKey(request: Request, resolveOverride: unknown): string
 function createFetchDedupeCandidate(
   input: string | URL | Request,
   init: RequestInit | undefined,
-): { url: string; key: string } | null {
+): { url: string; key: string; request: Request } | null {
   if (init?.signal) {
     return null;
   }
@@ -1103,6 +1103,7 @@ function createFetchDedupeCandidate(
   return {
     url: request.url,
     key: buildFetchDedupeKey(request, getResolveOverride(input, init)),
+    request,
   };
 }
 
@@ -1199,10 +1200,13 @@ function dedupeFetch(
   for (const entry of entries) {
     if (entry.key !== candidate.key) continue;
 
+    // Snapshot the request now, as native fetch would: the caller may mutate a
+    // shared URL or Headers while this waits on the first fetch.
+    const request = candidate.request === input ? input.clone() : candidate.request;
     return entry.promise.then(() => {
       // Released when the response closed while this caller waited.
       if (!entry.response) {
-        return originalFetch(input, init);
+        return originalFetch(request);
       }
       const [responseForCaller, responseForFutureCaller] = cloneDedupeResponse(entry.response);
       entry.response = responseForFutureCaller;
