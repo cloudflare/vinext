@@ -1,4 +1,5 @@
 import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
+import { runWithGenerateStaticParamsRootParams } from "vinext/shims/root-params";
 import {
   closeAfterResponse,
   runWithUnifiedStateMutation,
@@ -6,6 +7,7 @@ import {
 } from "vinext/shims/unified-request-context";
 import { resolveAppRouteHandlerFetchCacheMode } from "./app-segment-config.js";
 import { buildAppStaticParamsTags } from "./implicit-tags.js";
+import { patternToNextRoute } from "../routing/route-pattern.js";
 
 /**
  * Runs a route's generateStaticParams as Next.js does, in a work store of its
@@ -31,8 +33,11 @@ export function runStaticParamsGeneration<T>(
   const generate = async () => {
     let result: T;
     try {
-      // Next.js' generate-static-params work unit, where io() resolves.
-      result = await workUnitAsyncStorage.run({ type: "generate-static-params" }, fn);
+      // Next.js' generate-static-params work unit, where io() resolves and
+      // a root param getter fails: these generators have no parent params.
+      result = await workUnitAsyncStorage.run({ type: "generate-static-params" }, () =>
+        runWithGenerateStaticParamsRootParams(patternToNextRoute(pattern), {}, [], fn),
+      );
     } catch (error) {
       // Next.js never runs a failed generator's after() callbacks, also those
       // its after() promises register later. Drop them, so the request's
