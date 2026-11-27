@@ -692,6 +692,101 @@ describe("Link App Router navigation scheduling", () => {
     expect(transitionStates).toEqual([true]);
   });
 
+  it("passes a snapshot of Link transitionTypes taken at click time to the navigation", async () => {
+    vi.resetModules();
+
+    const transitionTypes = ["nav-forward"];
+
+    let capturedAnchorProps: CapturedAnchorProps | undefined;
+    let transitionActive = false;
+    const transitionStates: boolean[] = [];
+    const startTransition = vi.fn((callback: () => void) => {
+      transitionActive = true;
+      try {
+        callback();
+      } finally {
+        transitionActive = false;
+      }
+    });
+
+    const captureAnchor = (type: unknown, props: unknown) => {
+      if (type === "a" && props !== null && typeof props === "object") {
+        capturedAnchorProps = props;
+      }
+    };
+
+    mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE({ captureAnchor, startTransition });
+
+    const navigate = vi.fn(async () => {
+      transitionStates.push(transitionActive);
+    });
+    vi.stubGlobal("window", {
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          navigate,
+        },
+      },
+      addEventListener: vi.fn(),
+      history: {
+        pushState: vi.fn(),
+        replaceState: vi.fn(),
+      },
+      location: {
+        href: "https://example.com/current",
+        origin: "https://example.com",
+      },
+      scrollTo: vi.fn(),
+    });
+
+    // Load link.js BEFORE importActual("react"). Earlier these two imports ran
+    // in parallel via Promise.all, but that race made the mock occasionally not
+    // intercept link.tsx's transitive `import React from "react"` — when
+    // importActual won the race, "react" landed in the module cache as the
+    // actual module first, and link.tsx's import then resolved to that cached
+    // entry instead of the doMock factory. That caused React.startTransition
+    // inside Link to be the real implementation rather than the spy, so the
+    // assertion on `toHaveBeenCalledTimes(1)` would flake to 0.
+    // Sequencing the imports guarantees the doMock factory runs first.
+    const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link.js");
+    const React = await vi.importActual<typeof import("react")>("react");
+
+    ReactDOMServer.renderToString(
+      React.createElement(
+        IsolatedLink,
+        { href: "/target", prefetch: false, transitionTypes },
+        "target",
+      ),
+    );
+
+    const clickEvent = {
+      button: 0,
+      currentTarget: { hasAttribute: () => false, target: "" },
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    };
+    const onClick = capturedAnchorProps?.onClick;
+    expect(onClick).toBeTypeOf("function");
+    if (onClick === undefined) {
+      throw new Error("Expected rendered Link anchor to expose an onClick handler");
+    }
+    await onClick(clickEvent);
+
+    // The navigation re-tags its later commit transitions with the types, so
+    // a caller mutating its array afterwards must not change them.
+    transitionTypes.push("mutated-after-click");
+    expect(navigate).toHaveBeenCalledTimes(1);
+    const navigatedTypes = (navigate.mock.calls[0] as unknown[]).at(-1);
+    expect(navigatedTypes).toEqual(["nav-forward"]);
+    expect(navigatedTypes).not.toBe(transitionTypes);
+    expect(transitionStates).toEqual([true]);
+  });
+
   it("preserves the current query when an App Router Link changes only the hash", async () => {
     // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts

@@ -52,6 +52,12 @@ test.describe("App Router view transition types", () => {
     );
   });
 
+  test("server component importing addTransitionType gets the no-op fallback", async ({ page }) => {
+    const res = await page.goto(`${BASE}/view-transition-server-types`);
+    expect(res?.status()).toBe(200);
+    await expect(page.getByTestId("vt-server-add-transition-type")).toHaveText("function");
+  });
+
   test("<Link transitionTypes> passes its types to the view transition", async ({ page }) => {
     await openSource(page);
     const types = await navigateAndRecord(page, "typed-link");
@@ -78,5 +84,49 @@ test.describe("App Router view transition types", () => {
     await openSource(page);
     const types = await navigateAndRecord(page, "untyped-link");
     expect(types.every((entry) => entry === null)).toBe(true);
+  });
+
+  test("router.push with transitionTypes before the router state is ready keeps its types", async ({
+    page,
+  }) => {
+    await recordViewTransitions(page);
+    // Call router.push in a microtask right after the browser entry registers
+    // its navigation functions. That runs after hydrateRoot() returns but
+    // before React's scheduled hydration commit attaches the router state, so
+    // the navigation waits for the router and publishes its pending state
+    // after that await.
+    await page.addInitScript(() => {
+      const key = Symbol.for("vinext.navigationRuntime");
+      let runtime: unknown;
+      let pushed = false;
+      Object.defineProperty(window, key, {
+        configurable: true,
+        get: () => runtime,
+        set(value: Record<string, unknown>) {
+          runtime = value;
+          let functions: unknown = value.functions;
+          Object.defineProperty(value, "functions", {
+            configurable: true,
+            enumerable: true,
+            get: () => functions,
+            set(next: { navigate?: unknown }) {
+              functions = next;
+              if (pushed || typeof next?.navigate !== "function") return;
+              pushed = true;
+              queueMicrotask(() => {
+                (window as any).next.router.push("/view-transition-types/target", {
+                  transitionTypes: ["early-push"],
+                });
+              });
+            },
+          });
+        },
+      });
+    });
+    await page.goto(`${BASE}/view-transition-types`);
+    await expect(page.getByTestId("vt-target")).toBeVisible();
+    await expect.poll(async () => (await readRecordedTypes(page)).length).toBeGreaterThan(0);
+    const types = await readRecordedTypes(page);
+    expect(types.every((entry) => entry?.includes("early-push"))).toBe(true);
   });
 });

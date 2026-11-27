@@ -441,7 +441,8 @@ import { resolvePluginReactPath } from "./utils/plugin-react-version.js";
 import { assertPluginRscVersion, needsAppReactServerDom } from "./utils/plugin-rsc-version.js";
 import {
   getReactUpgradeDeps,
-  reactExportsViewTransitionApis,
+  reactViewTransitionExports,
+  type ViewTransitionApiName,
   reactUpgradeRequiredMessage,
 } from "./utils/react-version.js";
 import {
@@ -2001,7 +2002,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     (output) => output !== undefined,
   );
   let root: string;
-  let projectReactExportsViewTransitionApis: boolean | undefined;
+  const projectReactViewTransitionExports = new Map<
+    "default" | "react-server",
+    ReadonlySet<ViewTransitionApiName>
+  >();
   let pagesDir: string;
   let canonicalPagesDir: string;
   let appDir: string;
@@ -6507,8 +6511,23 @@ export const loadServerActionClient = ${
           // cost exports: in dev, Vite cannot interop the shim's
           // `export * from "react"` against React's CommonJS build on the
           // server, so `Suspense` imported beside `ViewTransition` was undefined.
-          projectReactExportsViewTransitionApis ??= reactExportsViewTransitionApis(root);
-          if (projectReactExportsViewTransitionApis) return null;
+          // The RSC environment resolves React's `react-server` entry, which has
+          // `ViewTransition` but no `addTransitionType`: keep the shim for the
+          // names this module imports that its React lacks.
+          const condition = this.environment.config.resolve.conditions.includes("react-server")
+            ? "react-server"
+            : "default";
+          let exported = projectReactViewTransitionExports.get(condition);
+          if (!exported) {
+            exported = reactViewTransitionExports(root, condition);
+            projectReactViewTransitionExports.set(condition, exported);
+          }
+          const requested = new Set<ViewTransitionApiName>();
+          for (const match of code.matchAll(/import\s*\{([^}]*)\}\s*from\s*['"]react['"]/g)) {
+            if (/\bViewTransition\b/.test(match[1])) requested.add("ViewTransition");
+            if (/\baddTransitionType\b/.test(match[1])) requested.add("addTransitionType");
+          }
+          if ([...requested].every((name) => exported.has(name))) return null;
           // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
           // This is safe because the virtual module re-exports everything from
           // react, so non-canary imports continue to work.

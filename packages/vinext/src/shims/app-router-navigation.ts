@@ -2227,8 +2227,11 @@ export async function navigateClientSide(
   scroll: boolean,
   programmaticTransition = false,
   visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
-  transitionTypes?: readonly string[],
+  callerTransitionTypes?: readonly string[],
 ): Promise<void> {
+  // Like Next.js, read the caller's array once, at call time: the commit
+  // transitions that re-tag this navigation run after the fetch.
+  const transitionTypes = callerTransitionTypes ? [...callerTransitionTypes] : undefined;
   notifyAppNavigationStart(href);
 
   // Normalize same-origin absolute URLs to local paths for SPA navigation
