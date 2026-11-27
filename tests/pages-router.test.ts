@@ -31,6 +31,7 @@ import {
   requestExternalRewriteWithConnectionTokens,
   startFixtureServer,
 } from "./helpers.js";
+import { symlinkDir } from "./symlink-dir.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
 import { SSR_MANIFEST_SHARED_CHUNKS_KEY } from "../packages/vinext/src/utils/manifest-paths.js";
@@ -4672,10 +4673,9 @@ describe("Virtual server entry generation", () => {
     const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-")));
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     fs.unlinkSync(path.join(tmpDir, "node_modules"));
-    fs.symlinkSync(
+    symlinkDir(
       path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
       path.join(tmpDir, "node_modules"),
-      "junction",
     );
     fs.writeFileSync(
       path.join(tmpDir, "wrangler.jsonc"),

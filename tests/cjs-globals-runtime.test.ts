@@ -10,6 +10,7 @@ import { createBuilder, createServer, type Plugin, type ViteDevServer } from "vi
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { startWorkerdWorker, type WorkerdWorker } from "./helpers.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
   import.meta.dirname,
@@ -89,8 +90,8 @@ async function createHybridFixture(
     fs.mkdir(esmPackageDir, { recursive: true }),
     fs.mkdir(nestedEsmRequirePackageDir, { recursive: true }),
     fs.mkdir(linkedCjsPackageDir, { recursive: true }),
-    fs.symlink(nodeModules, path.join(root, "node_modules"), "junction"),
   ]);
+  symlinkDir(nodeModules, path.join(root, "node_modules"));
   await fs.symlink(
     linkedCjsPackageDir,
     path.join(root, "lib/node_modules/linked-cjs-identity"),

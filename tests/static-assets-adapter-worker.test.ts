@@ -10,6 +10,7 @@ import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
 import { finalizeCacheAdapterPrerenderOutput } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import vinext from "../packages/vinext/src/index.js";
 import { generateWranglerConfig } from "../packages/vinext/src/init-cloudflare.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
   import.meta.dirname,
@@ -29,7 +30,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
 
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-static-assets-worker-"));
-    fs.symlinkSync(CLOUDFLARE_NODE_MODULES, path.join(root, "node_modules"), "junction");
+    symlinkDir(CLOUDFLARE_NODE_MODULES, path.join(root, "node_modules"));
     write(root, "package.json", JSON.stringify({ name: "static-assets-cache", type: "module" }));
     const wranglerConfig = JSON.parse(
       generateWranglerConfig(

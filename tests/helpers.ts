@@ -29,6 +29,7 @@ import path from "node:path";
 import type { NextConfigInput } from "../packages/vinext/src/config/next-config.js";
 import type { VinextCacheConfig } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import { afterAll, expect } from "vite-plus/test";
+import { symlinkDir } from "./symlink-dir.js";
 
 // ── Fixture paths ─────────────────────────────────────────────
 export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
@@ -270,21 +271,7 @@ export async function createIsolatedFixture(
 
   const resolvedNodeModules =
     nodeModulesDir ?? path.resolve(import.meta.dirname, "../node_modules");
-  const nodeModulesLink = path.join(tmpDir, "node_modules");
-  // Prefer a directory symlink over a junction. When the source node_modules
-  // contains pnpm's relative symlinks that climb out of it (e.g. a nested
-  // package's `react` → `../../../../node_modules/.pnpm/...`), Windows resolves
-  // those escaping `..` segments against a junction's mount path — landing
-  // outside the real tree so resolution fails — but against a dir symlink's real
-  // target, which resolves correctly. Fall back to a junction where creating a
-  // symlink isn't permitted (Windows without the privilege); there the escaping
-  // case is unsupported, but the common non-escaping node_modules still works.
-  // On POSIX the type argument is ignored, so this is always a plain symlink.
-  try {
-    await fs.symlink(resolvedNodeModules, nodeModulesLink, "dir");
-  } catch {
-    await fs.symlink(resolvedNodeModules, nodeModulesLink, "junction");
-  }
+  symlinkDir(resolvedNodeModules, path.join(tmpDir, "node_modules"));
 
   return tmpDir;
 }

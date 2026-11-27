@@ -36,6 +36,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build, createBuilder, createServer, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
@@ -412,7 +413,7 @@ describe("App Router on Nitro invalid `_next/static/*` 404", () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-invalid-static-404-nitro-"));
       cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
       fs.mkdirSync(path.join(root, "app"));
-      fs.symlinkSync(NITRO_NODE_MODULES, path.join(root, "node_modules"), "junction");
+      symlinkDir(NITRO_NODE_MODULES, path.join(root, "node_modules"));
       fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
       fs.writeFileSync(path.join(root, "next.config.mjs"), `export default ${config};\n`);
       fs.writeFileSync(

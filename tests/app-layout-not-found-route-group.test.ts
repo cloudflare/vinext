@@ -13,6 +13,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
 import { startFixtureServer } from "./helpers.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 const THROWING_LAYOUT = `import { notFound } from "next/navigation";
 
@@ -81,10 +82,9 @@ describe.each(APPS)("layout notFound() below a first-layer route group: $name", 
 
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-not-found-"));
-    fs.symlinkSync(
+    symlinkDir(
       path.resolve(import.meta.dirname, "fixtures/app-basic/node_modules"),
       path.join(root, "node_modules"),
-      "junction",
     );
     fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}\n');
     for (const [file, source] of Object.entries(app.files)) {

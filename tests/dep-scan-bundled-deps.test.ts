@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { createIsolatedFixture } from "./helpers.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 // vinext inlines some dependencies (for example ua-parser-js behind the
 // next/server userAgent shim) into dist/deps, already converted to ESM. Source
@@ -19,10 +20,9 @@ function createAppProject(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-dep-scan-"));
   roots.push(root);
   // The workspace fixture's node_modules links vinext to this checkout.
-  fs.symlinkSync(
+  symlinkDir(
     path.resolve(import.meta.dirname, "fixtures/app-basic/node_modules"),
     path.join(root, "node_modules"),
-    "junction",
   );
   fs.mkdirSync(path.join(root, "app"));
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}\n');
@@ -69,10 +69,9 @@ function createLinkedVinextProject(): string {
   roots.push(root);
   // The workspace fixture's node_modules links vinext to this checkout, so its
   // files live outside node_modules.
-  fs.symlinkSync(
+  symlinkDir(
     path.resolve(import.meta.dirname, "fixtures/app-basic/node_modules"),
     path.join(root, "node_modules"),
-    "junction",
   );
   fs.mkdirSync(path.join(root, "app"));
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}\n');
@@ -190,11 +189,7 @@ function createInstalledVinextProject(): string {
   for (const name of ["dist", "package.json"]) {
     fs.cpSync(path.join(vinextPackage, name), path.join(vinextDir, name), { recursive: true });
   }
-  fs.symlinkSync(
-    path.join(vinextPackage, "node_modules"),
-    path.join(vinextDir, "node_modules"),
-    "junction",
-  );
+  symlinkDir(path.join(vinextPackage, "node_modules"), path.join(vinextDir, "node_modules"));
   for (const name of ["react", "react-dom", "vite"]) {
     fs.symlinkSync(
       path.resolve(import.meta.dirname, "../node_modules", name),

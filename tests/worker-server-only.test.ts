@@ -20,6 +20,7 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "e2e/nextjs-worker/fixture");
 const CF_NODE_MODULES = path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules");
@@ -46,7 +47,7 @@ function copyFixture(): string {
     recursive: true,
     filter: (source) => !/[\\/](?:node_modules|dist|\.wrangler)$/.test(source),
   });
-  fs.symlinkSync(CF_NODE_MODULES, path.join(root, "node_modules"), "junction");
+  symlinkDir(CF_NODE_MODULES, path.join(root, "node_modules"));
 
   // A utility barrel mixing a harmless helper with a server-only signing key.
   writeFile(root, "app/lib/greet.ts", 'export const greet = (name: string) => "hello " + name;\n');

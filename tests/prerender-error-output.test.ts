@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { expect, it } from "vite-plus/test";
+import { symlinkDir } from "./symlink-dir.js";
 
 const execFileAsync = promisify(execFile);
 const vinextCli = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
@@ -55,7 +56,7 @@ it.each([vinextCli, viteCli])(
       `,
     };
     try {
-      await fs.symlink(cloudflareNodeModules, path.join(root, "node_modules"), "junction");
+      symlinkDir(cloudflareNodeModules, path.join(root, "node_modules"));
       for (const [name, content] of Object.entries(files)) {
         await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
         await fs.writeFile(path.join(root, name), content);

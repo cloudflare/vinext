@@ -6,6 +6,7 @@ import { createBuilder, createServer, type Plugin, type ViteDevServer } from "vi
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { toSlash } from "pathslash";
 import vinext from "../packages/vinext/src/index.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 type BuiltHandler = (request: Request) => Promise<Response>;
 
@@ -23,11 +24,9 @@ function linkWorkspaceDependencies(
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
     if (entry.name === ".vite") continue;
     const sourceEntry = path.join(source, entry.name);
-    fs.symlinkSync(
-      sourceEntry,
-      path.join(target, entry.name),
-      fs.statSync(sourceEntry).isDirectory() ? "junction" : "file",
-    );
+    const targetEntry = path.join(target, entry.name);
+    if (fs.statSync(sourceEntry).isDirectory()) symlinkDir(sourceEntry, targetEntry);
+    else fs.symlinkSync(sourceEntry, targetEntry, "file");
   }
 }
 
