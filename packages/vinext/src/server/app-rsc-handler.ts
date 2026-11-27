@@ -3237,7 +3237,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // intercept its verified source context selects. Next.js renders that as
     // the intercepting route's own app path, so only the intercept's config
     // tree applies, not the target's or the source page's.
-    const activeInterception = interceptionSourceContext !== null ? interceptionSourceMatch : null;
+    // A Route Handler never renders an intercept, so it keeps its own config.
+    const activeInterception =
+      interceptionSourceContext !== null && !route.routeHandler ? interceptionSourceMatch : null;
     const forceDynamic = activeInterception
       ? activeInterception.interceptionForceDynamic === true
       : route.forceDynamic === true || match.interceptionForceDynamic === true;

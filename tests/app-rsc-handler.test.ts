@@ -3099,6 +3099,55 @@ describe("createAppRscHandler", () => {
     expect(await dispatch("/photos/2")).toEqual({ cache: "shared", forceDynamic: false });
   });
 
+  it("keeps a force-dynamic Route Handler target's own flag beside a static intercept", async () => {
+    // A Route Handler never renders an intercept, so a verified source for a
+    // static intercept of the same path leaves its config alone.
+    const handlerRoute = createPageRoute({
+      __loadPage: undefined,
+      forceDynamic: true,
+      page: null,
+      pattern: "/photos/1",
+      routeHandler: { GET: () => new Response("route") },
+      routeSegments: ["photos", "1"],
+    });
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchInterceptRoute: (target, sourcePathname) =>
+        target === "/photos/1" && sourcePathname === "/feed"
+          ? {
+              interceptionForceDynamic: false,
+              interceptionSourceIsConcrete: true,
+              params: {},
+              route: sourceRoute,
+            }
+          : null,
+      matchRequestRoute: (target) =>
+        target === "/photos/1" ? { params: {}, route: handlerRoute } : null,
+      matchRoute: (target) => {
+        if (target === "/photos/1") return { params: {}, route: handlerRoute };
+        if (target === "/feed") return { params: {}, route: sourceRoute };
+        return null;
+      },
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const url = await createRscRequestUrl("/docs/photos/1", headers);
+    await handler(
+      new Request(`https://example.test${url}`, { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    const [, props, init] = dispatchResponseStage.mock.calls[0]!;
+    expect(props).toMatchObject({ forceDynamic: true, kind: "app-route-handler" });
+    expect(init).toEqual({ cache: "bypass" });
+  });
+
   it("takes force-dynamic from the intercept a late rewrite reaches", async () => {
     const targetRoute = createPageRoute({
       isDynamic: true,
