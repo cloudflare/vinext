@@ -198,6 +198,21 @@ describe("createAppPrerenderStaticParamsResolver root params", () => {
     );
   });
 
+  it("treats a root param named like an Object.prototype member as provided", async () => {
+    // Next.js checks `key in parentParams` and `paramName in rootParams` on
+    // plain objects, so an inherited name such as `constructor` passes both
+    // checks, even in the generator of the segment that provides it.
+    const constructorLayout = async () => {
+      await getRootParam("constructor");
+      return [{ constructor: "a" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([constructorLayout], ["constructor"]);
+
+    await expect(resolver!({ params: {}, route: "/:constructor" })).resolves.toEqual([
+      { constructor: "a" },
+    ]);
+  });
+
   it("rejects a root param getter on a route without root params", async () => {
     // `next/root-params` exports the getters of every root, so another
     // root's `lang()` can run here. Next.js's work unit then has no root

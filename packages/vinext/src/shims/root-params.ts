@@ -112,7 +112,7 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
   if (
     usage?.kind === "generate-static-params" &&
     getRegisteredCacheContext() === null &&
-    !(rootParams && Object.hasOwn(rootParams, name))
+    !(rootParams && name in rootParams)
   ) {
     throw createRootParamsUsageError(
       `Route ${usage.route} used \`import('next/root-params').${name}()\` inside \`generateStaticParams\`, but the \`${name}\` parameter was not provided by a parent \`generateStaticParams\`. In \`generateStaticParams\`, root params are only available for segments nested below the segment that provides them.`,
@@ -187,7 +187,7 @@ export function runWithGenerateStaticParamsRootParams<T>(
 ): Promise<T> {
   const rootParams: RootParams = {};
   for (const name of rootParamNames) {
-    if (Object.hasOwn(parentParams, name)) {
+    if (name in parentParams) {
       rootParams[name] = parentParams[name] as RootParams[string];
     }
   }
