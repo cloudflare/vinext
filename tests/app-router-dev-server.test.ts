@@ -1882,6 +1882,21 @@ describe("App Router integration", () => {
     }
   });
 
+  it("passes archives, assets, bookmarks and facebook admins to generateMetadata's parent as arrays", async () => {
+    // Next.js resolves them as it accumulates (resolveAsArrayOrUndefined,
+    // resolveFacebook in resolve-metadata.ts); the layout sets single strings.
+    const res = await fetch(`${baseUrl}/metadata-extra-fields/parent`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain(
+      '<meta name="parent-assets" content="https://example.com/layout-assets"/>',
+    );
+    expect(html).toContain('<meta name="parent-facebook-admins" content="100"/>');
+    expect(html).toContain('<link rel="assets" href="https://example.com/layout-assets"/>');
+    expect(html).toContain('<meta property="fb:admins" content="100"/>');
+  });
+
   it("renders viewport metadata (export const viewport) as head elements", async () => {
     const res = await fetch(`${baseUrl}/metadata-test`);
     expect(res.status).toBe(200);

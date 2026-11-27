@@ -451,6 +451,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   );
 }
 
+// Next.js's resolveAsArrayOrUndefined (lib/metadata/generate/utils.ts).
+function resolveAsArrayOrUndefined<T>(value: T | T[] | null | undefined): T[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  return Array.isArray(value) ? value : [value];
+}
+
 function isOtherMetadata(value: unknown): value is NonNullable<Metadata["other"]> {
   if (!isPlainObject(value)) return false;
   return Object.values(value).every((item) => {
@@ -658,6 +664,16 @@ function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boo
 
       if (key === "other" && isOtherMetadata(existing) && isOtherMetadata(incoming)) {
         merged.other = { ...existing, ...incoming };
+      } else if (key === "archives" || key === "assets" || key === "bookmarks") {
+        // Next.js resolves these to arrays as it accumulates, so a later
+        // segment's `parent` always sees arrays.
+        merged[key] = resolveAsArrayOrUndefined(meta[key]);
+      } else if (key === "facebook") {
+        // Next.js's resolveFacebook.
+        const facebook = meta.facebook;
+        merged.facebook = facebook
+          ? { appId: facebook.appId, admins: resolveAsArrayOrUndefined(facebook.admins) }
+          : null;
       } else {
         // Plain replacement for everything else
         merged[key] = incoming;
@@ -1188,16 +1204,15 @@ export function MetadataHead({
     elements.push(<meta key={key++} name="abstract" content={metadata.abstract} />);
   }
 
-  // Link rel lists. Next.js accepts a string or an array and renders each
-  // href as written, without resolving it against metadataBase.
+  // Link rel lists, already arrays once merged. Next.js renders each href as
+  // written, without resolving it against metadataBase.
   const linkRelLists = [
     ["archives", metadata.archives],
     ["assets", metadata.assets],
     ["bookmarks", metadata.bookmarks],
   ] as const;
   for (const [rel, value] of linkRelLists) {
-    if (!value) continue;
-    for (const href of Array.isArray(value) ? value : [value]) {
+    for (const href of resolveAsArrayOrUndefined(value) ?? []) {
       elements.push(<link key={key++} rel={rel} href={href} />);
     }
   }
@@ -1613,10 +1628,8 @@ export function MetadataHead({
     if (appId) {
       elements.push(<meta key={key++} property="fb:app_id" content={appId} />);
     }
-    if (admins) {
-      for (const admin of Array.isArray(admins) ? admins : [admins]) {
-        elements.push(<meta key={key++} property="fb:admins" content={admin} />);
-      }
+    for (const admin of resolveAsArrayOrUndefined(admins) ?? []) {
+      elements.push(<meta key={key++} property="fb:admins" content={admin} />);
     }
   }
 

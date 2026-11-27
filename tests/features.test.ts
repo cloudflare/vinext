@@ -2658,6 +2658,23 @@ describe("metadata segment merge", () => {
     });
   });
 
+  it("resolves archives, assets, bookmarks and facebook admins to arrays", () => {
+    // Ported from Next.js: accumulateMetadata in packages/next/src/lib/metadata/resolve-metadata.ts
+    // (resolveAsArrayOrUndefined, resolveFacebook).
+    const result = mergeMetadata([
+      { archives: "/archives", assets: ["/a", "/b"], facebook: { admins: "120" } },
+      { bookmarks: "", facebook: { appId: "1" } },
+      { archives: null, pinterest: { richPin: true } },
+    ]);
+    expect(result.archives).toBeUndefined();
+    expect(result.assets).toEqual(["/a", "/b"]);
+    expect(result.bookmarks).toEqual([""]);
+    expect(result.facebook).toEqual({ appId: "1", admins: undefined });
+    expect(
+      mergeMetadata([{ facebook: { admins: "120" } }, { facebook: null }]).facebook,
+    ).toBeNull();
+  });
+
   it("replaces robots instead of deep-merging subkeys", () => {
     const result = mergeMetadata([
       { robots: { index: true, follow: true, googleBot: { index: true } } },
