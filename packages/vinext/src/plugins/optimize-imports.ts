@@ -241,28 +241,33 @@ export function createOptimizedImportSourceMatcher(
     importFromPattern.test(code);
 }
 
+const SSR_EXPORT_CONDITIONS: ReadonlySet<string> = new Set(["import", "module", "node", "default"]);
+const RSC_EXPORT_CONDITIONS: ReadonlySet<string> = new Set([
+  "react-server",
+  ...SSR_EXPORT_CONDITIONS,
+]);
+
 /**
  * Resolve a package.json exports value to a string entry path.
- * Prefers node → import → module → default conditions, recursing into nested objects.
- * When `preferReactServer` is true (RSC environment), "react-server" is checked first
- * so that packages like `react` and `react-dom` resolve their RSC-compatible entry points.
+ *
+ * Follows the resolution rule of Node, Vite, webpack and Turbopack: the
+ * package's own key order decides, so the first key that is an active
+ * condition wins, recursing into nested objects. The active conditions are
+ * those of a server environment importing ESM ("import", "module", "node",
+ * "default"). When `preferReactServer` is true (RSC environment),
+ * "react-server" is active too, so packages like `react` and `react-dom`
+ * resolve their RSC-compatible entry points.
  */
 function resolveExportsValue(value: ExportsValue, preferReactServer: boolean): string | null {
   if (typeof value === "string") return value;
   if (typeof value === "object" && value !== null) {
-    // In the RSC environment prefer "react-server" before standard conditions so that
-    // packages exposing RSC-only entry points (e.g. react, react-dom) are resolved
-    // to their server-compatible barrel. In the SSR environment the "react-server"
-    // condition must NOT be preferred — SSR renders with the full React runtime.
-    const conditions = preferReactServer
-      ? ["react-server", "node", "import", "module", "default"]
-      : ["node", "import", "module", "default"];
-    for (const key of conditions) {
-      const nested = value[key];
-      if (nested !== undefined) {
-        const resolved = resolveExportsValue(nested, preferReactServer);
-        if (resolved) return resolved;
-      }
+    // The "react-server" condition is active only in the RSC environment. SSR
+    // renders with the full React runtime and must not resolve react-server entries.
+    const conditions = preferReactServer ? RSC_EXPORT_CONDITIONS : SSR_EXPORT_CONDITIONS;
+    for (const [key, nested] of Object.entries(value)) {
+      if (!conditions.has(key) || nested === undefined) continue;
+      const resolved = resolveExportsValue(nested, preferReactServer);
+      if (resolved) return resolved;
     }
   }
   return null;
@@ -329,8 +334,8 @@ async function resolvePackageInfo(
 /**
  * Resolve a package name to its ESM entry file path.
  * Checks `exports["."]` → `module` → `main`, then falls back to require.resolve.
- * Pass `preferReactServer: true` in the RSC environment to prefer the "react-server"
- * export condition over "node"/"import" when resolving the barrel entry.
+ * Pass `preferReactServer: true` in the RSC environment to make the "react-server"
+ * export condition active when resolving the barrel entry.
  */
 async function resolvePackageEntry(
   packageName: string,
