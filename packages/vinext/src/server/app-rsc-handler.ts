@@ -472,6 +472,18 @@ function isSameInterceptionSource<TRoute>(
   );
 }
 
+/**
+ * A status middleware's own (a rewrite's `{ status }`) cannot replace. As in
+ * Next.js, which sets the response's status from middleware before the route
+ * runs: a 304 answers the request's own validator, and a redirect the route
+ * raised (`redirect()`, `permanentRedirect()`) sets its status after it, so a
+ * rewrite's 404 never turns a 308 into a 404 that still carries `Location`.
+ */
+function keepsOwnStatus(response: Response): boolean {
+  if (response.status === 304) return true;
+  return response.status >= 300 && response.status < 400 && response.headers.has("location");
+}
+
 function applyMiddlewareContextToResponse(
   response: Response,
   middlewareContext: AppRscMiddlewareContext,
@@ -492,9 +504,9 @@ function applyMiddlewareContextToResponse(
   return preserveFullyBufferedBodyMetadata(
     response,
     new Response(response.body, {
-      // As in Next.js, which sets a 304 after middleware's status, a 304
-      // answers the request's own validator.
-      status: response.status === 304 ? 304 : (middlewareContext.status ?? response.status),
+      status: keepsOwnStatus(response)
+        ? response.status
+        : (middlewareContext.status ?? response.status),
       statusText: response.statusText,
       headers,
     }),

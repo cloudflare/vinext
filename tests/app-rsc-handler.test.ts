@@ -2599,6 +2599,47 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("response-stage");
   });
 
+  // As in Next.js, which sets middleware's status before the route runs: the
+  // route's redirect() or permanentRedirect() sets its own status after it.
+  it.each([307, 308])("keeps a page's %s redirect behind a middleware status", async (status) => {
+    const handler = createHandler({
+      middlewareModule: {
+        default() {
+          return new Response(null, { headers: { "x-middleware-next": "1" }, status: 404 });
+        },
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      async () => new Response(null, { headers: { Location: "/docs/moved" }, status }),
+    );
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get("location")).toBe("/docs/moved");
+  });
+
+  it("gives middleware's status to a page the route renders", async () => {
+    const handler = createHandler({
+      middlewareModule: {
+        default() {
+          return new Response(null, { headers: { "x-middleware-next": "1" }, status: 404 });
+        },
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      async () => new Response("page"),
+    );
+
+    expect(response.status).toBe(404);
+  });
+
   it.each(["no-cache", "no-store", "max-age=0, no-cache"])(
     "keeps production App responses shareable with request Cache-Control %s",
     async (cacheControl) => {
