@@ -1677,28 +1677,28 @@ export async function prerenderApp({
 
       if (!renderEntryPath) continue;
 
-      // Use static analysis classification, but note its limitations for dynamic URLs:
-      // classifyAppRoute() returns 'ssr' for dynamic URLs with no explicit config,
-      // meaning "unknown — could have generateStaticParams". We must check
-      // generateStaticParams first before applying the ssr skip/error logic.
+      // Classify from the segment config alone. Passing isDynamic would also
+      // report 'ssr' for a dynamic URL with no explicit config, which only
+      // means "unknown — could have generateStaticParams" and is handled by
+      // the route.isDynamic branch below.
       const { type, revalidate: classifiedRevalidate } = classifyAppRoute(
         renderEntryPath,
         route.routePath,
-        route.isDynamic,
+        false,
       );
       if (type === "api") {
         results.push({ route: route.pattern, status: "skipped", reason: "api" });
         continue;
       }
 
-      // 'ssr' from explicit config (force-dynamic, revalidate=0) — truly dynamic,
-      // no point checking generateStaticParams.
-      // BUT: if isDynamic=true and there's no explicit dynamic/revalidate config,
-      // classifyAppRoute also returns 'ssr'. In that case we must still check
-      // generateStaticParams before giving up.
-      const isConfiguredDynamic = type === "ssr" && !route.isDynamic;
+      // 'ssr' from explicit config (force-dynamic, revalidate=0) — truly dynamic.
+      // Next.js never renders such a page at build time. A dynamic URL still
+      // has its generateStaticParams collected and validated below, as Next.js
+      // does (build/utils.ts isPageStatic → buildAppStaticPaths); only the
+      // render of each generated path is skipped.
+      const isConfiguredDynamic = type === "ssr";
 
-      if (isConfiguredDynamic) {
+      if (isConfiguredDynamic && !route.isDynamic) {
         if (mode === "export") {
           results.push({
             route: route.pattern,
@@ -1816,7 +1816,7 @@ export async function prerenderApp({
             continue;
           }
 
-          if (paramSets.length === 0) {
+          if (paramSets.length === 0 && !isConfiguredDynamic) {
             // No concrete artifact is emitted, but the route remains SSG and
             // may be generated on demand at runtime.
             results.push({
@@ -1848,6 +1848,7 @@ export async function prerenderApp({
             // writes a duplicate vinext-prerender.json entry.
             if (queuedRouteUrls.has(urlPath)) continue;
             queuedRouteUrls.add(urlPath);
+            if (isConfiguredDynamic) continue;
             urlsToRender.push({
               urlPath,
               routePattern: route.pattern,
@@ -1880,6 +1881,18 @@ export async function prerenderApp({
                   isFallback: true,
                 });
               }
+            }
+          }
+
+          if (isConfiguredDynamic) {
+            if (mode === "export") {
+              results.push({
+                route: route.pattern,
+                status: "error",
+                error: `Route uses dynamic rendering (force-dynamic or revalidate=0) which is not supported with output: 'export'`,
+              });
+            } else {
+              results.push({ route: route.pattern, status: "skipped", reason: "dynamic" });
             }
           }
         } catch (e) {
