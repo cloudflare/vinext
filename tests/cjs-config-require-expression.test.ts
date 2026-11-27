@@ -28,12 +28,19 @@ describe("CommonJS config with require() inside an expression in a type:module p
     expect(config?.env).toEqual({ CJS_REQUIRE_EXPRESSION: "loaded" });
   });
 
-  it("retries postcss.config.js when require() is inside a multi-line plugins array", () => {
-    const configPath = path.join(fixtureRoot, "postcss.config.js");
+  it.each([
+    [
+      "inside a multi-line plugins array (postcss.config.js)",
+      "postcss.config.js",
+      "postcss/plugin",
+    ],
+    ["inside a named function", "named-function.js", "named/function"],
+  ])("retries a CommonJS config when require() is %s", (_, fileName, plugin) => {
+    const configPath = path.join(fixtureRoot, fileName);
     const error = nativeLoadError(configPath);
     expect(error).toBeInstanceOf(ReferenceError);
     expect(shouldRetryAsCommonJs(error, configPath)).toBe(true);
-    expect(loadCommonJsModule(configPath)).toEqual({ plugins: ["postcss/plugin"] });
+    expect(loadCommonJsModule(configPath)).toEqual({ plugins: [plugin] });
   });
 
   it.each([

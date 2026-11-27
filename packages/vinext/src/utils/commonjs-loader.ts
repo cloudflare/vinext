@@ -54,7 +54,8 @@ export function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boo
   // A missing global is thrown where it is read, so only the first frame with
   // a location counts: a caller's statement says nothing about the error.
   for (const line of error.stack.split("\n").slice(1)) {
-    const location = line.match(/(?:\(|at )(.+):(\d+):(\d+)\)?$/);
+    // A named frame is `at fn (path:line:col)`; an anonymous one `at path:line:col`.
+    const location = line.match(/\((.+):(\d+):(\d+)\)$/) ?? line.match(/^\s*at (.+):(\d+):(\d+)$/);
     if (!location) continue;
     const [, framePath, lineNumberText, columnNumberText] = location;
     const canonicalFramePath = canonicalPath(framePath);
