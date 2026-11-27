@@ -1511,6 +1511,10 @@ importers:
 
   tests/fixtures/app-build-outdir: {}
 
+  tests/fixtures/app-cjs-mjs-pages: {}
+
+  tests/fixtures/app-cjs-nested-module-scope: {}
+
   tests/fixtures/app-cjs-output-scope: {}
 
   tests/fixtures/app-cjs-package-scope: {}

@@ -39,6 +39,14 @@ const OUTPUT_SCOPE_FIXTURE_SOURCE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/app-cjs-output-scope",
 );
+const MJS_PAGES_FIXTURE_SOURCE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/app-cjs-mjs-pages",
+);
+const NESTED_MODULE_SCOPE_FIXTURE_SOURCE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/app-cjs-nested-module-scope",
+);
 
 /** Builds a copy of a fixture, keeping its own package.json. */
 async function buildIsolatedFixture(
@@ -224,6 +232,61 @@ describe('A root package.json with "type": "commonjs"', () => {
       ({ server, baseUrl } = await startBuiltServer(fixtureDir));
       await expectActionsRedirect(baseUrl);
     }, 60_000);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/package-json-type-commonjs (vercel/next.js#101164),
+  // which runs a Server Action from `.mjs` app files under a CommonJS root.
+  describe.each([
+    { label: ".mjs app files", sourceDir: MJS_PAGES_FIXTURE_SOURCE_DIR },
+    {
+      label: 'an app/ directory set back to "type": "module"',
+      sourceDir: NESTED_MODULE_SCOPE_FIXTURE_SOURCE_DIR,
+    },
+  ])("with $label", ({ sourceDir }) => {
+    describe("dev", () => {
+      let server: ViteDevServer;
+      let baseUrl: string;
+
+      beforeAll(async () => {
+        ({ server, baseUrl } = await startFixtureServer(sourceDir, { appRouter: true }));
+      }, 60_000);
+
+      afterAll(async () => {
+        await server?.close();
+      });
+
+      it("runs inline and exported Server Actions", async () => {
+        await expectActionsRedirect(baseUrl);
+      });
+    });
+
+    describe("production", () => {
+      let fixtureDir: string;
+      let server: Server | undefined;
+
+      beforeAll(async () => {
+        fixtureDir = await buildIsolatedFixture(sourceDir, "vinext-cjs-scope-variant-");
+      }, 120_000);
+
+      afterAll(() => {
+        server?.close();
+        if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+      });
+
+      it("emits a server entry that plain Node loads as ESM", () => {
+        const serverDir = path.join(fixtureDir, "dist", "server");
+        expect(fs.existsSync(path.join(serverDir, "ssr", "index.js"))).toBe(true);
+        const result = importWithNode(path.join(serverDir, "index.js"), fixtureDir);
+        expect(result.stderr).not.toContain("SyntaxError");
+        expect(result.status).toBe(0);
+      });
+
+      it("runs inline and exported Server Actions", async () => {
+        let baseUrl: string;
+        ({ server, baseUrl } = await startBuiltServer(fixtureDir));
+        await expectActionsRedirect(baseUrl);
+      }, 60_000);
+    });
   });
 
   describe("production with custom server output options", () => {
