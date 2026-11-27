@@ -986,6 +986,8 @@ type ValidateAppPageRouteDynamicParamsOptions = {
   revalidateSeconds?: number | null;
   rootParamNames?: readonly string[];
   routePattern: string;
+  /** The route a root param error names, when not `routePattern`: an interception's own. */
+  staticParamsRoutePattern?: string;
   routeSegments?: readonly string[];
 };
 
@@ -1092,7 +1094,7 @@ export function checkAppPageRouteDynamicParams(
     isDynamicRoute: options.isDynamicRoute,
     params: options.params,
     rootParamNames: options.rootParamNames,
-    routePattern: options.routePattern,
+    routePattern: options.staticParamsRoutePattern ?? options.routePattern,
   });
 }
 

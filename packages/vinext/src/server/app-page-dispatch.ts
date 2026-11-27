@@ -51,6 +51,8 @@ import {
 } from "./app-page-boundary.js";
 import { getDefaultHttpAccessFallbackModule } from "./default-http-access-fallback-modules.js";
 import { isAppClientReference } from "./app-render-dependency.js";
+import { routePattern as filesystemRoutePattern } from "../routing/route-pattern.js";
+import { isInvisibleSegment } from "../routing/utils.js";
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
@@ -785,6 +787,8 @@ type AppPageInterceptStaticParams = {
   revalidateSeconds: number | null;
   rootParamNames: readonly string[];
   routeSegments: readonly string[];
+  /** The interception's own route, which its root param errors name. */
+  staticParamsRoutePattern: string | undefined;
 };
 
 /**
@@ -846,6 +850,15 @@ async function withResolvedIntercept<TRoute extends AppPageDispatchRoute>(
     // The interception renders below the source's root layout.
     rootParamNames: configRoute.rootParamNames ?? [],
     routeSegments: config.routeSegments,
+    // Next.js renders an interception as its own page, and names it as
+    // normalizeAppPath does: without groups and slots, with the marker.
+    staticParamsRoutePattern: interceptState.intercept.sourcePageSegments
+      ? filesystemRoutePattern(
+          interceptState.intercept.sourcePageSegments
+            .filter((segment) => !isInvisibleSegment(segment))
+            .join("/"),
+        )
+      : undefined,
   };
   if (interceptState.kind === "source-route") {
     return { ...options, interceptState, interceptStaticParams };

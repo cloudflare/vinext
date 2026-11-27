@@ -5811,11 +5811,12 @@ describe("app page dispatch", () => {
           {
             default: () => null,
             async generateStaticParams() {
-              // No parent generator provides `slug`, so reading it throws.
+              // No parent generator provides `slug`, so reading it throws,
+              // naming the intercepting page's own route as Next.js does.
               try {
                 seen.push(await getRootParam("slug"));
-              } catch {
-                seen.push("no parent slug");
+              } catch (error) {
+                seen.push(String(error));
               }
               return [{ slug: "acme" }];
             },
@@ -5823,21 +5824,31 @@ describe("app page dispatch", () => {
         ],
         rootParamNames: ["slug"],
       });
-      const { options } = createClubOptions(sourceRoute, {
-        dynamicParams: false,
-        async generateStaticParams() {
-          const slug = await getRootParam("slug");
-          seen.push(slug);
-          return [{ id: slug === "acme" ? "2" : "1" }];
+      const { options } = createClubOptions(
+        sourceRoute,
+        {
+          dynamicParams: false,
+          async generateStaticParams() {
+            const slug = await getRootParam("slug");
+            seen.push(slug);
+            return [{ id: slug === "acme" ? "2" : "1" }];
+          },
         },
-      });
+        {},
+        { sourcePageSegments: ["club", "[slug]", "@modal", "(.)pics", "[id]"] },
+      );
       const response = await runWithRequestContext(
         createRequestContext({ rootParams: { slug: "other" } }),
         () => dispatchAppPage({ ...options, rootParams: { slug: "other" } }),
       );
 
       expect(response.status).toBe(200);
-      expect(seen).toEqual(["no parent slug", "acme"]);
+      expect(seen).toEqual([
+        expect.stringContaining(
+          "Route /club/[slug]/(.)pics/[id] used `import('next/root-params').slug()` inside `generateStaticParams`, but the `slug` parameter was not provided by a parent `generateStaticParams`.",
+        ),
+        "acme",
+      ]);
     });
 
     it("checks an interception of the matched route against its own generators", async () => {

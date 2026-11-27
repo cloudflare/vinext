@@ -333,14 +333,16 @@ describe("handleMetadataRouteRequest", () => {
       default: markUseCache(async () => []),
       generateSitemaps: readLang,
     });
+    // A generated metadata route is named as Next.js names its route handler
+    // (lib/metadata/get-metadata-route.ts normalizeMetadataPageToRoute).
     const listed: [MetadataFileRoute, string][] = [
-      [sitemap, "/sitemap.xml"],
+      [sitemap, "/sitemap/[__metadata_id__]"],
       [
         route("/gallery/opengraph-image", "opengraph-image", {
           default: image,
           generateImageMetadata: readLang,
         }),
-        "/gallery/opengraph-image",
+        "/gallery/opengraph-image/[__metadata_id__]",
       ],
       [
         route(
@@ -361,7 +363,7 @@ describe("handleMetadataRouteRequest", () => {
       ).rejects.toThrow(unprovided(routeName));
     }
     await expect(getPrerenderableMetadataRoutePaths([sitemap])).rejects.toThrow(
-      unprovided("/sitemap.xml"),
+      unprovided("/sitemap/[__metadata_id__]"),
     );
   });
 
