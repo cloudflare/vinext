@@ -19,10 +19,10 @@ export function lastSignificantChar(source: string): string {
   while (i < n) {
     const c = source[i];
     const next = source[i + 1];
-    // Line comment: skip to the end of the line.
+    // Line comment: skip to the next ECMAScript line terminator.
     if (c === "/" && next === "/") {
       i += 2;
-      while (i < n && source[i] !== "\n") i += 1;
+      while (i < n && !/[\n\r\u2028\u2029]/.test(source[i])) i += 1;
       continue;
     }
     // Block comment: skip to the closing `*/`.

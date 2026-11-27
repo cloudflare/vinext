@@ -592,10 +592,26 @@ async function downloadGoogleFont(
  * balanced object is found.
  *
  * String literals (single-quoted, double-quoted, and backtick template
- * literals including `${...}` interpolations) are fully skipped so that brace
- * characters inside string values do not affect the depth count.
+ * literals including `${...}` interpolations) and comments (`//` and
+ * `/* *\/`) are fully skipped so that brace or quote characters inside them do
+ * not affect the depth count.
  */
 export function _findBalancedObject(code: string, searchStart: number): [number, number] | null {
+  // If a comment starts at `at`, return the index just past it; otherwise `at`.
+  const skipComment = (at: number): number => {
+    if (code[at] !== "/") return at;
+    if (code[at + 1] === "/") {
+      // A line comment ends at any ECMAScript line terminator.
+      let end = at + 2;
+      while (end < code.length && !/[\n\r\u2028\u2029]/.test(code[end])) end++;
+      return end;
+    }
+    if (code[at + 1] === "*") {
+      const end = code.indexOf("*/", at + 2);
+      return end === -1 ? code.length : end + 2;
+    }
+    return at;
+  };
   let i = searchStart;
   // Skip leading whitespace before the opening brace
   while (
@@ -609,7 +625,10 @@ export function _findBalancedObject(code: string, searchStart: number): [number,
   let depth = 0;
   while (i < code.length) {
     const ch = code[i];
-    if (ch === '"' || ch === "'") {
+    const afterComment = skipComment(i);
+    if (afterComment !== i) {
+      i = afterComment;
+    } else if (ch === '"' || ch === "'") {
       // Skip a single- or double-quoted string literal, respecting backslash escapes.
       const quote = ch;
       i++;
@@ -642,7 +661,10 @@ export function _findBalancedObject(code: string, searchStart: number): [number,
           let exprDepth = 1;
           while (i < code.length && exprDepth > 0) {
             const ec = code[i];
-            if (ec === "{") {
+            const afterExprComment = skipComment(i);
+            if (afterExprComment !== i) {
+              i = afterExprComment;
+            } else if (ec === "{") {
               exprDepth++;
               i++;
             } else if (ec === "}") {
