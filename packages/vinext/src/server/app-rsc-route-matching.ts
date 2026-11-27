@@ -26,6 +26,11 @@ export const SIBLING_PAGE_INTERCEPT_SLOT_KEY = "__vinext_page_intercept";
 type AppRscRouteParams = RoutePatternParams;
 
 type AppRscInterceptForMatching = {
+  /**
+   * Whether the intercepted render takes a `dynamic = "force-dynamic"` file
+   * of the intercept's own (request-stage metadata only).
+   */
+  forceDynamic?: boolean;
   targetPattern: string;
   /**
    * URL pattern of the *intercepting route* (the path that owns the slot,
@@ -85,6 +90,11 @@ type AppRscSlotForMatching = {
 
 type AppRscSiblingInterceptForMatching = {
   id?: string | null;
+  /**
+   * Whether the intercepted render takes a `dynamic = "force-dynamic"` file
+   * of the intercept's own (request-stage metadata only).
+   */
+  forceDynamic?: boolean;
   targetPattern: string;
   sourceMatchPattern: string | null;
   sourcePageSegments?: readonly string[];
@@ -201,6 +211,7 @@ type AppRscInterceptLookupEntry = {
    * interception marker, so the owner is the intercepting route itself.
    */
   ownerIsInterceptingRoute: boolean;
+  forceDynamic: boolean;
   slotKey: string;
   targetPattern: string;
   targetPatternParts: string[];
@@ -893,6 +904,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             interceptionGraphId: null,
             sourceRouteIndex: ownerRouteIndex,
             ownerIsInterceptingRoute: false,
+            forceDynamic: intercept.forceDynamic === true,
             slotKey,
             slotId: typeof slotModule.id === "string" ? slotModule.id : null,
             targetRouteGraphId: resolveTargetRouteGraphId(intercept.targetPattern),
@@ -956,6 +968,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           ownerIsInterceptingRoute:
             !isAppRouteHandlerRoute(route) &&
             isInterceptingRoute(route.routeSegments, intercept.sourcePageSegments),
+          forceDynamic: intercept.forceDynamic === true,
           slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
           slotId: typeof intercept.slotId === "string" ? intercept.slotId : null,
           targetRouteGraphId: resolveTargetRouteGraphId(intercept.targetPattern),

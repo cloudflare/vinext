@@ -1,0 +1,44 @@
+import path from "node:path";
+import { describe, expect, it } from "vite-plus/test";
+import { generateAppRequestRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
+
+const appDir = path.resolve(import.meta.dirname, "fixtures/app-intercept-force-dynamic-owner/app");
+
+type RequestStageIntercept = { forceDynamic: boolean; targetPattern: string };
+type RequestStageRoute = {
+  forceDynamic: boolean;
+  pattern: string;
+  slots: Record<string, { name: string; intercepts: RequestStageIntercept[] }>;
+};
+
+// Next.js rewrites an intercepted request to the intercepting route's own app
+// path (generateInterceptionRoutesRewrites), and each app path collects segment
+// config from its own tree. `next build` of this fixture prerenders `/feed` and
+// keeps only `/feed/(.)photo/[id]` dynamic.
+describe("intercepting route force-dynamic", () => {
+  it("applies an interceptor's force-dynamic to the intercepted render only", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+    const feed = routes.find((route) => route.pattern === "/feed");
+    expect(feed).toBeDefined();
+    expect(feed!.parallelSlots.some((slot) => slot.interceptingRoutes.length > 0)).toBe(true);
+
+    const code = generateAppRequestRscEntry(appDir, routes);
+    const serializedRoutes = code.match(/^const __routes = (.+);$/m)?.[1];
+    expect(serializedRoutes).toBeDefined();
+    const requestRoutes = JSON.parse(serializedRoutes!) as RequestStageRoute[];
+    const byPattern = Object.fromEntries(requestRoutes.map((route) => [route.pattern, route]));
+
+    expect(byPattern["/photo/:id"]?.forceDynamic).toBe(false);
+    // A direct load of /feed never renders the intercept.
+    expect(byPattern["/feed"]?.forceDynamic).toBe(false);
+    // The render that shows the intercept stays force-dynamic.
+    const modal = Object.values(byPattern["/feed"]!.slots).find((slot) => slot.name === "modal");
+    expect(modal?.intercepts).toEqual([
+      expect.objectContaining({ forceDynamic: true, targetPattern: "/feed/photo/:id" }),
+    ]);
+    // The request stage's intercept match carries the intercept's own flag.
+    expect(code).toContain("interceptionForceDynamic: intercept.forceDynamic === true");
+  });
+});

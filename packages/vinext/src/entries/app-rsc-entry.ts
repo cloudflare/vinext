@@ -363,21 +363,11 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
 
   return routes.map((route) => ({
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
-    forceDynamic:
-      directRequestForcesDynamic(route, forcesDynamic) ||
-      [
-        ...route.parallelSlots.flatMap((slot) =>
-          slot.interceptingRoutes.flatMap((intercept) => [
-            ...intercept.layoutPaths,
-            intercept.pagePath,
-            intercept.ownerDefaultPath,
-          ]),
-        ),
-        ...route.siblingIntercepts.flatMap((intercept) => [
-          ...intercept.layoutPaths,
-          intercept.pagePath,
-        ]),
-      ].some(forcesDynamic),
+    // Next.js rewrites an intercepted request to the intercepting route's own
+    // app path, which collects segment config from its own tree. So an
+    // interceptor's config applies only to the render it intercepts (its
+    // `forceDynamic` below), never to a direct request to this route.
+    forceDynamic: directRequestForcesDynamic(route, forcesDynamic),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,
@@ -403,6 +393,11 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
           slotPatternParts: slot.slotPatternParts ?? null,
           slotParamNames: slot.slotParamNames ?? null,
           intercepts: slot.interceptingRoutes.map((intercept) => ({
+            forceDynamic: [
+              ...intercept.layoutPaths,
+              intercept.pagePath,
+              intercept.ownerDefaultPath,
+            ].some(forcesDynamic),
             id: intercept.id ?? null,
             targetPattern: intercept.targetPattern,
             sourceMatchPattern: intercept.sourceMatchPattern,
@@ -431,6 +426,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       ]),
     ),
     siblingIntercepts: route.siblingIntercepts.map((intercept) => ({
+      forceDynamic: [...intercept.layoutPaths, intercept.pagePath].some(forcesDynamic),
       id: intercept.id ?? null,
       targetPattern: intercept.targetPattern,
       sourceMatchPattern: intercept.sourceMatchPattern,
@@ -676,6 +672,7 @@ const __requestHandler = createAppRscRequestHandler({
       interceptionRendersWholeInterceptingRoute: intercept.rendersWholeInterceptingRoute,
       interceptionRendersTargetLayouts: intercept.rendersTargetLayouts,
       interceptionRawRendersTargetLayouts: intercept.rawRendersTargetLayouts,
+      interceptionForceDynamic: intercept.forceDynamic === true,
       route,
       params: pickParams(route, intercept.sourceMatchedParams),
     };

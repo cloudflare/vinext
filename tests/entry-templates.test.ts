@@ -2334,9 +2334,12 @@ describe("App Router entry templates", () => {
       ]);
       const serializedRoutes = code.match(/^const __routes = (.+);$/m)?.[1];
       expect(serializedRoutes).toBeDefined();
+      type Intercept = { forceDynamic: boolean; targetPattern: string };
       const routes = JSON.parse(serializedRoutes!) as Array<{
         forceDynamic: boolean;
         pattern: string;
+        siblingIntercepts?: Intercept[];
+        slots?: Record<string, { intercepts: Intercept[] }>;
       }>;
 
       expect(
@@ -2345,9 +2348,22 @@ describe("App Router entry templates", () => {
         "/api": true,
         "/layout": true,
         "/page": true,
-        "/sibling-intercept": true,
-        "/slot-intercept": true,
+        // An interceptor's config applies only to the render it intercepts.
+        "/sibling-intercept": false,
+        "/slot-intercept": false,
         "/static": false,
+      });
+      const interceptForceDynamic = Object.fromEntries(
+        routes.flatMap((route) =>
+          [
+            ...Object.values(route.slots ?? {}).flatMap((slot) => slot.intercepts),
+            ...(route.siblingIntercepts ?? []),
+          ].map((intercept) => [intercept.targetPattern, intercept.forceDynamic]),
+        ),
+      );
+      expect(interceptForceDynamic).toEqual({
+        "/sibling-intercept/photo": true,
+        "/slot-intercept/photo": true,
       });
     } finally {
       fs.rmSync(tmpDir, { force: true, recursive: true });
