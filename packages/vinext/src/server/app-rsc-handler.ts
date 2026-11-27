@@ -3239,7 +3239,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // tree applies, not the target's or the source page's.
     // A Route Handler never renders an intercept, so it keeps its own config.
     const activeInterception =
-      interceptionSourceContext !== null && !route.routeHandler ? interceptionSourceMatch : null;
+      interceptionSourceContext !== null && !isAppRouteHandlerRoute(route)
+        ? interceptionSourceMatch
+        : null;
     const forceDynamic = activeInterception
       ? activeInterception.interceptionForceDynamic === true
       : route.forceDynamic === true || match.interceptionForceDynamic === true;
