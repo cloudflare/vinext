@@ -670,9 +670,10 @@ function buildGenerateStaticParamsEntries(
 
   const entry = (key: string, pattern: string, sources: string[]): string => {
     const rootParamNames = namesByPattern.get(pattern) ?? [];
-    return `  ${JSON.stringify(key)}: __createAppPrerenderStaticParamsResolver([${sources.join(
-      ", ",
-    )}], ${JSON.stringify(rootParamNames)}),`;
+    // Root param errors name the route, so only routes with root params need it.
+    const args = [`[${sources.join(", ")}]`, JSON.stringify(rootParamNames)];
+    if (rootParamNames.length > 0) args.push(JSON.stringify(pattern));
+    return `  ${JSON.stringify(key)}: __createAppPrerenderStaticParamsResolver(${args.join(", ")}),`;
   };
   return [
     ...Array.from(sourcesByPattern, ([pattern, sources]) => entry(pattern, pattern, sources)),

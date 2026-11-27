@@ -18,7 +18,8 @@ export type RootParamsState = {
 export type RootParamsUsage =
   | { kind: "route" }
   | { kind: "server-action" }
-  | { kind: "route-handler"; routePattern: string };
+  | { kind: "route-handler"; routePattern: string }
+  | { kind: "generate-static-params"; route: string };
 
 type RootParamsUsageState = RootParamsUsage & {
   phase: "active" | "render";
@@ -103,8 +104,22 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
       `\`import('next/root-params').${name}()\` was used inside \`"use cache"\` nested within \`unstable_cache\`. Root params are not available in this context.`,
     );
   }
+  const rootParams = getState().rootParams;
+  // Like Next.js's `generate-static-params` work unit, a generator sees only
+  // the root params its parent generators provided. A "use cache" scope
+  // inside it reads its root params without this check, as Next.js's `cache`
+  // work unit does.
+  if (
+    usage?.kind === "generate-static-params" &&
+    getRegisteredCacheContext() === null &&
+    !(rootParams && Object.hasOwn(rootParams, name))
+  ) {
+    throw createRootParamsUsageError(
+      `Route ${usage.route} used \`import('next/root-params').${name}()\` inside \`generateStaticParams\`, but the \`${name}\` parameter was not provided by a parent \`generateStaticParams\`. In \`generateStaticParams\`, root params are only available for segments nested below the segment that provides them.`,
+    );
+  }
   _recordUseCacheRootParamRead(name);
-  return Promise.resolve(getState().rootParams?.[name]);
+  return Promise.resolve(rootParams?.[name]);
 }
 
 /** @internal Current route root params for `"use cache"` key derivation. */
@@ -156,4 +171,27 @@ export function runWithRootParamsScope<T>(
   } else {
     return _als.run({ rootParams: params }, fn);
   }
+}
+
+/**
+ * Run one generateStaticParams call with the root params its parent params
+ * provide, as Next.js's build/static-paths/app.ts `callGenerateStaticParams`
+ * does. Root params the parents did not provide are left out of the scope, so
+ * reading one throws. `route` is the route in Next.js form (`/[lang]/[locale]`).
+ */
+export function runWithGenerateStaticParamsRootParams<T>(
+  route: string,
+  parentParams: Readonly<Record<string, unknown>>,
+  rootParamNames: readonly string[],
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  const rootParams: RootParams = {};
+  for (const name of rootParamNames) {
+    if (Object.hasOwn(parentParams, name)) {
+      rootParams[name] = parentParams[name] as RootParams[string];
+    }
+  }
+  return runWithRootParamsScope(rootParams, () =>
+    _usageAls.run({ kind: "generate-static-params", route, phase: "active" }, async () => fn()),
+  );
 }

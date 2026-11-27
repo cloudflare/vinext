@@ -1644,13 +1644,20 @@ describe("app page dispatch", () => {
   });
 
   it("gives a route's generators their parent params as root params", async () => {
-    const seen: unknown[] = [];
+    // The request's root params never reach a generator. With no parent
+    // generator, reading `lang` throws as in Next.js's generate-static-params
+    // work unit (server/request/root-params.ts).
+    let rootParamError: unknown;
     const { options } = createDispatchOptions({
       async buildPageElement() {
         return "page";
       },
       async generateStaticParams() {
-        seen.push(await getRootParam("lang"));
+        try {
+          await getRootParam("lang");
+        } catch (error) {
+          rootParamError = error;
+        }
         return [{ lang: "fr" }];
       },
       params: { lang: "fr" },
@@ -1672,7 +1679,9 @@ describe("app page dispatch", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(seen).toEqual([undefined]);
+    expect(String(rootParamError)).toContain(
+      "Route /[lang] used `import('next/root-params').lang()` inside `generateStaticParams`, but the `lang` parameter was not provided by a parent `generateStaticParams`.",
+    );
   });
 
   it.each([
@@ -5802,7 +5811,12 @@ describe("app page dispatch", () => {
           {
             default: () => null,
             async generateStaticParams() {
-              seen.push(await getRootParam("slug"));
+              // No parent generator provides `slug`, so reading it throws.
+              try {
+                seen.push(await getRootParam("slug"));
+              } catch {
+                seen.push("no parent slug");
+              }
               return [{ slug: "acme" }];
             },
           } as Record<string, unknown>,
@@ -5823,7 +5837,7 @@ describe("app page dispatch", () => {
       );
 
       expect(response.status).toBe(200);
-      expect(seen).toEqual([undefined, "acme"]);
+      expect(seen).toEqual(["no parent slug", "acme"]);
     });
 
     it("checks an interception of the matched route against its own generators", async () => {

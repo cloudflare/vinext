@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 
 describe("createAppPrerenderStaticParamsResolver", () => {
   it("returns null when there are no sources at all", () => {
@@ -114,5 +115,62 @@ describe("createAppPrerenderStaticParamsResolver", () => {
     await expect(nonPlainEntry!({ params: {} })).rejects.toThrow(
       "generateStaticParams must return an array of objects",
     );
+  });
+});
+
+// Ported from Next.js server/request/root-params.ts (the `generate-static-params`
+// work unit) and build/static-paths/app.ts `callGenerateStaticParams`: a
+// generator sees only the root params its parent generators provided, and
+// reading another one fails the build. Mirrors the deploy-suite fixture
+// app-root-params-getters/generate-static-params-error, whose [lang]/[locale]
+// layout calls lang() inside its own generateStaticParams.
+describe("createAppPrerenderStaticParamsResolver root params", () => {
+  const unprovidedLang =
+    "Route /[lang]/[locale] used `import('next/root-params').lang()` inside `generateStaticParams`, but the `lang` parameter was not provided by a parent `generateStaticParams`.";
+
+  it("rejects when the first of several generators reads a root param no parent provided", async () => {
+    const langLocaleLayout = async () => {
+      await getRootParam("lang");
+      return [{ lang: "en", locale: "us" }];
+    };
+    const page = () => [];
+    const resolver = createAppPrerenderStaticParamsResolver(
+      [langLocaleLayout, page],
+      ["lang", "locale"],
+      "/:lang/:locale",
+    );
+
+    await expect(resolver!({ params: {} })).rejects.toThrow(unprovidedLang);
+  });
+
+  it("rejects when a single generator reads a root param no parent provided", async () => {
+    const langLocaleLayout = async () => {
+      await getRootParam("lang");
+      return [{ lang: "en", locale: "us" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver(
+      [langLocaleLayout],
+      ["lang", "locale"],
+      "/:lang/:locale",
+    );
+
+    await expect(resolver!({ params: {} })).rejects.toThrow(unprovidedLang);
+  });
+
+  it("gives a nested generator the root params its parents provided", async () => {
+    const seen: unknown[] = [];
+    const langLayout = () => [{ lang: "en" }];
+    const localeLayout = async () => {
+      seen.push(await getRootParam("lang"));
+      return [{ locale: "us" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver(
+      [langLayout, localeLayout],
+      ["lang", "locale"],
+      "/:lang/:locale",
+    );
+
+    await expect(resolver!({ params: {} })).resolves.toEqual([{ lang: "en", locale: "us" }]);
+    expect(seen).toEqual(["en"]);
   });
 });

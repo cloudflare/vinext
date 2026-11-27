@@ -1,4 +1,10 @@
-import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
+import {
+  pickRootParams,
+  runWithGenerateStaticParamsRootParams,
+  runWithRootParamsScope,
+  type RootParams,
+} from "vinext/shims/root-params";
+import { patternToNextFormat } from "../routing/route-validation.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
@@ -71,6 +77,7 @@ function isRootParams(value: unknown): value is RootParams {
 export function createAppPrerenderStaticParamsResolver(
   sources: readonly unknown[],
   rootParamNames?: readonly string[],
+  routePattern?: string,
 ): AppPrerenderStaticParamsResolver | null {
   // A source is usable if it is an eager generateStaticParams function or a
   // lazy `{ load }` page source. Keep them in their original order so the
@@ -81,8 +88,10 @@ export function createAppPrerenderStaticParamsResolver(
   );
   if (usableSources.length === 0) return null;
 
-  const filterRootParams = (params: RootParams): RootParams =>
-    pickRootParams(params, rootParamNames ?? []);
+  // Each generator sees as root params only those its parent params provide.
+  const route = routePattern === undefined ? "" : patternToNextFormat(routePattern);
+  const runWithParentRootParams = <T>(parentParams: RootParams, fn: () => Promise<T>) =>
+    runWithGenerateStaticParamsRootParams(route, parentParams, rootParamNames ?? [], fn);
 
   // Resolve lazy page modules once, on first invocation (prerender time), and
   // memoize the combined function list. Dedup concurrent callers. Resolution
@@ -128,8 +137,7 @@ export function createAppPrerenderStaticParamsResolver(
       // Wrap the single source in the same non-array/non-object guards as the
       // multi-source composition path so the contract is uniform regardless of
       // how many sources were composed.
-      const picked = filterRootParams(input.params);
-      return runWithRootParamsScope(picked, async () => {
+      return runWithParentRootParams(input.params, async () => {
         const result = await single({ params: input.params });
         if (!Array.isArray(result)) {
           return invalidGenerateStaticParamsResult("generateStaticParams must return an array");
@@ -155,9 +163,7 @@ export function createAppPrerenderStaticParamsResolver(
       const hasParentSets = paramSets.length > 0;
 
       for (const parentParams of hasParentSets ? paramSets : [{}]) {
-        const rootScope = filterRootParams(parentParams);
-
-        const result = await runWithRootParamsScope(rootScope, async () =>
+        const result = await runWithParentRootParams(parentParams, async () =>
           generateStaticParams({ params: parentParams }),
         );
 
