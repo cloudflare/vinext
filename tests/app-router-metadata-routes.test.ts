@@ -94,7 +94,8 @@ describe("metadata routes integration (App Router)", () => {
     const routes = scanMetadataFiles(appDir);
 
     const iconRoute = routes.find(
-      (r: { type: string; isDynamic: boolean }) => r.type === "icon" && r.isDynamic,
+      (r: { type: string; isDynamic: boolean; routePrefix: string }) =>
+        r.type === "icon" && r.isDynamic && r.routePrefix === "",
     );
     expect(iconRoute).toBeDefined();
     expect(iconRoute!.isDynamic).toBe(true);
@@ -107,7 +108,9 @@ describe("metadata routes integration (App Router)", () => {
     const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
-    const appleIcon = routes.find((r: { type: string }) => r.type === "apple-icon");
+    const appleIcon = routes.find(
+      (r: { type: string; routePrefix: string }) => r.type === "apple-icon" && r.routePrefix === "",
+    );
     expect(appleIcon).toBeDefined();
     expect(appleIcon!.isDynamic).toBe(false);
     expect(appleIcon!.servedUrl).toBe("/apple-icon.png");
@@ -477,6 +480,58 @@ describe("metadata routes integration (App Router)", () => {
     expect(res.status).toBe(200);
     const text = await res.text();
     expect(text).toBe("og:my-post");
+  });
+
+  // Next.js matches static segments before [param] (getSortedRoutes), so a
+  // static metadata route is not shadowed by a [slug] sibling.
+  it("serves a static-segment metadata route before its [slug] sibling", async () => {
+    const res = await fetch(`${baseUrl}/metadata-static-sibling/custom-font/opengraph-image`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("static custom-font");
+  });
+
+  it("still serves other params from the [slug] sibling metadata route", async () => {
+    const res = await fetch(`${baseUrl}/metadata-static-sibling/other/opengraph-image`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("dynamic other");
+  });
+
+  it("scanMetadataFiles orders a static-segment metadata route before its [slug] sibling", async () => {
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+    const servedUrls = scanMetadataFiles(appDir).map((r: { servedUrl: string }) => r.servedUrl);
+    const staticIndex = servedUrls.indexOf("/metadata-static-sibling/custom-font/opengraph-image");
+    const dynamicIndex = servedUrls.indexOf("/metadata-static-sibling/[slug]/opengraph-image");
+    expect(staticIndex).toBeGreaterThanOrEqual(0);
+    expect(dynamicIndex).toBeGreaterThan(staticIndex);
+  });
+
+  // Next.js serves generated image ids at icon/[__metadata_id__], so the exact
+  // nested route icon/icon wins over the generated id "icon".
+  it("serves an exact nested metadata route before a generated image id of its parent", async () => {
+    const nested = await fetch(`${baseUrl}/metadata-static-sibling/icon/icon`);
+    expect(nested.status).toBe(200);
+    expect(await nested.text()).toBe("nested icon");
+
+    const generated = await fetch(`${baseUrl}/metadata-static-sibling/icon/small`);
+    expect(generated.status).toBe(200);
+    expect(await generated.text()).toBe("generated small");
+  });
+
+  it("scanMetadataFiles keeps metadata files of one dynamic segment in discovery order", async () => {
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+    const icons = scanMetadataFiles(appDir)
+      .filter(
+        (r: { type: string; routePrefix: string }) =>
+          r.type === "icon" && r.routePrefix === "/metadata-static-sibling/[slug]",
+      )
+      .map((r: { servedUrl: string }) => r.servedUrl);
+    // The order their <link rel="icon"> tags render in: icon.tsx, then icon1.png.
+    expect(icons).toEqual([
+      "/metadata-static-sibling/[slug]/icon",
+      "/metadata-static-sibling/-/icon1.png",
+    ]);
   });
 
   it("honors dynamicParams = false for dynamic metadata images", async () => {

@@ -756,9 +756,56 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
     }
     // If both are static or both dynamic, keep the first one found
   }
-  cachedMetadataRoutes = Array.from(byUrl.values());
+  // Request matching takes the first route that matches, so order routes the
+  // way Next.js matches them rather than in directory-scan order (where "["
+  // sorts before letters and a [slug] sibling would shadow a static segment).
+  cachedMetadataRoutes = Array.from(byUrl.values()).sort((a, b) =>
+    compareMetadataRouteDirectories(a.routePrefix, b.routePrefix),
+  );
   cachedMetadataAppDir = appDir;
   return cachedMetadataRoutes;
+}
+
+/**
+ * Sort rank of one token of a route's source directory, from the ordering of
+ * Next.js' `getSortedRoutes` (`UrlNode.smoosh` in
+ * shared/lib/router/utils/sorted-routes.ts): static segments, then `[param]`,
+ * then `[...param]`, then `[[...param]]`. `null` stands for the metadata files
+ * of the directory itself. It ranks after static child directories, because
+ * Next.js serves generated image ids as `<name>/[__metadata_id__]`, so an exact
+ * nested route wins over them, and before dynamic child directories, where a
+ * static file name wins over a `[param]` segment.
+ */
+function metadataDirectoryTokenRank(token: string | null): number {
+  if (token === null) return 1;
+  if (!token.startsWith("[") || !token.endsWith("]")) return 0;
+  if (token.startsWith("[[...")) return 4;
+  if (token.startsWith("[...")) return 3;
+  return 2;
+}
+
+/**
+ * Order metadata routes by the URL directory they are colocated in (its
+ * `routePrefix`, which keeps dynamic segment names), comparing directories
+ * token by token with {@link metadataDirectoryTokenRank} and static names
+ * alphabetically. Routes of the same directory compare equal, so the stable
+ * sort keeps their discovery order, which is the order their head tags render
+ * in.
+ */
+function compareMetadataRouteDirectories(a: string, b: string): number {
+  const aTokens: (string | null)[] = [...a.split("/").filter(Boolean), null];
+  const bTokens: (string | null)[] = [...b.split("/").filter(Boolean), null];
+  const length = Math.min(aTokens.length, bTokens.length);
+  for (let i = 0; i < length; i++) {
+    const aToken = aTokens[i];
+    const bToken = bTokens[i];
+    if (aToken === bToken) continue;
+    const rankDiff = metadataDirectoryTokenRank(aToken) - metadataDirectoryTokenRank(bToken);
+    if (rankDiff !== 0) return rankDiff;
+    // Both are non-null here: null has a rank of its own.
+    return aToken! < bToken! ? -1 : 1;
+  }
+  return 0;
 }
 
 function resolveStaticMetadataAltFilePath(dir: string, baseName: string): string | undefined {
