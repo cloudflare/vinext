@@ -399,6 +399,34 @@ function interceptForcesDynamic(
   ].some(forcesDynamic);
 }
 
+/**
+ * The shallowest main-tree position at which the route's layouts, or the
+ * parallel slots they own, take a `dynamic = "force-dynamic"` file. A sibling
+ * intercept owned at or below it renders that file when it renders from this
+ * route, as `interceptForcesDynamic` counts it.
+ */
+function ownerTreeForceDynamicPosition(
+  route: AppRoute,
+  forcesDynamic: ForcesDynamic,
+): number | null {
+  const positions = [
+    ...route.layouts.flatMap((layout, index) =>
+      forcesDynamic(layout) ? [route.layoutTreePositions[index] ?? 0] : [],
+    ),
+    ...route.parallelSlots.flatMap((slot) =>
+      [
+        ...(slot.pagePath
+          ? [slot.layoutPath, ...(slot.configLayoutPaths ?? []), slot.pagePath]
+          : []),
+        slot.defaultPath,
+      ].some(forcesDynamic)
+        ? [slot.ownerTreePosition ?? route.layoutTreePositions[slot.layoutIndex] ?? 0]
+        : [],
+    ),
+  ];
+  return positions.length > 0 ? Math.min(...positions) : null;
+}
+
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   const readSource = createSegmentSourceReader();
   const forcesDynamic = createForcesDynamicReader(readSource);
@@ -418,6 +446,10 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     // interceptor's config applies only to the render it intercepts (its
     // `forceDynamic` below), never to a direct request to this route.
     forceDynamic: directRequestForcesDynamic(route, forcesDynamic),
+    // A sibling intercept whose owner only stands in for its marker directory
+    // renders from the concrete source route, under that route's layouts and
+    // slots.
+    ownerTreeForceDynamicPosition: ownerTreeForceDynamicPosition(route, forcesDynamic),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,
@@ -473,6 +505,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     ),
     siblingIntercepts: route.siblingIntercepts.map((intercept) => ({
       forceDynamic: interceptForcesDynamic(route, intercept, null, forcesDynamic),
+      branchForceDynamic: [...intercept.layoutPaths, intercept.pagePath].some(forcesDynamic),
       id: intercept.id ?? null,
       targetPattern: intercept.targetPattern,
       sourceMatchPattern: intercept.sourceMatchPattern,

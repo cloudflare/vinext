@@ -70,4 +70,28 @@ describe("intercepting route force-dynamic", () => {
     expect(matcher.findIntercept("/shelf/book/1", "/shelf")?.forceDynamic).toBe(false);
     expect(matcher.findIntercept("/shelf/book/1", "/shelf/sub")?.forceDynamic).toBe(true);
   });
+
+  it("takes a stand-in owner's sibling intercept flag from the source that renders it", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+    const code = generateAppRequestRscEntry(appDir, routes);
+    const requestRoutes = JSON.parse(code.match(/^const __routes = (.+);$/m)![1]!);
+    const matcher = createAppRscRouteMatcher(requestRoutes);
+
+    // /gallery has no page, so the static /gallery/list stands in as the owner.
+    const owner = (
+      requestRoutes as Array<{ pattern: string; siblingIntercepts?: RequestStageIntercept[] }>
+    ).find((route) =>
+      route.siblingIntercepts?.some(
+        (intercept) => intercept.targetPattern === "/gallery/photo/:id",
+      ),
+    );
+    expect(owner?.pattern).toBe("/gallery/list");
+    expect(matcher.findIntercept("/gallery/photo/2", "/gallery/list")?.forceDynamic).toBe(false);
+    // From /gallery/photo/1 the intercept renders in that route, beside its
+    // force-dynamic `@aside` page.
+    const fromPhoto = matcher.findIntercept("/gallery/photo/2", "/gallery/photo/1");
+    expect(requestRoutes[fromPhoto!.sourceRouteIndex]?.pattern).toBe("/gallery/photo/:id");
+    expect(fromPhoto?.forceDynamic).toBe(true);
+  });
 });
