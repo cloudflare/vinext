@@ -3229,7 +3229,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     interceptionResponseUncacheableBeforeMatch = interceptionResponseUncacheable;
     match = renderedRouteMatch(match);
     const { route, params } = match;
-    const forceDynamic = route.forceDynamic === true || match.interceptionForceDynamic === true;
+    // A target with a route of its own matches directly, but still renders the
+    // intercept its verified source context selects, from the source's tree.
+    const activeInterception = interceptionSourceContext !== null ? interceptionSourceMatch : null;
+    const forceDynamic =
+      route.forceDynamic === true ||
+      match.interceptionForceDynamic === true ||
+      activeInterception?.route.forceDynamic === true ||
+      activeInterception?.interceptionForceDynamic === true;
     const requestPathnameDiffersFromCachePath = requestPathname !== cleanPathname;
     const rawRequestPathnameIsObservable =
       isInterceptionMatch ||

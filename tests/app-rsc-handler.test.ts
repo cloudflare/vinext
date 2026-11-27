@@ -3001,6 +3001,50 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[1]?.[2]).toEqual({ cache: "bypass" });
   });
 
+  it("bypasses the shared response stage for a force-dynamic intercept whose target has its own route", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const dispatch = async (interceptionForceDynamic: boolean) => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("stage")),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        matchInterceptRoute: (pathname, sourcePathname) =>
+          pathname === "/photos/1" && sourcePathname === "/feed"
+            ? {
+                interceptionForceDynamic,
+                interceptionSourceIsConcrete: true,
+                params: {},
+                route: sourceRoute,
+              }
+            : null,
+        matchRequestRoute: (pathname) =>
+          pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+        matchRoute: (pathname) => {
+          if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+          if (pathname === "/feed") return { params: {}, route: sourceRoute };
+          return null;
+        },
+      });
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+      const url = await createRscRequestUrl("/docs/photos/1", headers);
+      await handler(
+        new Request(`https://example.test${url}`, { headers }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      expect(dispatchResponseStage).toHaveBeenCalledOnce();
+      const [, props, init] = dispatchResponseStage.mock.calls[0]!;
+      return { cache: init?.cache, forceDynamic: props.kind === "app-page" && props.forceDynamic };
+    };
+
+    // The target matches directly, but the render shows the intercept.
+    expect(await dispatch(true)).toEqual({ cache: "bypass", forceDynamic: true });
+    expect(await dispatch(false)).toEqual({ cache: "shared", forceDynamic: false });
+  });
+
   it("keeps a force-dynamic route shared when next.config supplies a public cache policy", async () => {
     const route = createPageRoute({ forceDynamic: true });
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
