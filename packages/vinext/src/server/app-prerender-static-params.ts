@@ -4,7 +4,7 @@ import {
   runWithRootParamsScope,
   type RootParams,
 } from "vinext/shims/root-params";
-import { patternToNextFormat } from "../routing/route-validation.js";
+import { patternToNextRoute } from "../routing/route-pattern.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
@@ -126,7 +126,7 @@ export function createAppPrerenderStaticParamsResolver(
   return async (input) => {
     const fns = await resolveFns();
     // Each generator sees as root params only those its parent params provide.
-    const route = patternToNextFormat(input.route ?? "");
+    const route = patternToNextRoute(input.route ?? "");
     const runWithParentRootParams = <T>(parentParams: RootParams, fn: () => Promise<T>) =>
       runWithGenerateStaticParamsRootParams(route, parentParams, rootParamNames ?? [], fn);
     // No generateStaticParams export anywhere for this pattern. Return null (not

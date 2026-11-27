@@ -1,4 +1,5 @@
 import { decodeMatchedParams } from "./utils";
+import { patternToNextFormat } from "./route-validation.js";
 
 export type RoutePatternParams = Record<string, string | string[]>;
 
@@ -26,6 +27,22 @@ export function interceptionMarkerPatternParam(
   const marker = INTERCEPTION_MARKERS.find((prefix) => patternPart.startsWith(prefix));
   const name = marker && patternPart.slice(marker.length).match(/^:(.*[^+*])$/)?.[1];
   return marker && name ? { marker, name } : null;
+}
+
+/**
+ * A route pattern in Next.js route syntax, as Next.js names a route in its
+ * errors: `/feed/(.):id` → `/feed/(.)[id]`.
+ */
+export function patternToNextRoute(pattern: string): string {
+  return patternToNextFormat(
+    pattern
+      .split("/")
+      .map((part) => {
+        const markerParam = interceptionMarkerPatternParam(part);
+        return markerParam ? `${markerParam.marker}[${markerParam.name}]` : part;
+      })
+      .join("/"),
+  );
 }
 
 /**

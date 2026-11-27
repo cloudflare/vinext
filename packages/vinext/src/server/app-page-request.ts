@@ -12,6 +12,7 @@ import { getAppPageSegmentParamName } from "./app-page-params.js";
 import {
   interceptionMarkerPatternParam,
   matchRoutePattern,
+  patternToNextRoute,
   withoutInterceptionMarker,
 } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -22,7 +23,6 @@ import {
   runWithGenerateStaticParamsRootParams,
   type RootParams,
 } from "vinext/shims/root-params";
-import { patternToNextFormat } from "../routing/route-validation.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isRouteSegmentFetchCache } from "./app-segment-config.js";
 import {
@@ -834,7 +834,7 @@ export async function checkAppPageDynamicParams(
   // a root param getter fails there even for a route without root params.
   const rootParams: GenerateStaticParamsRootParams = {
     names: options.rootParamNames ?? [],
-    route: patternToNextFormat(options.routePattern ?? ""),
+    route: patternToNextRoute(options.routePattern ?? ""),
   };
   const chainedSources = generateStaticParamsSources.filter((source) => source.chained);
   const hasIndependentSources = generateStaticParamsSources.some((source) => !source.chained);

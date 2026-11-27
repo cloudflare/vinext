@@ -186,6 +186,18 @@ describe("createAppPrerenderStaticParamsResolver root params", () => {
     );
   });
 
+  it("names an intercepting route in Next.js route syntax", async () => {
+    const page = async () => {
+      await getRootParam("lang");
+      return [{ id: "1" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([page], []);
+
+    await expect(resolver!({ params: {}, route: "/feed/(.):id/:rest+/:opt*" })).rejects.toThrow(
+      "Route /feed/(.)[id]/[...rest]/[[...opt]] used `import('next/root-params').lang()` inside `generateStaticParams`",
+    );
+  });
+
   it("rejects a root param getter on a route without root params", async () => {
     // `next/root-params` exports the getters of every root, so another
     // root's `lang()` can run here. Next.js's work unit then has no root
