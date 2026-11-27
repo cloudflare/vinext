@@ -571,9 +571,23 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           renderedSourceParams && entry.sourceMatchPatternParts !== null
             ? pickPatternParams(renderedSourceParams, entry.sourceMatchPatternParts)
             : (renderedSourceParams ?? createRouteParams());
-        const renderedSourceSegments =
-          routes[rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex]
-            ?.routeSegments;
+        const renderedSourceRouteIndex = rendersOwnerRoute
+          ? entry.sourceRouteIndex
+          : concreteSourceRouteIndex;
+        const renderedSourceSegments = routes[renderedSourceRouteIndex]?.routeSegments;
+        // A descendant that inherits the slot renders its own pages in the
+        // owner's other slots, so its copy of the intercept holds the config
+        // of that render.
+        const renderedInterceptCopy =
+          entry.slotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY
+            ? undefined
+            : routes[renderedSourceRouteIndex]?.slots?.[entry.slotKey]?.intercepts?.find(
+                (intercept) =>
+                  intercept.targetPattern === entry.targetPattern &&
+                  (intercept.sourceMatchPattern ?? null) === entry.sourceMatchPattern &&
+                  (intercept.sourcePageSegments ?? []).join("/") ===
+                    (entry.sourcePageSegments ?? []).join("/"),
+              );
         const match = {
           ...entry,
           page: entry.__loadState.page,
@@ -611,7 +625,11 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
             entry.sourceMatchPatternParts?.length === 0,
           sourceRouteLacksSlot,
           rendersWholeInterceptingRoute,
-          sourceRouteIndex: rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex,
+          forceDynamic:
+            typeof renderedInterceptCopy?.forceDynamic === "boolean"
+              ? renderedInterceptCopy.forceDynamic
+              : entry.forceDynamic,
+          sourceRouteIndex: renderedSourceRouteIndex,
           // The params above the interception marker, the owner's and those of
           // the slot's folders, take the values the interception rewrite
           // captures from the source pathname, as the root params do. Where

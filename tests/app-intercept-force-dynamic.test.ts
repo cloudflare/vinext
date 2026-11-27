@@ -2,6 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import { generateAppRequestRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
+import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 
 const appDir = path.resolve(import.meta.dirname, "fixtures/app-intercept-force-dynamic-owner/app");
 
@@ -55,5 +56,18 @@ describe("intercepting route force-dynamic", () => {
     ]);
     // The request stage's intercept match carries the intercept's own flag.
     expect(code).toContain("interceptionForceDynamic: intercept.forceDynamic === true");
+  });
+
+  it("takes the flag from the copy of an inherited intercept the source renders", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(appDir);
+    const code = generateAppRequestRscEntry(appDir, routes);
+    const requestRoutes = JSON.parse(code.match(/^const __routes = (.+);$/m)![1]!);
+    const matcher = createAppRscRouteMatcher(requestRoutes);
+
+    // /shelf/sub shows its own force-dynamic `@aside` page beside the intercept,
+    // which /shelf, the owner, does not.
+    expect(matcher.findIntercept("/shelf/book/1", "/shelf")?.forceDynamic).toBe(false);
+    expect(matcher.findIntercept("/shelf/book/1", "/shelf/sub")?.forceDynamic).toBe(true);
   });
 });
