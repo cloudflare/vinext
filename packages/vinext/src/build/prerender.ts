@@ -578,7 +578,13 @@ function emitStatic404Files(outDir: string, html: string, trailingSlash: boolean
 /** Map of route patterns to generateStaticParams functions (or null/undefined). */
 export type StaticParamsMap = Record<
   string,
-  ((opts: { params: Record<string, string | string[]> }) => Promise<unknown>) | null | undefined
+  | ((opts: {
+      params: Record<string, string | string[]>;
+      /** The route being built, for a shared layout's key; root param errors name it. */
+      route?: string;
+    }) => Promise<unknown>)
+  | null
+  | undefined
 >;
 
 /**
@@ -623,6 +629,7 @@ export async function resolveParentParams(
 ): Promise<Record<string, string | string[]>[]> {
   type GenerateStaticParamsFn = (opts: {
     params: Record<string, string | string[]>;
+    route: string;
   }) => Promise<unknown>;
 
   if (childRoute.routePath && !childRoute.pagePath) return [];
@@ -649,7 +656,10 @@ export async function resolveParentParams(
     const hasParentSets = currentParams.length > 0;
 
     for (const parentParams of hasParentSets ? currentParams : [{}]) {
-      const results = await generateStaticParams({ params: parentParams });
+      const results = await generateStaticParams({
+        params: parentParams,
+        route: childRoute.pattern,
+      });
       // `null` is the CF Workers Proxy sentinel: the proxy has no
       // generateStaticParams for this pattern. Skip and let later providers run.
       if (results === null) continue;
@@ -1603,7 +1613,13 @@ export async function prerenderApp({
     >();
     staticParamsMap = new Proxy({} as typeof staticParamsMap, {
       get(_target, pattern: string) {
-        return async ({ params }: { params: Record<string, string | string[]> }) => {
+        return async ({
+          params,
+          route,
+        }: {
+          params: Record<string, string | string[]>;
+          route?: string;
+        }) => {
           // Keeps a parent's own undefined param, which Next.js passes through.
           const parentParamsJson = JSON.stringify(paramsToJson(params));
           const cacheKey = `${pattern}\0${parentParamsJson}`;
@@ -1614,6 +1630,9 @@ export async function prerenderApp({
             if (Object.keys(params).length > 0) {
               search.set("parentParams", parentParamsJson);
             }
+            // A shared layout's results serve every route under it, so its
+            // root param errors name the first route that asks.
+            if (route !== undefined) search.set("route", route);
             // Next.js fails an export on any empty generateStaticParams result,
             // so a composed resolver must not pass parents through one.
             if (mode === "export") search.set("rejectEmptyResults", "1");

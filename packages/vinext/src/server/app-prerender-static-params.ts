@@ -19,6 +19,11 @@ type GenerateStaticParamsFunction = (input: { params: RootParams }) => unknown;
 type AppPrerenderStaticParamsResolverInput = {
   params: RootParams;
   rejectEmptyResults?: boolean;
+  /**
+   * The route being built, as a vinext pattern. A root param error names it,
+   * as Next.js names its work store's route.
+   */
+  route?: string;
 };
 
 type AppPrerenderStaticParamsResolver = (input: AppPrerenderStaticParamsResolverInput) => unknown;
@@ -77,7 +82,6 @@ function isRootParams(value: unknown): value is RootParams {
 export function createAppPrerenderStaticParamsResolver(
   sources: readonly unknown[],
   rootParamNames?: readonly string[],
-  routePattern?: string,
 ): AppPrerenderStaticParamsResolver | null {
   // A source is usable if it is an eager generateStaticParams function or a
   // lazy `{ load }` page source. Keep them in their original order so the
@@ -87,11 +91,6 @@ export function createAppPrerenderStaticParamsResolver(
     (source) => isGenerateStaticParamsFunction(source) || isLazyStaticParamsSource(source),
   );
   if (usableSources.length === 0) return null;
-
-  // Each generator sees as root params only those its parent params provide.
-  const route = routePattern === undefined ? "" : patternToNextFormat(routePattern);
-  const runWithParentRootParams = <T>(parentParams: RootParams, fn: () => Promise<T>) =>
-    runWithGenerateStaticParamsRootParams(route, parentParams, rootParamNames ?? [], fn);
 
   // Resolve lazy page modules once, on first invocation (prerender time), and
   // memoize the combined function list. Dedup concurrent callers. Resolution
@@ -126,6 +125,10 @@ export function createAppPrerenderStaticParamsResolver(
 
   return async (input) => {
     const fns = await resolveFns();
+    // Each generator sees as root params only those its parent params provide.
+    const route = patternToNextFormat(input.route ?? "");
+    const runWithParentRootParams = <T>(parentParams: RootParams, fn: () => Promise<T>) =>
+      runWithGenerateStaticParamsRootParams(route, parentParams, rootParamNames ?? [], fn);
     // No generateStaticParams export anywhere for this pattern. Return null (not
     // []) so the prerender driver treats it as "no static params" — skipping
     // the route, or erroring under `output: export` — exactly as it did when an
@@ -198,6 +201,8 @@ type CallAppPrerenderStaticParamsOptions = {
   params: RootParams;
   pattern: string;
   rejectEmptyResults?: boolean;
+  /** The route being built, when the pattern is a shared layout's key. */
+  route?: string;
   rootParamNamesByPattern: Record<string, readonly string[] | undefined>;
 };
 
@@ -205,11 +210,12 @@ export async function callAppPrerenderStaticParams(
   options: CallAppPrerenderStaticParamsOptions,
 ): Promise<unknown> {
   const picked = pickRootParams(options.params, options.rootParamNamesByPattern[options.pattern]);
+  const route = options.route ?? options.pattern;
   return runWithRootParamsScope(picked, () =>
     options.fn(
       options.rejectEmptyResults
-        ? { params: options.params, rejectEmptyResults: true }
-        : { params: options.params },
+        ? { params: options.params, rejectEmptyResults: true, route }
+        : { params: options.params, route },
     ),
   );
 }

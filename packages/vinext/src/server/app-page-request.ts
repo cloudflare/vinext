@@ -90,7 +90,7 @@ export type ValidateAppPageDynamicParamsOptions = {
    * params as its root params, as in Next.js's generator walk.
    */
   rootParamNames?: readonly string[];
-  /** The route a root param error names, given with `rootParamNames`. */
+  /** The route a root param error names. */
   routePattern?: string;
   /** The fetchCache the generators start from, when the caller sets one. */
   initialFetchCache?: FetchCacheMode | null;
@@ -591,10 +591,9 @@ function callGenerateStaticParams(
   source: GenerateStaticParamsSource,
   params: AppPageParams,
   parentParams: Record<string, unknown>,
-  rootParams: GenerateStaticParamsRootParams | undefined,
+  rootParams: GenerateStaticParamsRootParams,
 ): Promise<unknown> {
   const call = async () => runWithFetchDedupe(() => source.generateStaticParams({ params }));
-  if (!rootParams) return call();
   return runWithGenerateStaticParamsRootParams(
     rootParams.route,
     parentParams,
@@ -607,7 +606,7 @@ async function generateIndependentStaticParams(
   sources: readonly GenerateStaticParamsSource[],
   primaryParams: readonly Record<string, unknown>[] | null,
   requestParams: AppPageParams,
-  rootParams: GenerateStaticParamsRootParams | undefined,
+  rootParams: GenerateStaticParamsRootParams,
 ): Promise<{ staticParams: Record<string, unknown>[]; validated: boolean }> {
   let rows = (primaryParams ?? []).map((params) => ({ params, branchParams: {} }));
   let hasParentParams = rows.length > 0;
@@ -692,7 +691,7 @@ function applySourceFetchCache(source: GenerateStaticParamsSource): void {
 async function generateChainedStaticParams(
   sources: readonly GenerateStaticParamsSource[],
   requestParams: AppPageParams | null,
-  rootParams: GenerateStaticParamsRootParams | undefined,
+  rootParams: GenerateStaticParamsRootParams,
   // The mode each pass starts from, when the caller sets one.
   initialFetchCache: FetchCacheMode | null | undefined,
   // A rerun over every combination reuses the results each generator already
@@ -831,8 +830,10 @@ export async function checkAppPageDynamicParams(
     rows.length > 0 &&
     rows.every((row) => (everyParamNames ?? []).every((name) => Object.hasOwn(row, name)));
 
-  const rootParams: GenerateStaticParamsRootParams | undefined = options.rootParamNames && {
-    names: options.rootParamNames,
+  // Next.js runs every generator in a generate-static-params work unit, so
+  // a root param getter fails there even for a route without root params.
+  const rootParams: GenerateStaticParamsRootParams = {
+    names: options.rootParamNames ?? [],
     route: patternToNextFormat(options.routePattern ?? ""),
   };
   const chainedSources = generateStaticParamsSources.filter((source) => source.chained);

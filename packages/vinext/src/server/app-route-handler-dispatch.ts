@@ -180,6 +180,7 @@ async function isAppRouteHandlerParamsMiss(options: {
         // value, which matches the encoded form pages compare.
         params: encodeAppRouteParams(options.params),
         requiredParamNames: routePatternParamNames(patternParts),
+        routePattern: options.pattern,
       }),
   );
   return notFound !== null;

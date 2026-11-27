@@ -1243,6 +1243,7 @@ async function renderMetadataRouteRequest(
         ),
         params: validationParams,
         requiredParamNames: routePatternParamNames(route.patternParts ?? []),
+        routePattern: metadataRouteCacheabilityPattern(route),
       });
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }

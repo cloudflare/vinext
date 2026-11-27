@@ -137,10 +137,11 @@ describe("createAppPrerenderStaticParamsResolver root params", () => {
     const resolver = createAppPrerenderStaticParamsResolver(
       [langLocaleLayout, page],
       ["lang", "locale"],
-      "/:lang/:locale",
     );
 
-    await expect(resolver!({ params: {} })).rejects.toThrow(unprovidedLang);
+    await expect(resolver!({ params: {}, route: "/:lang/:locale" })).rejects.toThrow(
+      unprovidedLang,
+    );
   });
 
   it("rejects when a single generator reads a root param no parent provided", async () => {
@@ -148,13 +149,11 @@ describe("createAppPrerenderStaticParamsResolver root params", () => {
       await getRootParam("lang");
       return [{ lang: "en", locale: "us" }];
     };
-    const resolver = createAppPrerenderStaticParamsResolver(
-      [langLocaleLayout],
-      ["lang", "locale"],
-      "/:lang/:locale",
-    );
+    const resolver = createAppPrerenderStaticParamsResolver([langLocaleLayout], ["lang", "locale"]);
 
-    await expect(resolver!({ params: {} })).rejects.toThrow(unprovidedLang);
+    await expect(resolver!({ params: {}, route: "/:lang/:locale" })).rejects.toThrow(
+      unprovidedLang,
+    );
   });
 
   it("gives a nested generator the root params its parents provided", async () => {
@@ -167,10 +166,38 @@ describe("createAppPrerenderStaticParamsResolver root params", () => {
     const resolver = createAppPrerenderStaticParamsResolver(
       [langLayout, localeLayout],
       ["lang", "locale"],
-      "/:lang/:locale",
     );
 
-    await expect(resolver!({ params: {} })).resolves.toEqual([{ lang: "en", locale: "us" }]);
+    await expect(resolver!({ params: {}, route: "/:lang/:locale" })).resolves.toEqual([
+      { lang: "en", locale: "us" },
+    ]);
     expect(seen).toEqual(["en"]);
+  });
+
+  it("names the route being built, not the shared layout's prefix", async () => {
+    const langLocaleLayout = async () => {
+      await getRootParam("lang");
+      return [{ lang: "en", locale: "us" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([langLocaleLayout], ["lang", "locale"]);
+
+    await expect(resolver!({ params: {}, route: "/:lang/:locale/other/:slug" })).rejects.toThrow(
+      "Route /[lang]/[locale]/other/[slug] used `import('next/root-params').lang()` inside `generateStaticParams`",
+    );
+  });
+
+  it("rejects a root param getter on a route without root params", async () => {
+    // `next/root-params` exports the getters of every root, so another
+    // root's `lang()` can run here. Next.js's work unit then has no root
+    // params at all.
+    const page = async () => {
+      await getRootParam("lang");
+      return [{ slug: "post" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([page], []);
+
+    await expect(resolver!({ params: {}, route: "/blog/:slug" })).rejects.toThrow(
+      "Route /blog/[slug] used `import('next/root-params').lang()` inside `generateStaticParams`, but the `lang` parameter was not provided",
+    );
   });
 });
