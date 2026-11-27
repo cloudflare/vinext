@@ -18,6 +18,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
 import { fetchRsc, startFixtureServer } from "./helpers.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 // Every studio and docs route is a catch-all, so it sorts after the [locale]
 // routes and the route list starts in the [locale] tree, as in the issue.
@@ -115,10 +116,9 @@ describe("multiple root layouts: not-found boundaries stay in their root layout'
 
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-multi-root-not-found-"));
-    fs.symlinkSync(
+    symlinkDir(
       path.resolve(import.meta.dirname, "fixtures/app-basic/node_modules"),
       path.join(root, "node_modules"),
-      "junction",
     );
     fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}\n');
     for (const [file, source] of Object.entries(FILES)) {

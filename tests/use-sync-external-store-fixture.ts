@@ -3,6 +3,7 @@ import { findPackageJSON } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { symlinkDir } from "./symlink-dir.js";
 
 const externalStoreImports = [
   "use-sync-external-store/shim",
@@ -30,7 +31,7 @@ export async function createExternalStoreFixture(
         repo,
         name === "vinext" ? "packages/vinext" : `node_modules/${name}`,
       );
-      await fs.symlink(source, path.join(root, "node_modules", name), "junction");
+      symlinkDir(source, path.join(root, "node_modules", name));
     }
     const rscPlugin = await fs.realpath(
       path.join(repo, "node_modules/@vitejs/plugin-rsc/package.json"),

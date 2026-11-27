@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { symlinkDir } from "./symlink-dir.js";
 
 // Published vinext resolves to emitted JS, which the dev RSC environment loads
 // natively instead of transforming it through Vite. Source checkouts resolve to
@@ -18,10 +19,9 @@ function createAppProject(): string {
   // Externalized handlers resolve by package name from the project root, like a
   // real app with vinext installed. The workspace fixture's node_modules links
   // vinext to this checkout.
-  fs.symlinkSync(
+  symlinkDir(
     path.resolve(import.meta.dirname, "fixtures/app-basic/node_modules"),
     path.join(root, "node_modules"),
-    "junction",
   );
   fs.mkdirSync(path.join(root, "app"));
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}\n');

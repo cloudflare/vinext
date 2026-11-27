@@ -19,6 +19,7 @@ import { workersCacheCdnAdapter } from "../packages/cloudflare/src/cache/workers
 import { writeCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
 import { cacheabilityManifestRouteKey } from "../packages/vinext/src/server/cacheability-manifest.js";
 import vinext from "../packages/vinext/src/index.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 const tmpDirs: string[] = [];
 const workerEntryPath = path
@@ -281,10 +282,9 @@ export default createAdapter;
     tmpDirs.push(root);
     writeCloudflareAppFixture(root, "vinext-cdn-entrypoint-build");
     fs.rmSync(path.join(root, "node_modules"));
-    fs.symlinkSync(
+    symlinkDir(
       path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
       path.join(root, "node_modules"),
-      "junction",
     );
     writeFixtureFile(
       root,
@@ -355,10 +355,9 @@ export default createAdapter;
     writeCloudflareAppFixture(root, "vinext-cdn-pages-entrypoint-build");
     fs.rmSync(path.join(root, "app"), { recursive: true });
     fs.rmSync(path.join(root, "node_modules"));
-    fs.symlinkSync(
+    symlinkDir(
       path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
       path.join(root, "node_modules"),
-      "junction",
     );
     writeFixtureFile(
       root,
@@ -414,10 +413,9 @@ export default createAdapter;
     tmpDirs.push(root);
     writeCloudflareAppFixture(root, "vinext-cdn-entrypoint-collision");
     fs.rmSync(path.join(root, "node_modules"));
-    fs.symlinkSync(
+    symlinkDir(
       path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
       path.join(root, "node_modules"),
-      "junction",
     );
     writeFixtureFile(
       root,

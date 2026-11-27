@@ -9,6 +9,7 @@ import { gzipSync } from "node:zlib";
 import { createBuilder, type Plugin } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { symlinkDir } from "./symlink-dir.js";
 
 const NITRO_NODE_MODULES = path.resolve(
   import.meta.dirname,
@@ -77,12 +78,12 @@ describe("Pages Router on Nitro", () => {
     }
 
     root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-nitro-"));
+    symlinkDir(NITRO_NODE_MODULES, path.join(root, "node_modules"));
     await Promise.all([
       fs.mkdir(path.join(root, "pages/post"), { recursive: true }),
       fs.mkdir(path.join(root, "pages/api/echo"), { recursive: true }),
       fs.mkdir(path.join(root, "pages/api/proxy"), { recursive: true }),
       fs.mkdir(path.join(root, "public"), { recursive: true }),
-      fs.symlink(NITRO_NODE_MODULES, path.join(root, "node_modules"), "junction"),
     ]);
     await Promise.all([
       fs.writeFile(path.join(root, "package.json"), "{}"),
@@ -144,10 +145,8 @@ export function proxy(request) {
     await builder.buildApp();
 
     workerdRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-nitro-workerd-"));
-    await Promise.all([
-      fs.mkdir(path.join(workerdRoot, "pages/api"), { recursive: true }),
-      fs.symlink(NITRO_NODE_MODULES, path.join(workerdRoot, "node_modules"), "junction"),
-    ]);
+    symlinkDir(NITRO_NODE_MODULES, path.join(workerdRoot, "node_modules"));
+    await fs.mkdir(path.join(workerdRoot, "pages/api"), { recursive: true });
     const encodedBody = gzipSync("encoded by workerd");
     await Promise.all([
       fs.writeFile(path.join(workerdRoot, "package.json"), "{}"),
