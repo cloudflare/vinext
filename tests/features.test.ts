@@ -2658,6 +2658,23 @@ describe("metadata segment merge", () => {
     });
   });
 
+  it("resolves archives, assets, bookmarks and facebook admins to arrays", () => {
+    // Ported from Next.js: accumulateMetadata in packages/next/src/lib/metadata/resolve-metadata.ts
+    // (resolveAsArrayOrUndefined, resolveFacebook).
+    const result = mergeMetadata([
+      { archives: "/archives", assets: ["/a", "/b"], facebook: { admins: "120" } },
+      { bookmarks: "", facebook: { appId: "1" } },
+      { archives: null, pinterest: { richPin: true } },
+    ]);
+    expect(result.archives).toBeUndefined();
+    expect(result.assets).toEqual(["/a", "/b"]);
+    expect(result.bookmarks).toEqual([""]);
+    expect(result.facebook).toEqual({ appId: "1", admins: undefined });
+    expect(
+      mergeMetadata([{ facebook: { admins: "120" } }, { facebook: null }]).facebook,
+    ).toBeNull();
+  });
+
   it("replaces robots instead of deep-merging subkeys", () => {
     const result = mergeMetadata([
       { robots: { index: true, follow: true, googleBot: { index: true } } },
@@ -3535,6 +3552,27 @@ describe("MetadataHead rendering", () => {
     );
     expect(html).toContain('href="http://trailingslash.com/docs/" hreflang="en"');
     expect(html).toContain('href="http://trailingslash.com/docs?source=print" media="print"');
+  });
+
+  it("resolves pagination like alternates and renders facebook and pinterest", () => {
+    // Ported from Next.js: resolvePagination in packages/next/src/lib/metadata/resolvers/resolve-basics.ts
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("http://trailingslash.com"),
+        pagination: {
+          previous: new URL("http://trailingslash.com/base?page=1"),
+          next: "./page/3",
+        },
+        facebook: { admins: "120" },
+        pinterest: { richPin: false },
+      },
+      "/docs",
+      { trailingSlash: true },
+    );
+    expect(html).toContain('<link rel="prev" href="http://trailingslash.com/docs?page=1">');
+    expect(html).toContain('<link rel="next" href="http://trailingslash.com/docs/page/3/">');
+    expect(html).toContain('<meta property="fb:admins" content="120">');
+    expect(html).toContain('<meta property="pinterest-rich-pin" content="false">');
   });
 });
 

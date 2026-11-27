@@ -1856,6 +1856,50 @@ describe("App Router integration", () => {
     expect(html).toMatch(/property="og:type".*content="website"/);
   });
 
+  // Next.js renders these in lib/metadata/metadata.tsx; pagination resolves
+  // against metadataBase like alternates (resolvePagination in resolve-basics.ts).
+  it("renders abstract, classification, link rel lists, pagination, facebook and pinterest metadata", async () => {
+    const res = await fetch(`${baseUrl}/metadata-extra-fields`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("<title>Metadata Extra Fields</title>");
+    for (const tag of [
+      '<meta name="abstract" content="Page abstract"/>',
+      '<meta name="classification" content="Page classification"/>',
+      '<link rel="archives" href="https://example.com/archives"/>',
+      '<link rel="assets" href="https://example.com/assets"/>',
+      '<link rel="bookmarks" href="https://example.com/bookmarks"/>',
+      '<link rel="bookmarks" href="https://example.com/bookmarks/2"/>',
+      '<link rel="prev" href="https://example.com/metadata-extra-fields?page=1"/>',
+      '<link rel="next" href="https://example.com/metadata-extra-fields?page=3"/>',
+      '<meta property="fb:app_id" content="12345678"/>',
+      '<meta property="fb:admins" content="120"/>',
+      '<meta property="fb:admins" content="122"/>',
+      '<meta property="pinterest-rich-pin" content="true"/>',
+    ]) {
+      expect(html, `missing ${tag}`).toContain(tag);
+    }
+  });
+
+  it("passes archives, assets, bookmarks and facebook admins to generateMetadata's parent as arrays", async () => {
+    // Next.js resolves them as it accumulates (resolveAsArrayOrUndefined,
+    // resolveFacebook in resolve-metadata.ts); the layout sets single strings.
+    const res = await fetch(`${baseUrl}/metadata-extra-fields/parent`);
+    expect(res.status).toBe(200);
+
+    // generateMetadata's tags may stream into the body as plain HTML
+    // (`<meta …>`) rather than render in the head (`<meta …/>`), so match
+    // the tags without their closing characters.
+    const html = await res.text();
+    expect(html).toContain(
+      '<meta name="parent-assets" content="https://example.com/layout-assets"',
+    );
+    expect(html).toContain('<meta name="parent-facebook-admins" content="100"');
+    expect(html).toContain('<link rel="assets" href="https://example.com/layout-assets"');
+    expect(html).toContain('<meta property="fb:admins" content="100"');
+  });
+
   it("renders viewport metadata (export const viewport) as head elements", async () => {
     const res = await fetch(`${baseUrl}/metadata-test`);
     expect(res.status).toBe(200);

@@ -292,6 +292,22 @@ export type Metadata = {
     telephone?: boolean;
   };
   category?: string;
+  classification?: string | null;
+  abstract?: string | null;
+  archives?: string | string[] | null;
+  assets?: string | string[] | null;
+  bookmarks?: string | string[] | null;
+  pagination?: {
+    previous?: string | URL | null;
+    next?: string | URL | null;
+  };
+  facebook?: {
+    appId?: string;
+    admins?: string | string[];
+  } | null;
+  pinterest?: {
+    richPin?: string | boolean;
+  } | null;
   itunes?: {
     appId: string;
     appArgument?: string;
@@ -433,6 +449,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof URL)
   );
+}
+
+// Next.js's resolveAsArrayOrUndefined (lib/metadata/generate/utils.ts).
+function resolveAsArrayOrUndefined<T>(value: T | T[] | null | undefined): T[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  return Array.isArray(value) ? value : [value];
 }
 
 function isOtherMetadata(value: unknown): value is NonNullable<Metadata["other"]> {
@@ -642,6 +664,16 @@ function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boo
 
       if (key === "other" && isOtherMetadata(existing) && isOtherMetadata(incoming)) {
         merged.other = { ...existing, ...incoming };
+      } else if (key === "archives" || key === "assets" || key === "bookmarks") {
+        // Next.js resolves these to arrays as it accumulates, so a later
+        // segment's `parent` always sees arrays.
+        merged[key] = resolveAsArrayOrUndefined(meta[key]);
+      } else if (key === "facebook") {
+        // Next.js's resolveFacebook.
+        const facebook = meta.facebook;
+        merged.facebook = facebook
+          ? { appId: facebook.appId, admins: resolveAsArrayOrUndefined(facebook.admins) }
+          : null;
       } else {
         // Plain replacement for everything else
         merged[key] = incoming;
@@ -1128,6 +1160,11 @@ export function MetadataHead({
     elements.push(<meta key={key++} name="category" content={metadata.category} />);
   }
 
+  // Classification
+  if (metadata.classification) {
+    elements.push(<meta key={key++} name="classification" content={metadata.classification} />);
+  }
+
   // Robots
   if (metadata.robots) {
     if (typeof metadata.robots === "string") {
@@ -1159,6 +1196,47 @@ export function MetadataHead({
           }
         }
       }
+    }
+  }
+
+  // Abstract
+  if (metadata.abstract) {
+    elements.push(<meta key={key++} name="abstract" content={metadata.abstract} />);
+  }
+
+  // Link rel lists, already arrays once merged. Next.js renders each href as
+  // written, without resolving it against metadataBase.
+  const linkRelLists = [
+    ["archives", metadata.archives],
+    ["assets", metadata.assets],
+    ["bookmarks", metadata.bookmarks],
+  ] as const;
+  for (const [rel, value] of linkRelLists) {
+    for (const href of resolveAsArrayOrUndefined(value) ?? []) {
+      elements.push(<link key={key++} rel={rel} href={href} />);
+    }
+  }
+
+  // Pagination resolves like an alternate URL (Next.js's resolvePagination).
+  if (metadata.pagination) {
+    const { previous, next } = metadata.pagination;
+    if (previous) {
+      elements.push(
+        <link
+          key={key++}
+          rel="prev"
+          href={resolveAlternateUrl(previous, base, pathname, trailingSlash)}
+        />,
+      );
+    }
+    if (next) {
+      elements.push(
+        <link
+          key={key++}
+          rel="next"
+          href={resolveAlternateUrl(next, base, pathname, trailingSlash)}
+        />,
+      );
     }
   }
 
@@ -1542,6 +1620,28 @@ export function MetadataHead({
       content += `, app-argument=${appArgument}`;
     }
     elements.push(<meta key={key++} name="apple-itunes-app" content={content} />);
+  }
+
+  // Facebook
+  if (metadata.facebook) {
+    const { appId, admins } = metadata.facebook;
+    if (appId) {
+      elements.push(<meta key={key++} property="fb:app_id" content={appId} />);
+    }
+    for (const admin of resolveAsArrayOrUndefined(admins) ?? []) {
+      elements.push(<meta key={key++} property="fb:admins" content={admin} />);
+    }
+  }
+
+  // Pinterest
+  if (metadata.pinterest && metadata.pinterest.richPin !== undefined) {
+    elements.push(
+      <meta
+        key={key++}
+        property="pinterest-rich-pin"
+        content={String(metadata.pinterest.richPin)}
+      />,
+    );
   }
 
   // App Links
