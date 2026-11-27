@@ -1753,6 +1753,14 @@ describe("App Router Production server (startProdServer)", () => {
     });
   });
 
+  it("keeps a hybrid Pages getServerSideProps redirect's 307 over middleware's status", async () => {
+    const res = await fetch(`${baseUrl}/middleware-rewrite-status-gssp-redirect`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
   it("applies middleware request header overrides before App->Pages fallback rendering in production", async () => {
     const res = await fetch(`${baseUrl}/pages-header-override-delete`, {
       headers: {

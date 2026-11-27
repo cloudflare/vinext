@@ -19,6 +19,7 @@ import {
 import { setCacheStateHeaders } from "./cache-headers.js";
 import {
   mergeMiddlewareResponseHeadersOntoResponse,
+  resolveMiddlewareResponseStatus,
   type MiddlewareResponseMergeOptions,
 } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
@@ -119,7 +120,7 @@ export function applyRouteHandlerMiddlewareContext(
   }
 
   const result = new Response(response.body, {
-    status: middlewareContext.status ?? response.status,
+    status: resolveMiddlewareResponseStatus(response, middlewareContext.status),
     statusText: response.statusText,
     headers: responseHeaders,
   });

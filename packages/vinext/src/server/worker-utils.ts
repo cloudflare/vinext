@@ -5,6 +5,7 @@
  * Router worker entry through "vinext/server/worker-utils".
  */
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
+import { resolveMiddlewareResponseStatus } from "./middleware-response-headers.js";
 import { readStaticFileSignal, readStaticFileSignalRequestHeaders } from "./static-file-signal.js";
 import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
@@ -71,8 +72,11 @@ export function mergeHeaders(
   // A Workers WebSocket upgrade cannot be rebuilt with merged headers.
   if (isWebSocketUpgradeResponse(response)) return response;
   // As in Next.js, which sets a 304 after middleware's status, a 304 answers
-  // the request's own validator.
-  const status = response.status === 304 ? 304 : (statusOverride ?? response.status);
+  // the request's own validator, and a redirect keeps its own status.
+  const status =
+    response.status === 304
+      ? 304
+      : resolveMiddlewareResponseStatus(response, statusOverride ?? null);
   const merged = new Headers();
   for (const [k, v] of Object.entries(extraHeaders)) {
     if (isContentLengthHeader(k)) continue;

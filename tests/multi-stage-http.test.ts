@@ -451,6 +451,18 @@ describe("generic HTTP multi-stage transport", () => {
     expect(res.headers.get("x-auth-source")).toBe("middleware");
   });
 
+  it("keeps a response-stage redirect()'s status over a status middleware set", async () => {
+    const results = [];
+    for (const pathname of ["/status-redirect-page", "/status-redirect-route"]) {
+      const res = await fetch(`${requestServer.origin}${pathname}`, { redirect: "manual" });
+      results.push({ pathname, status: res.status, location: res.headers.get("location") });
+    }
+    expect(results).toEqual([
+      { pathname: "/status-redirect-page", status: 307, location: "/app-stage/redirected" },
+      { pathname: "/status-redirect-route", status: 307, location: "/app-stage/redirected" },
+    ]);
+  });
+
   it("resolves config header collisions with response-stage Route Handlers by runtime", async () => {
     const results = [];
     for (const pathname of ["/api/config-header-collision", "/api/config-header-collision/edge"]) {

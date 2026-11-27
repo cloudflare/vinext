@@ -74,6 +74,25 @@ export function mergeMiddlewareResponseHeaders(
   }
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * The status of a route's response once middleware's status is applied.
+ * Next.js sets middleware's status before the route runs, and a redirect the
+ * route raises (redirect(), permanentRedirect(), a redirect Response) sets its
+ * own status afterwards, so a redirect keeps its status.
+ */
+export function resolveMiddlewareResponseStatus(
+  response: Response,
+  middlewareStatus: number | null,
+): number {
+  if (middlewareStatus == null) return response.status;
+  if (REDIRECT_STATUSES.has(response.status) && response.headers.has("location")) {
+    return response.status;
+  }
+  return middlewareStatus;
+}
+
 // Next.js send-response.ts appends a response's own values for these after the
 // middleware values already on the outgoing response. Vary is merged by
 // mergeMiddlewareResponseHeaders; other response headers yield to middleware.
