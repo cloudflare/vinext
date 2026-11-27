@@ -61,7 +61,7 @@ const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setC
 const { consumeDynamicUsage, setHeadersContext } =
   await import("../packages/vinext/src/shims/headers.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
-const { createRequestContext, runWithRequestContext } =
+const { closeAfterResponse, createRequestContext, getRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
 const { registerFrameworkTracingIntegration } =
   await import("../packages/vinext/src/server/tracer.js");
@@ -822,6 +822,63 @@ describe("fetch cache shim", () => {
     const res = await fetch("https://api.example.com/retry-after-failure");
     expect((await res.json()).url).toBe("https://api.example.com/retry-after-failure");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases a request's dedupe entries once its response closes", async () => {
+    const ctx = createRequestContext();
+    await runWithRequestContext(ctx, () =>
+      runWithFetchDedupe(async () => {
+        const first = await fetch("https://api.example.com/release-on-close");
+        expect((await first.json()).count).toBe(1);
+        const deduped = await fetch("https://api.example.com/release-on-close");
+        expect((await deduped.json()).count).toBe(1);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        // The render's dedupe map lives on the nested scope runWithFetchDedupe
+        // opened, not on the request context the response closes.
+        const entries = getRequestContext().currentFetchDedupeEntries;
+        expect(entries).not.toBe(ctx.currentFetchDedupeEntries);
+        const [retained] = [...entries.values()].flat();
+        const retainedBody = retained.response!.body!;
+        await closeAfterResponse(ctx);
+
+        // The unread branch kept for future callers is cancelled and dropped.
+        expect(retained.response).toBeNull();
+        expect(entries.size).toBe(0);
+        await expect(retainedBody.getReader().read()).resolves.toEqual({
+          done: true,
+          value: undefined,
+        });
+
+        // Work that outlives the response, like after(), is not memoized.
+        const afterClose = await fetch("https://api.example.com/release-on-close");
+        expect((await afterClose.json()).count).toBe(2);
+        expect(entries.size).toBe(0);
+      }),
+    );
+  });
+
+  it("refetches for a deduped caller whose entry was released while it waited", async () => {
+    let resolveFirst!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => (resolveFirst = resolve)),
+    );
+    const ctx = createRequestContext();
+    await runWithRequestContext(ctx, () =>
+      runWithFetchDedupe(async () => {
+        const first = fetch("https://api.example.com/release-while-waiting");
+        const waiter = fetch("https://api.example.com/release-while-waiting");
+        await closeAfterResponse(ctx);
+        resolveFirst(new Response("first"));
+
+        expect(await (await first).text()).toBe("first");
+        expect((await (await waiter).json()).url).toBe(
+          "https://api.example.com/release-while-waiting",
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(getRequestContext().currentFetchDedupeEntries.size).toBe(0);
+      }),
+    );
   });
 
   it("does not dedupe Request inputs that differ in non-trace headers", async () => {

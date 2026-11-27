@@ -51,7 +51,11 @@ import {
   _setRequestScopedCacheLife,
 } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
-import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
+import {
+  getRequestContext,
+  isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 export {
   addCollectedRequestTags,
@@ -1169,7 +1173,11 @@ function dedupeFetch(
   init: RequestInit | undefined,
 ): Promise<Response> {
   const state = _getState();
-  if (!state.isFetchDedupeActive) {
+  const afterContext = isInsideUnifiedScope() ? getRequestContext().afterContext : null;
+  // Once the response has closed, the dedupe maps have been released (see
+  // releaseFetchDedupeEntries); work that outlives the response, like after()
+  // callbacks, fetches without memoization.
+  if (!state.isFetchDedupeActive || afterContext?.responseClosed) {
     return originalFetch(input, init);
   }
 
@@ -1179,6 +1187,9 @@ function dedupeFetch(
   }
 
   const entriesByUrl = state.currentFetchDedupeEntries;
+  if (afterContext) {
+    (afterContext.fetchDedupeMaps ??= new Set()).add(entriesByUrl);
+  }
   let entries = entriesByUrl.get(candidate.url);
   if (!entries) {
     entries = [];
@@ -1189,8 +1200,9 @@ function dedupeFetch(
     if (entry.key !== candidate.key) continue;
 
     return entry.promise.then(() => {
+      // Released when the response closed while this caller waited.
       if (!entry.response) {
-        throw new Error("[vinext] Missing deduped fetch response");
+        return originalFetch(input, init);
       }
       const [responseForCaller, responseForFutureCaller] = cloneDedupeResponse(entry.response);
       entry.response = responseForFutureCaller;
@@ -1208,10 +1220,14 @@ function dedupeFetch(
 
   return promise.then(
     (response) => {
-      // entry.response holds an unconsumed tee'd branch for the duration of the
-      // render scope. The dedupe map is owned by the per-render context and is
-      // dropped when runWithFetchDedupe exits, at which point the
-      // FinalizationRegistry cancels any still-unconsumed branch.
+      // The response closed before this fetch settled: its entries are already
+      // released, so keep no branch for future callers.
+      if (afterContext?.responseClosed) return response;
+      // entry.response holds an unconsumed tee'd branch until the request's
+      // response closes, when releaseFetchDedupeEntries cancels and drops it.
+      // Waiting for the GC is not enough: on workerd the branch's stream keeps
+      // the request's async context frame, which holds this context through a
+      // strong handle, so the context would never be collected.
       const [responseForCaller, responseForFutureCaller] = cloneDedupeResponse(response);
       entry.response = responseForFutureCaller;
       return responseForCaller;
