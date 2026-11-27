@@ -6,8 +6,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveBuildOutputDir } from "../packages/cloudflare/src/build-output.js";
 import { init } from "../packages/vinext/src/init.js";
+import { packageBin } from "./package-bin.js";
 
 const webRoot = path.resolve(import.meta.dirname, "../apps/web");
+const VINEXT_CLI = packageBin(webRoot, "vinext");
 const tempRoot = fs.mkdtempSync(path.join(webRoot, ".init-cf-build-"));
 
 afterAll(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
@@ -88,7 +90,7 @@ describe("default cf init build", () => {
         .replace("worker: {", `worker: { observability: ${JSON.stringify(observability)},`)
         .replace("defineConfig({", "defineConfig({ accountId: responseStore.accountId,"),
     );
-    const build = spawnSync(path.join(webRoot, "node_modules/.bin/vinext"), ["build"], {
+    const build = spawnSync(process.execPath, [VINEXT_CLI, "build"], {
       cwd: root,
       encoding: "utf8",
       timeout: 120_000,
@@ -239,8 +241,7 @@ describe("default cf init build", () => {
       if (responseStoreMode === "service-binding") {
         expect(fs.readFileSync(path.join(root, "tsconfig.json"), "utf8")).toBe(tsconfig);
       }
-      const vinext = path.join(webRoot, "node_modules", ".bin", "vinext");
-      const build = spawnSync(vinext, ["build"], {
+      const build = spawnSync(process.execPath, [VINEXT_CLI, "build"], {
         cwd: root,
         encoding: "utf-8",
         timeout: 120_000,
@@ -297,8 +298,8 @@ describe("default cf init build", () => {
       );
       if (name === "service-binding" || name === "pages" || cdnCache === "static-assets") {
         const preview = spawn(
-          path.join(webRoot, "node_modules", ".bin", "vite"),
-          ["preview", "--host", "127.0.0.1", "--port", "0"],
+          process.execPath,
+          [packageBin(webRoot, "vite"), "preview", "--host", "127.0.0.1", "--port", "0"],
           {
             cwd: root,
             env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
@@ -409,7 +410,7 @@ describe("legacy Wrangler cache migration", () => {
       // Removing the Vite config lets init regenerate it for the new adapter.
       fs.rmSync(path.join(root, "vite.config.ts"));
       await runInit(cdnCache);
-      const build = spawnSync(path.join(webRoot, "node_modules/.bin/vinext"), ["build"], {
+      const build = spawnSync(process.execPath, [VINEXT_CLI, "build"], {
         cwd: root,
         encoding: "utf-8",
         timeout: 120_000,
