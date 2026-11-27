@@ -349,6 +349,56 @@ function directRequestForcesDynamic(route: AppRoute, forcesDynamic: ForcesDynami
     : appPageSegmentConfigPaths(route).some(forcesDynamic);
 }
 
+type AppRouteSlot = AppRoute["parallelSlots"][number];
+type AppRouteIntercept = AppRoute["siblingIntercepts"][number];
+
+/**
+ * Whether the render of an intercept takes a `dynamic = "force-dynamic"` file.
+ * Next.js renders it as the intercepting route's own app path, so these are
+ * the files `resolveAppPageInterceptSegmentConfig` reads for it: the owner's
+ * layouts, the intercepted slot's layout, the intercept's layouts and page,
+ * and the other slots of the owner's layouts. The source route's page is not
+ * among them. The owner's `default` and the other slots' defaults only take
+ * part when the request renders the intercepting route whole; they are read
+ * either way.
+ */
+function interceptForcesDynamic(
+  route: AppRoute,
+  intercept: AppRouteIntercept,
+  slot: AppRouteSlot | null,
+  forcesDynamic: ForcesDynamic,
+): boolean {
+  const ownerPosition = slot
+    ? (slot.ownerTreePosition ??
+      route.layoutTreePositions[slot.layoutIndex] ??
+      route.routeSegments.length)
+    : intercept.sourcePageSegments
+      ? intercept.sourcePageSegments.length - (intercept.branchSegments ?? []).length
+      : route.routeSegments.length;
+  const ownerLayouts = route.layouts.filter(
+    (_, index) => (route.layoutTreePositions[index] ?? 0) <= ownerPosition,
+  );
+  const otherSlots = route.parallelSlots.filter(
+    (other) =>
+      other !== slot &&
+      (other.ownerTreePosition ?? route.layoutTreePositions[other.layoutIndex] ?? 0) <=
+        ownerPosition,
+  );
+  return [
+    ...ownerLayouts,
+    slot?.layoutPath,
+    ...intercept.layoutPaths,
+    intercept.pagePath,
+    ...(slot ? [intercept.ownerDefaultPath] : []),
+    ...otherSlots.flatMap((other) => [
+      ...(other.pagePath
+        ? [other.layoutPath, ...(other.configLayoutPaths ?? []), other.pagePath]
+        : []),
+      other.defaultPath,
+    ]),
+  ].some(forcesDynamic);
+}
+
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   const readSource = createSegmentSourceReader();
   const forcesDynamic = createForcesDynamicReader(readSource);
@@ -393,11 +443,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
           slotPatternParts: slot.slotPatternParts ?? null,
           slotParamNames: slot.slotParamNames ?? null,
           intercepts: slot.interceptingRoutes.map((intercept) => ({
-            forceDynamic: [
-              ...intercept.layoutPaths,
-              intercept.pagePath,
-              intercept.ownerDefaultPath,
-            ].some(forcesDynamic),
+            forceDynamic: interceptForcesDynamic(route, intercept, slot, forcesDynamic),
             id: intercept.id ?? null,
             targetPattern: intercept.targetPattern,
             sourceMatchPattern: intercept.sourceMatchPattern,
@@ -426,7 +472,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       ]),
     ),
     siblingIntercepts: route.siblingIntercepts.map((intercept) => ({
-      forceDynamic: [...intercept.layoutPaths, intercept.pagePath].some(forcesDynamic),
+      forceDynamic: interceptForcesDynamic(route, intercept, null, forcesDynamic),
       id: intercept.id ?? null,
       targetPattern: intercept.targetPattern,
       sourceMatchPattern: intercept.sourceMatchPattern,

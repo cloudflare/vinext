@@ -3045,6 +3045,60 @@ describe("createAppRscHandler", () => {
     expect(await dispatch(false)).toEqual({ cache: "shared", forceDynamic: false });
   });
 
+  it("keeps a static intercept's render shared when its source page is force-dynamic", async () => {
+    // The intercepted render's tree holds neither the source's page nor the
+    // target's, so neither one's force-dynamic applies to it.
+    const targetRoute = createPageRoute({
+      forceDynamic: true,
+      pattern: "/photos/1",
+      routeSegments: ["photos", "1"],
+    });
+    const sourceRoute = createPageRoute({
+      forceDynamic: true,
+      pattern: "/feed",
+      routeSegments: ["feed"],
+    });
+    const dispatch = async (pathname: string) => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("stage")),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        matchInterceptRoute: (target, sourcePathname) =>
+          (target === "/photos/1" || target === "/photos/2") && sourcePathname === "/feed"
+            ? {
+                interceptionForceDynamic: false,
+                interceptionSourceIsConcrete: true,
+                params: {},
+                route: sourceRoute,
+              }
+            : null,
+        matchRequestRoute: (target) =>
+          target === "/photos/1" ? { params: {}, route: targetRoute } : null,
+        matchRoute: (target) => {
+          if (target === "/photos/1") return { params: {}, route: targetRoute };
+          if (target === "/feed") return { params: {}, route: sourceRoute };
+          return null;
+        },
+      });
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+      const url = await createRscRequestUrl(`/docs${pathname}`, headers);
+      await handler(
+        new Request(`https://example.test${url}`, { headers }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      expect(dispatchResponseStage).toHaveBeenCalledOnce();
+      const [, props, init] = dispatchResponseStage.mock.calls[0]!;
+      return { cache: init?.cache, forceDynamic: props.kind === "app-page" && props.forceDynamic };
+    };
+
+    // A target with its own route, and one that matches only as an interception.
+    expect(await dispatch("/photos/1")).toEqual({ cache: "shared", forceDynamic: false });
+    expect(await dispatch("/photos/2")).toEqual({ cache: "shared", forceDynamic: false });
+  });
+
   it("takes force-dynamic from the intercept a late rewrite reaches", async () => {
     const targetRoute = createPageRoute({
       isDynamic: true,

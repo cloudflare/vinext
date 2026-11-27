@@ -3234,13 +3234,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     match = renderedRouteMatch(match);
     const { route, params } = match;
     // A target with a route of its own matches directly, but still renders the
-    // intercept its verified source context selects, from the source's tree.
+    // intercept its verified source context selects. Next.js renders that as
+    // the intercepting route's own app path, so only the intercept's config
+    // tree applies, not the target's or the source page's.
     const activeInterception = interceptionSourceContext !== null ? interceptionSourceMatch : null;
-    const forceDynamic =
-      route.forceDynamic === true ||
-      match.interceptionForceDynamic === true ||
-      activeInterception?.route.forceDynamic === true ||
-      activeInterception?.interceptionForceDynamic === true;
+    const forceDynamic = activeInterception
+      ? activeInterception.interceptionForceDynamic === true
+      : route.forceDynamic === true || match.interceptionForceDynamic === true;
     const requestPathnameDiffersFromCachePath = requestPathname !== cleanPathname;
     const rawRequestPathnameIsObservable =
       isInterceptionMatch ||
