@@ -261,6 +261,25 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.code).not.toMatch(/,\s*,/);
   });
 
+  it("passes the binding name through when an options comment contains a quote", () => {
+    // An apostrophe inside a comment must not start a string literal that runs
+    // past the options object's closing brace.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `const myFont = localFont({`,
+      `  /* Not next/font's generated fallback */`,
+      `  src: "./my-font.woff2",`,
+      `});`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(`_vinext: { font: { family: "myFont" } }`);
+  });
+
   // ── Object src with path property ────────────────────────────
 
   it("transforms a single source object with path property", () => {

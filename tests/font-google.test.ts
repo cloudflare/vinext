@@ -1166,6 +1166,37 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
+  it("self-hosts font calls whose options contain a comment with a quote", async () => {
+    // An apostrophe inside a comment must not start a string literal that
+    // runs past the options object's closing brace.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-comment-quote");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Figtree'; src: url(/figtree.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Figtree } from 'next/font/google';`,
+        `const figtree = Figtree({`,
+        `  subsets: ['latin'],`,
+        `  display: 'swap',`,
+        `  /* Not next/font's generated fallback: ... */`,
+        `  adjustFontFallback: false,`,
+        `  variable: '--font-figtree',`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      expect(result.code).not.toMatch(/,\s*,/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("self-hosts aliased lowercase font imports during build", async () => {
     const plugin = getGoogleFontsPlugin();
     const root = path.join(import.meta.dirname, ".test-font-root-alias");
@@ -1836,6 +1867,31 @@ describe("_findBalancedObject", () => {
     // The '}' inside ${nested} must not end the string scan prematurely
     const val = "val ${nested}";
     const code = "{ key: `" + val + "` }";
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("ignores quotes inside block comments", () => {
+    const code = `{\n  subsets: ['latin'],\n  /* Not next/font's generated fallback */\n  variable: '--font-figtree',\n}`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("ignores quotes and braces inside line comments", () => {
+    const code = `{\n  display: 'swap', // don't close } here\n  variable: "--font-x",\n}`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("ignores braces inside block comments", () => {
+    const code = `{ a: 1, /* } { */ b: 2 }`;
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("ignores comments inside template literal ${...} interpolations", () => {
+    const code = "{ key: `${x /* it's } */}` }";
+    expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
+  });
+
+  it("does not treat comment markers inside strings as comments", () => {
+    const code = `{ src: "https://example.com/*", b: '}' }`;
     expect(findBalancedObject(code, 0)).toEqual([0, code.length]);
   });
 
