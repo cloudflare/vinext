@@ -775,11 +775,11 @@ describe("Link App Router navigation scheduling", () => {
     if (onClick === undefined) {
       throw new Error("Expected rendered Link anchor to expose an onClick handler");
     }
-    await onClick(clickEvent);
-
-    // The navigation re-tags its later commit transitions with the types, so
-    // a caller mutating its array afterwards must not change them.
+    // Mutate while the click handler may still be awaiting its module loads.
+    const clicked = onClick(clickEvent);
     transitionTypes.push("mutated-after-click");
+    await clicked;
+
     expect(navigate).toHaveBeenCalledTimes(1);
     const navigatedTypes = (navigate.mock.calls[0] as unknown[]).at(-1);
     expect(navigatedTypes).toEqual(["nav-forward"]);

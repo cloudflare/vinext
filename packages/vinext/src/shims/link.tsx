@@ -1572,6 +1572,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     e: MouseEvent<HTMLAnchorElement>,
     options: { skipLinkOnClick?: boolean } = {},
   ) => {
+    // Read the types at click time, before the module loads below can yield.
+    const clickTransitionTypes = transitionTypes ? [...transitionTypes] : undefined;
     pendingPagesIntentPrefetchRef.current?.();
     pendingPagesIntentPrefetchRef.current = null;
     // In legacyBehavior, the onClick prop on <Link> itself is ignored — the
@@ -1711,14 +1713,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       setPending(true);
       React.startTransition(() => {
         // Next.js adds the types inside the navigation's transition.
-        addNavigationTransitionTypes(transitionTypes);
+        addNavigationTransitionTypes(clickTransitionTypes);
         void navigateClientSide(
           navigateHref,
           replace ? "replace" : "push",
           scroll,
           false,
           undefined,
-          transitionTypes,
+          clickTransitionTypes,
         ).finally(() => {
           setPending(false);
           if (setter) clearLinkForCurrentNavigation(setter);
