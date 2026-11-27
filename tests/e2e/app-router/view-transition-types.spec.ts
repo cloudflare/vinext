@@ -41,6 +41,35 @@ async function navigateAndRecord(page: Page, testId: string): Promise<RecordedTy
   return readRecordedTypes(page);
 }
 
+// Settle a prefetch of a sibling URL so the slow route's loading-shell template
+// is learned. Dev links do not prefetch on viewport entry.
+async function learnSlowShellTemplate(page: Page) {
+  const prefetchResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes("/view-transition-types/slow/1") && response.url().includes("_rsc"),
+  );
+  await page.evaluate(() => {
+    (window as any).next.router.prefetch("/view-transition-types/slow/1");
+  });
+  await (await prefetchResponse).finished();
+  // The template is learned once the prefetch cache entry settles.
+  await page.waitForTimeout(500);
+}
+
+// Hold the slow navigation's RSC response so its loading shell commits first.
+// Returns the function that releases it.
+async function holdSlowNavigation(page: Page): Promise<() => void> {
+  let releaseNavigation!: () => void;
+  const navigationGate = new Promise<void>((resolve) => {
+    releaseNavigation = resolve;
+  });
+  await page.route("**/view-transition-types/slow/2?_rsc*", async (route) => {
+    await navigationGate;
+    await route.continue();
+  });
+  return releaseNavigation;
+}
+
 test.describe("App Router view transition types", () => {
   test("server component importing Suspense beside ViewTransition renders in dev", async ({
     page,
@@ -134,29 +163,8 @@ test.describe("App Router view transition types", () => {
     page,
   }) => {
     await openSource(page);
-
-    // Settle a prefetch of a sibling URL so the route's loading-shell template
-    // is learned. Dev links do not prefetch on viewport entry.
-    const prefetchResponse = page.waitForResponse(
-      (response) =>
-        response.url().includes("/view-transition-types/slow/1") && response.url().includes("_rsc"),
-    );
-    await page.evaluate(() => {
-      (window as any).next.router.prefetch("/view-transition-types/slow/1");
-    });
-    await (await prefetchResponse).finished();
-    // The template is learned once the prefetch cache entry settles.
-    await page.waitForTimeout(500);
-
-    // Hold the navigation's response so the shell commits before it lands.
-    let releaseNavigation!: () => void;
-    const navigationGate = new Promise<void>((resolve) => {
-      releaseNavigation = resolve;
-    });
-    await page.route("**/view-transition-types/slow/2?_rsc*", async (route) => {
-      await navigationGate;
-      await route.continue();
-    });
+    await learnSlowShellTemplate(page);
+    const releaseNavigation = await holdSlowNavigation(page);
 
     await page.getByTestId("typed-slow-link").click();
     await expect(page.getByTestId("vt-slow-loading")).toBeVisible();
@@ -171,6 +179,54 @@ test.describe("App Router view transition types", () => {
       .toBeGreaterThan(shell.length);
     // Like Next.js, the content filling in after the shell is not tagged again.
     const fill = (await readRecordedTypes(page)).slice(shell.length);
+    expect(fill.every((entry) => entry === null)).toBe(true);
+  });
+
+  test("a payload dispatched while the loading shell's view transition starts commits untyped", async ({
+    page,
+  }) => {
+    // Delay the update callback of the shell's view transition, the first one
+    // typed `nav-shell`. React has claimed the shell's types and started the
+    // transition, but has not run its mutation or layout effects yet. Release
+    // the held response then, so the authoritative payload is dispatched in
+    // that window.
+    let releaseNavigation!: () => void;
+    await page.exposeFunction("__vtReleaseNavigation", () => releaseNavigation());
+    await recordViewTransitions(page);
+    await page.addInitScript(() => {
+      const w = window as any;
+      const startViewTransition = document.startViewTransition?.bind(document);
+      if (!startViewTransition) return;
+      let held = false;
+      (document as any).startViewTransition = (arg: any) => {
+        const types: unknown = arg && typeof arg === "object" ? arg.types : null;
+        if (held || !Array.isArray(types) || !types.includes("nav-shell")) {
+          return startViewTransition(arg);
+        }
+        held = true;
+        void w.__vtReleaseNavigation();
+        // Give the client time to receive and decode the payload and dispatch
+        // its commit, staying under the browser's update-callback timeout.
+        const resumed = new Promise<void>((resolve) => setTimeout(resolve, 1500));
+        return startViewTransition({ ...arg, update: () => resumed.then(() => arg.update()) });
+      };
+    });
+    await page.goto(`${BASE}/view-transition-types`);
+    await expect(page.getByTestId("vt-source")).toBeVisible();
+    await waitForAppRouterHydration(page);
+    await learnSlowShellTemplate(page);
+    releaseNavigation = await holdSlowNavigation(page);
+
+    await page.getByTestId("typed-slow-link").click();
+
+    await expect(page.getByTestId("vt-slow-2")).toBeVisible({ timeout: 10_000 });
+    const all = await readRecordedTypes(page);
+    const shellIndex = all.findIndex((entry) => entry?.includes("nav-shell"));
+    expect(shellIndex).toBeGreaterThanOrEqual(0);
+    await expect
+      .poll(async () => (await readRecordedTypes(page)).length)
+      .toBeGreaterThan(shellIndex + 1);
+    const fill = (await readRecordedTypes(page)).slice(shellIndex + 1);
     expect(fill.every((entry) => entry === null)).toBe(true);
   });
 });

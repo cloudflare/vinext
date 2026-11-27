@@ -932,12 +932,12 @@ type RenderNavigationPayloadOptions = {
   payloadOrigin: AppNavigationPayloadOrigin;
   pendingRouterState: PendingBrowserRouterState | null;
   previousNextUrl: string | null;
+  readTransitionTypes?: () => readonly string[] | undefined;
   restoredBfcacheIds?: Readonly<Record<string, string>> | null;
   reuseCurrentBfcacheIds?: boolean;
   scrollIntent?: AppRouterScrollIntent | null;
   suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHref: string;
-  transitionTypes?: readonly string[];
   traversalIntent?: HistoryTraversalIntent | null;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
 };
@@ -962,13 +962,13 @@ async function renderNavigationPayload(
     payloadOrigin: options.payloadOrigin,
     pendingRouterState: options.pendingRouterState,
     previousNextUrl: options.previousNextUrl,
+    readTransitionTypes: options.readTransitionTypes,
     restoredBfcacheIds: options.restoredBfcacheIds ?? null,
     reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
     scrollIntent: options.scrollIntent ?? null,
     suppliedInterceptionSource: options.suppliedInterceptionSource ?? null,
     targetHistoryIndex: options.traversalIntent?.targetHistoryIndex,
     targetHref: options.targetHref,
-    transitionTypes: options.transitionTypes,
     visibleCommitMode: options.visibleCommitMode ?? "transition",
   });
 }
@@ -2353,9 +2353,19 @@ function bootstrapHydration(
     let optimisticShellElements: AppElements | null = null;
     // The view transition types for this navigation's first visible commit.
     // Like Next.js, which tags the navigation once and fills its loading shell
-    // in place, a committed optimistic shell consumes them: the authoritative
-    // payload that replaces it commits untyped.
+    // in place, an optimistic shell takes them when it is dispatched: the
+    // authoritative payload that replaces it commits untyped. React queues a
+    // Transition's types on the root and claims them all when it starts the
+    // next Transition commit, so the shell's types still tag the first commit
+    // if React renders the authoritative payload before the shell commits.
+    // Each dispatch reads them when it runs, not when it is scheduled.
     let uncommittedTransitionTypes = transitionTypes;
+    const readTransitionTypes = () => uncommittedTransitionTypes;
+    const takeTransitionTypes = () => {
+      const types = uncommittedTransitionTypes;
+      uncommittedTransitionTypes = undefined;
+      return types;
+    };
     const keepOptimisticShellMetadata = (
       payload: Promise<AppElements> | AppElements,
     ): Promise<AppElements> | AppElements => {
@@ -2745,7 +2755,7 @@ function bootstrapHydration(
                 ? resolveCommittedInterceptionSource(cachedRoute.elements)
                 : null,
             targetHref: currentHref,
-            transitionTypes: uncommittedTransitionTypes,
+            readTransitionTypes,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
           });
@@ -2880,12 +2890,9 @@ function bootstrapHydration(
                 previousNextUrl: requestPreviousNextUrl,
                 restoredBfcacheIds,
                 reuseCurrentBfcacheIds,
-                onCommittedState: () => {
-                  uncommittedTransitionTypes = undefined;
-                },
                 scrollIntent,
                 targetHref: currentHref,
-                transitionTypes: uncommittedTransitionTypes,
+                readTransitionTypes: takeTransitionTypes,
                 traversalIntent: activeTraversalIntent,
                 visibleCommitMode,
               }).catch((error) => {
@@ -3209,7 +3216,7 @@ function bootstrapHydration(
           reuseCurrentBfcacheIds,
           scrollIntent,
           targetHref: currentHref,
-          transitionTypes: uncommittedTransitionTypes,
+          readTransitionTypes,
           traversalIntent: activeTraversalIntent,
           // A settled prefetch still commits as a transition, as in Next.js:
           // its decoded elements can reference client modules that are still

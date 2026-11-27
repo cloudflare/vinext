@@ -149,11 +149,14 @@ type BrowserNavigationPayloadOptions = {
   targetHistoryIndex?: number | null;
   targetHref: string;
   /**
-   * View transition types of the navigation (`<Link transitionTypes>`,
-   * `router.push(href, { transitionTypes })`). Its visible commit runs in a
-   * later Transition than the one that started it, so it is tagged again.
+   * Reads the view transition types of the navigation (`<Link
+   * transitionTypes>`, `router.push(href, { transitionTypes })`). Its visible
+   * commit runs in a later Transition than the one that started it, so it is
+   * tagged again. Called inside each `startTransition` that dispatches this
+   * commit, when it is dispatched, so a navigation can hand its types to React
+   * once (see `takeTransitionTypes` in `navigateRsc`).
    */
-  transitionTypes?: readonly string[];
+  readTransitionTypes?: () => readonly string[] | undefined;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
 };
 
@@ -822,7 +825,7 @@ export function createAppBrowserNavigationController(
     pendingRouterState: PendingBrowserRouterState | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode,
     republishPendingRouterState: boolean,
-    transitionTypes: readonly string[] | undefined,
+    readTransitionTypes: (() => readonly string[] | undefined) | undefined,
   ): void {
     const setter = getBrowserRouterStateSetter();
     const pendingCommit = pendingNavigationCommits.get(renderId);
@@ -857,7 +860,7 @@ export function createAppBrowserNavigationController(
       }
       if (republishPendingRouterState) {
         startTransition(() => {
-          addNavigationTransitionTypes(transitionTypes);
+          addNavigationTransitionTypes(readTransitionTypes?.());
           setter(committedState);
         });
       }
@@ -881,7 +884,7 @@ export function createAppBrowserNavigationController(
     }
 
     startTransition(() => {
-      addNavigationTransitionTypes(transitionTypes);
+      addNavigationTransitionTypes(readTransitionTypes?.());
       const committedState = captureCandidateState(
         applyApprovedVisibleCommit(getBrowserRouterState(), commit),
       );
@@ -1174,7 +1177,7 @@ export function createAppBrowserNavigationController(
         options.pendingRouterState,
         options.visibleCommitMode ?? "transition",
         shouldRepublishPendingRouterState(options),
-        options.transitionTypes,
+        options.readTransitionTypes,
       );
       if (options.navigationResponseCompletion) {
         // Keep the live Flight branch streaming. If React commits it normally,
@@ -1193,7 +1196,7 @@ export function createAppBrowserNavigationController(
             const committedState = pendingCommit?.committedState;
             if (!committedState) return;
             startTransition(() => {
-              addNavigationTransitionTypes(options.transitionTypes);
+              addNavigationTransitionTypes(options.readTransitionTypes?.());
               getBrowserRouterStateSetter()(committedState);
             });
           },
