@@ -3171,6 +3171,146 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('href="https://example.com/rss"');
   });
 
+  // Expected tags are what Next.js 16.2.6 renders for the same metadata
+  // (createMetadataElements in packages/next/src/lib/metadata/metadata.tsx);
+  // the array fields per type follow resolve-opengraph.ts.
+  type OpenGraphInput = NonNullable<Parameters<typeof renderMetadataToHtml>[0]["openGraph"]>;
+  const openGraphTypeCases: [name: string, openGraph: OpenGraphInput, expected: string][] = [
+    [
+      "article",
+      {
+        type: "article",
+        publishedTime: "2026-01-01T00:00:00.000Z",
+        modifiedTime: "2026-01-02T00:00:00.000Z",
+        expirationTime: "2027-01-01T00:00:00.000Z",
+        authors: ["Seb", "https://a.example/josh"],
+        section: "sec",
+        tags: ["t1", "t2"],
+      },
+      "og:type=article article:published_time=2026-01-01T00:00:00.000Z article:modified_time=2026-01-02T00:00:00.000Z article:expiration_time=2027-01-01T00:00:00.000Z article:author=Seb article:author=https://a.example/josh article:section=sec article:tag=t1 article:tag=t2",
+    ],
+    [
+      "article with a single author and tag",
+      { type: "article", authors: new URL("https://au/url"), section: "S", tags: "solo-tag" },
+      "og:type=article article:author=https://au/url article:section=S article:tag=solo-tag",
+    ],
+    [
+      "book",
+      {
+        type: "book",
+        isbn: "978",
+        releaseDate: "2026-05-06",
+        authors: "https://au/solo",
+        tags: "bt",
+      },
+      "og:type=book book:isbn=978 book:release_date=2026-05-06 book:author=https://au/solo book:tag=bt",
+    ],
+    [
+      "profile",
+      { type: "profile", firstName: "F", lastName: "L", username: "u", gender: "g" },
+      "og:type=profile profile:first_name=F profile:last_name=L profile:username=u profile:gender=g",
+    ],
+    [
+      "music.song",
+      {
+        type: "music.song",
+        duration: 0,
+        albums: [
+          "https://al/1",
+          { url: "https://al/2", disc: 1, track: 2 },
+          { url: new URL("https://al/3") },
+        ],
+        musicians: "https://mu/solo",
+      },
+      "og:type=music.song music:duration=0 music:album=https://al/1 music:album=https://al/2 music:album:disc=1 music:album:track=2 music:album=https://al/3 music:musician=https://mu/solo",
+    ],
+    [
+      "music.album",
+      {
+        type: "music.album",
+        songs: ["https://so/1", { url: "https://so/2", disc: 0, track: 3 }],
+        musicians: ["https://mu/1", new URL("https://mu/2")],
+        releaseDate: "2026-02-03",
+      },
+      "og:type=music.album music:song=https://so/1 music:song=https://so/2 music:song:disc=0 music:song:track=3 music:musician=https://mu/1 music:musician=https://mu/2 music:release_date=2026-02-03",
+    ],
+    [
+      "music.playlist",
+      { type: "music.playlist", songs: ["https://so/1"], creators: ["https://cr/1"] },
+      "og:type=music.playlist music:song=https://so/1 music:creator=https://cr/1",
+    ],
+    [
+      "music.radio_station",
+      { type: "music.radio_station", creators: "https://cr/solo" },
+      "og:type=music.radio_station music:creator=https://cr/solo",
+    ],
+    [
+      "video.movie",
+      {
+        type: "video.movie",
+        actors: { url: "https://ac/obj", role: "r" },
+        directors: ["https://di/1", "https://di/2"],
+        writers: "https://wr/solo",
+        duration: 0,
+        releaseDate: "2026",
+        tags: ["t1", "t2"],
+      },
+      "og:type=video.movie video:actor=https://ac/obj video:actor:role=r video:director=https://di/1 video:director=https://di/2 video:writer=https://wr/solo video:duration=0 video:release_date=2026 video:tag=t1 video:tag=t2",
+    ],
+    [
+      "video.episode",
+      {
+        type: "video.episode",
+        actors: ["https://ac/1", { url: "https://ac/2", role: "lead" }],
+        directors: "https://di/1",
+        writers: ["https://wr/1"],
+        duration: 42,
+        releaseDate: "2026-03-04",
+        tags: "one-tag",
+        series: "https://se/1",
+      },
+      "og:type=video.episode video:actor=https://ac/1 video:actor=https://ac/2 video:actor:role=lead video:director=https://di/1 video:writer=https://wr/1 video:duration=42 video:release_date=2026-03-04 video:tag=one-tag video:series=https://se/1",
+    ],
+    ["video.tv_show", { type: "video.tv_show" }, "og:type=video.tv_show"],
+    ["video.other", { type: "video.other" }, "og:type=video.other"],
+  ];
+  it.each(openGraphTypeCases)(
+    "renders the Open Graph tags of type %s",
+    (_name, openGraph, expected) => {
+      const html = renderMetadataToHtml({ openGraph }, "/");
+      const tags = [...html.matchAll(/<meta property="([^"]*)" content="([^"]*)">/g)].map(
+        ([, property, content]) => `${property}=${content}`,
+      );
+      expect(tags.join(" ")).toBe(expected);
+    },
+  );
+
+  it("renders og:determiner, og:country_name, og:ttl and an image's secure_url", () => {
+    const html = renderMetadataToHtml(
+      {
+        openGraph: {
+          determiner: "auto",
+          countryName: "JP",
+          ttl: 0,
+          images: [{ url: "https://example.com/a.png", secureUrl: "https://s.example/a.png" }],
+        },
+        twitter: {
+          images: [{ url: "https://example.com/a.png", secureUrl: "https://s.example/a.png" }],
+        },
+      },
+      "/",
+    );
+    expect(html).toContain('<meta property="og:determiner" content="auto">');
+    expect(html).toContain('<meta property="og:country_name" content="JP">');
+    expect(html).toContain('<meta property="og:ttl" content="0">');
+    expect(html).toContain(
+      '<meta property="og:image" content="https://example.com/a.png"><meta property="og:image:secure_url" content="https://s.example/a.png">',
+    );
+    expect(html).toContain(
+      '<meta name="twitter:image:secure_url" content="https://s.example/a.png">',
+    );
+  });
+
   it("renders twitter:site and twitter:creator:id", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
