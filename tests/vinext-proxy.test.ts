@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -51,7 +52,11 @@ async function waitFor<T>(read: () => T | undefined, timeoutMs = 10_000): Promis
 }
 
 afterEach(async () => {
-  if (child?.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  if (child?.exitCode === null && child.signalCode === null) {
+    const exited = once(child, "exit");
+    child.kill("SIGTERM");
+    await exited;
+  }
   child = undefined;
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });

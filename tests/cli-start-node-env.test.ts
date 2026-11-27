@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
@@ -7,10 +8,10 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 const cliPath = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
 
-const cleanups: (() => void)[] = [];
+const cleanups: (() => void | Promise<void>)[] = [];
 
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 // An App Router build whose server entry answers with the NODE_ENV it runs
@@ -51,7 +52,12 @@ async function readNodeEnvFromStart(nodeEnv: "test" | undefined): Promise<string
     [cliPath, "start", "--port", String(port), "--hostname", "127.0.0.1"],
     { cwd: createProject(), env, stdio: "ignore" },
   );
-  cleanups.push(() => child.kill());
+  cleanups.push(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, "exit");
+    child.kill();
+    await exited;
+  });
 
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
