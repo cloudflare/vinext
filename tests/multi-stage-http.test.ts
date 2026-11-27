@@ -8,10 +8,11 @@ import {
   createHttpStageCacheAdapter,
   KNOWN_ROUTE_FALLBACK_MARKER,
 } from "./fixtures/multi-stage-http/http-stage-cache.runtime";
+import { packageBin } from "./package-bin.js";
 
 const ROOT = process.cwd();
 const FIXTURE_ROOT = path.join(ROOT, "tests/fixtures/multi-stage-http");
-const VP_CLI = path.join(ROOT, "node_modules/.bin/vp");
+const VP_CLI = packageBin(ROOT, "vite-plus", "vp");
 const READY_PREFIX = "VINEXT_HTTP_STAGE_READY:";
 const STAGE_TOKEN = "multi-stage-http-test-token";
 
@@ -221,7 +222,7 @@ beforeAll(async () => {
     fs.symlinkSync(path.join(ROOT, "tests/fixtures/pages-basic/node_modules"), fixtureNodeModules);
     createdNodeModules = true;
   }
-  const buildOutput = await spawnAndWait(VP_CLI, ["build"]);
+  const buildOutput = await spawnAndWait(process.execPath, [VP_CLI, "build"]);
   const manifestPath = path.join(FIXTURE_ROOT, "dist/server/.vite/manifest.json");
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`HTTP stage build did not emit a server manifest\n${buildOutput}`);
