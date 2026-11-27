@@ -244,7 +244,12 @@ describe("request contexts on the Cloudflare Workers runtime (#4940)", () => {
       await retainedGainedBy(
         20,
         () => ["/request-retention/sitemap.xml", {}],
-        async (res) => expect(await res.text()).toContain("https://example.com/request-retention"),
+        async (res) => {
+          // Rendered, not rebuilt from a cached entry, so the response stays
+          // the fully buffered one the route built.
+          expect(res.headers.get("x-vinext-cache")).toBeNull();
+          expect(await res.text()).toContain("https://example.com/request-retention");
+        },
       ),
     );
   }, 120_000);
