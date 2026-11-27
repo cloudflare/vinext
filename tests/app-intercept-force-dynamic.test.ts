@@ -93,5 +93,12 @@ describe("intercepting route force-dynamic", () => {
     const fromPhoto = matcher.findIntercept("/gallery/photo/2", "/gallery/photo/1");
     expect(requestRoutes[fromPhoto!.sourceRouteIndex]?.pattern).toBe("/gallery/photo/:id");
     expect(fromPhoto?.forceDynamic).toBe(true);
+
+    // The source renders all of its layouts around the intercept, including
+    // the force-dynamic album/pic/layout.tsx below the owner folder.
+    expect(matcher.findIntercept("/album/pic/2", "/album/list")?.forceDynamic).toBe(false);
+    const fromPic = matcher.findIntercept("/album/pic/2", "/album/pic/1");
+    expect(requestRoutes[fromPic!.sourceRouteIndex]?.pattern).toBe("/album/pic/:id");
+    expect(fromPic?.forceDynamic).toBe(true);
   });
 });

@@ -400,31 +400,19 @@ function interceptForcesDynamic(
 }
 
 /**
- * The shallowest main-tree position at which the route's layouts, or the
- * parallel slots they own, take a `dynamic = "force-dynamic"` file. A sibling
- * intercept owned at or below it renders that file when it renders from this
- * route, as `interceptForcesDynamic` counts it.
+ * Whether the route's layouts, or its parallel slots, take a
+ * `dynamic = "force-dynamic"` file. A sibling intercept whose owner only
+ * stands in for its marker directory renders in this route's place, with all
+ * of them around it.
  */
-function ownerTreeForceDynamicPosition(
-  route: AppRoute,
-  forcesDynamic: ForcesDynamic,
-): number | null {
-  const positions = [
-    ...route.layouts.flatMap((layout, index) =>
-      forcesDynamic(layout) ? [route.layoutTreePositions[index] ?? 0] : [],
-    ),
-    ...route.parallelSlots.flatMap((slot) =>
-      [
-        ...(slot.pagePath
-          ? [slot.layoutPath, ...(slot.configLayoutPaths ?? []), slot.pagePath]
-          : []),
-        slot.defaultPath,
-      ].some(forcesDynamic)
-        ? [slot.ownerTreePosition ?? route.layoutTreePositions[slot.layoutIndex] ?? 0]
-        : [],
-    ),
-  ];
-  return positions.length > 0 ? Math.min(...positions) : null;
+function layoutTreeForcesDynamic(route: AppRoute, forcesDynamic: ForcesDynamic): boolean {
+  return [
+    ...route.layouts,
+    ...route.parallelSlots.flatMap((slot) => [
+      ...(slot.pagePath ? [slot.layoutPath, ...(slot.configLayoutPaths ?? []), slot.pagePath] : []),
+      slot.defaultPath,
+    ]),
+  ].some(forcesDynamic);
 }
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
@@ -449,7 +437,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     // A sibling intercept whose owner only stands in for its marker directory
     // renders from the concrete source route, under that route's layouts and
     // slots.
-    ownerTreeForceDynamicPosition: ownerTreeForceDynamicPosition(route, forcesDynamic),
+    layoutTreeForceDynamic: layoutTreeForcesDynamic(route, forcesDynamic),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,

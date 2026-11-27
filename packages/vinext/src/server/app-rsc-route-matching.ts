@@ -139,10 +139,10 @@ type AppRscRouteForMatching = {
     route?: string | null;
   } | null;
   /**
-   * The shallowest tree position at which the route's layouts or their slots
-   * force dynamic (request-stage metadata only).
+   * Whether the route's layouts or its slots force dynamic (request-stage
+   * metadata only).
    */
-  ownerTreeForceDynamicPosition?: number | null;
+  layoutTreeForceDynamic?: boolean;
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
@@ -599,21 +599,15 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
                     (entry.sourcePageSegments ?? []).join("/"),
               );
         // A sibling intercept whose owner only stands in for the marker
-        // directory renders from the concrete source, under its layouts and
-        // the slots they own, down to the intercept's owner folder.
-        const renderedOwnerTreeForceDynamicPosition =
-          entry.slotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
-          renderedSourceRouteIndex !== entry.sourceRouteIndex
-            ? renderedSourceRoute?.ownerTreeForceDynamicPosition
+        // directory renders in the source route's place, under all of its
+        // layouts and slots, including those below the owner folder.
+        const renderedLayoutTreeForceDynamic =
+          entry.slotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY && !entry.ownerIsInterceptingRoute
+            ? renderedSourceRoute?.layoutTreeForceDynamic
             : undefined;
         const forceDynamic =
-          renderedOwnerTreeForceDynamicPosition !== undefined
-            ? entry.branchForceDynamic === true ||
-              (renderedOwnerTreeForceDynamicPosition !== null &&
-                renderedOwnerTreeForceDynamicPosition <=
-                  (entry.sourcePageSegments
-                    ? entry.sourcePageSegments.length - (entry.interceptBranchSegments ?? []).length
-                    : (renderedSourceSegments?.length ?? 0)))
+          typeof renderedLayoutTreeForceDynamic === "boolean"
+            ? entry.branchForceDynamic === true || renderedLayoutTreeForceDynamic
             : typeof renderedInterceptCopy?.forceDynamic === "boolean"
               ? renderedInterceptCopy.forceDynamic
               : entry.forceDynamic;
