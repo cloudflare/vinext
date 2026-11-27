@@ -932,11 +932,11 @@ type RenderNavigationPayloadOptions = {
   payloadOrigin: AppNavigationPayloadOrigin;
   pendingRouterState: PendingBrowserRouterState | null;
   previousNextUrl: string | null;
-  readTransitionTypes?: () => readonly string[] | undefined;
   restoredBfcacheIds?: Readonly<Record<string, string>> | null;
   reuseCurrentBfcacheIds?: boolean;
   scrollIntent?: AppRouterScrollIntent | null;
   suppliedInterceptionSource?: InterceptionSourceIdentity | null;
+  takeTransitionTypes?: () => readonly string[] | undefined;
   targetHref: string;
   traversalIntent?: HistoryTraversalIntent | null;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
@@ -962,11 +962,11 @@ async function renderNavigationPayload(
     payloadOrigin: options.payloadOrigin,
     pendingRouterState: options.pendingRouterState,
     previousNextUrl: options.previousNextUrl,
-    readTransitionTypes: options.readTransitionTypes,
     restoredBfcacheIds: options.restoredBfcacheIds ?? null,
     reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
     scrollIntent: options.scrollIntent ?? null,
     suppliedInterceptionSource: options.suppliedInterceptionSource ?? null,
+    takeTransitionTypes: options.takeTransitionTypes,
     targetHistoryIndex: options.traversalIntent?.targetHistoryIndex,
     targetHref: options.targetHref,
     visibleCommitMode: options.visibleCommitMode ?? "transition",
@@ -2352,15 +2352,14 @@ function bootstrapHydration(
     // The optimistic shell this navigation committed, if any.
     let optimisticShellElements: AppElements | null = null;
     // The view transition types for this navigation's first visible commit.
-    // Like Next.js, which tags the navigation once and fills its loading shell
-    // in place, an optimistic shell takes them when it is dispatched: the
-    // authoritative payload that replaces it commits untyped. React queues a
-    // Transition's types on the root and claims them all when it starts the
-    // next Transition commit, so the shell's types still tag the first commit
-    // if React renders the authoritative payload before the shell commits.
-    // Each dispatch reads them when it runs, not when it is scheduled.
+    // Like Next.js, which tags the navigation once, they are handed to React
+    // once: the first commit dispatch takes them when it runs, and later ones
+    // (the authoritative payload replacing an optimistic shell, a recovery
+    // publish) commit untyped. React queues a Transition's types on the root
+    // and claims them all when it starts the next Transition commit, so they
+    // still tag the first commit if React renders a later payload before the
+    // first one commits.
     let uncommittedTransitionTypes = transitionTypes;
-    const readTransitionTypes = () => uncommittedTransitionTypes;
     const takeTransitionTypes = () => {
       const types = uncommittedTransitionTypes;
       uncommittedTransitionTypes = undefined;
@@ -2755,7 +2754,7 @@ function bootstrapHydration(
                 ? resolveCommittedInterceptionSource(cachedRoute.elements)
                 : null,
             targetHref: currentHref,
-            readTransitionTypes,
+            takeTransitionTypes,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
           });
@@ -2892,7 +2891,7 @@ function bootstrapHydration(
                 reuseCurrentBfcacheIds,
                 scrollIntent,
                 targetHref: currentHref,
-                readTransitionTypes: takeTransitionTypes,
+                takeTransitionTypes,
                 traversalIntent: activeTraversalIntent,
                 visibleCommitMode,
               }).catch((error) => {
@@ -3216,7 +3215,7 @@ function bootstrapHydration(
           reuseCurrentBfcacheIds,
           scrollIntent,
           targetHref: currentHref,
-          readTransitionTypes,
+          takeTransitionTypes,
           traversalIntent: activeTraversalIntent,
           // A settled prefetch still commits as a transition, as in Next.js:
           // its decoded elements can reference client modules that are still

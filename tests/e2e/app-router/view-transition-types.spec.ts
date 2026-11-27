@@ -70,6 +70,33 @@ async function holdSlowNavigation(page: Page): Promise<() => void> {
   return releaseNavigation;
 }
 
+// Delay, by 1.5 s, the update callback of the first view transition whose
+// types include `type`. Until then React has claimed that commit's types and
+// started the transition, but has not run its mutation or layout effects. When
+// `onHold` names a function exposed to the page, the page calls it as the hold
+// starts. The delay stays under the browser's update-callback timeout.
+async function holdFirstTypedViewTransition(
+  page: Page,
+  options: { type: string; onHold?: string },
+) {
+  await page.addInitScript(({ type, onHold }) => {
+    const w = window as any;
+    const startViewTransition = document.startViewTransition?.bind(document);
+    if (!startViewTransition) return;
+    let held = false;
+    (document as any).startViewTransition = (arg: any) => {
+      const types: unknown = arg && typeof arg === "object" ? arg.types : null;
+      if (held || !Array.isArray(types) || !types.includes(type)) {
+        return startViewTransition(arg);
+      }
+      held = true;
+      if (onHold) void w[onHold]();
+      const resumed = new Promise<void>((resolve) => setTimeout(resolve, 1500));
+      return startViewTransition({ ...arg, update: () => resumed.then(() => arg.update()) });
+    };
+  }, options);
+}
+
 test.describe("App Router view transition types", () => {
   test("server component importing Suspense beside ViewTransition renders in dev", async ({
     page,
@@ -193,23 +220,9 @@ test.describe("App Router view transition types", () => {
     let releaseNavigation!: () => void;
     await page.exposeFunction("__vtReleaseNavigation", () => releaseNavigation());
     await recordViewTransitions(page);
-    await page.addInitScript(() => {
-      const w = window as any;
-      const startViewTransition = document.startViewTransition?.bind(document);
-      if (!startViewTransition) return;
-      let held = false;
-      (document as any).startViewTransition = (arg: any) => {
-        const types: unknown = arg && typeof arg === "object" ? arg.types : null;
-        if (held || !Array.isArray(types) || !types.includes("nav-shell")) {
-          return startViewTransition(arg);
-        }
-        held = true;
-        void w.__vtReleaseNavigation();
-        // Give the client time to receive and decode the payload and dispatch
-        // its commit, staying under the browser's update-callback timeout.
-        const resumed = new Promise<void>((resolve) => setTimeout(resolve, 1500));
-        return startViewTransition({ ...arg, update: () => resumed.then(() => arg.update()) });
-      };
+    await holdFirstTypedViewTransition(page, {
+      type: "nav-shell",
+      onHold: "__vtReleaseNavigation",
     });
     await page.goto(`${BASE}/view-transition-types`);
     await expect(page.getByTestId("vt-source")).toBeVisible();
@@ -228,5 +241,48 @@ test.describe("App Router view transition types", () => {
       .toBeGreaterThan(shellIndex + 1);
     const fill = (await readRecordedTypes(page)).slice(shellIndex + 1);
     expect(fill.every((entry) => entry === null)).toBe(true);
+  });
+
+  test("a same-path search push whose response ends during its view transition is tagged once", async ({
+    page,
+  }) => {
+    // The response streams its Suspense content after the first commit. Hold
+    // that commit's view transition so the response ends while React has
+    // claimed its types but not yet run its layout effects: the end-of-response
+    // recovery publish runs in that window. Types it hands to React again are
+    // queued while a Transition is pending, and tag that Transition's commit.
+    await recordViewTransitions(page);
+    // As the hold starts, the app starts a Transition of its own. React renders
+    // it once the held commit finishes, so it is still pending when the
+    // response ends.
+    await page.addInitScript(() => {
+      (window as any).__vtStartAppTransition = () => {
+        setTimeout(() => {
+          (window as any).__vtAppTransition();
+        });
+      };
+    });
+    await holdFirstTypedViewTransition(page, {
+      type: "nav-search",
+      onHold: "__vtStartAppTransition",
+    });
+    await page.goto(`${BASE}/view-transition-types/search?q=0`);
+    await expect(page.getByTestId("vt-search-result")).toHaveText("result 0");
+    await waitForAppRouterHydration(page);
+
+    await page.getByTestId("typed-search-push").click();
+    await expect(page.getByTestId("vt-search-result")).toHaveText("result 1", {
+      timeout: 10_000,
+    });
+    await expect(page.getByTestId("app-transition")).toHaveText("app transitions: 1");
+    // Types that were queued again would tag this later, untyped navigation.
+    await page.getByTestId("untyped-target-link").click();
+    await expect(page.getByTestId("vt-target")).toBeVisible();
+
+    const all = await readRecordedTypes(page);
+    const firstIndex = all.findIndex((entry) => entry?.includes("nav-search"));
+    expect(firstIndex).toBeGreaterThanOrEqual(0);
+    expect(all.length).toBeGreaterThan(firstIndex + 1);
+    expect(all.slice(firstIndex + 1).every((entry) => entry === null)).toBe(true);
   });
 });
