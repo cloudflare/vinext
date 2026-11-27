@@ -81,6 +81,7 @@ import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middl
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import {
   mergeMiddlewareResponseHeadersOntoResponse,
+  resolveMiddlewareResponseStatus,
   withExternalRewriteResponseHeaders,
 } from "./middleware-response-headers.js";
 import {
@@ -494,7 +495,10 @@ function applyMiddlewareContextToResponse(
     new Response(response.body, {
       // As in Next.js, which sets a 304 after middleware's status, a 304
       // answers the request's own validator.
-      status: response.status === 304 ? 304 : (middlewareContext.status ?? response.status),
+      status:
+        response.status === 304
+          ? 304
+          : resolveMiddlewareResponseStatus(response, middlewareContext.status),
       statusText: response.statusText,
       headers,
     }),

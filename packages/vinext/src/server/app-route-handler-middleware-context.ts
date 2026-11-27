@@ -1,5 +1,6 @@
 import {
   mergeMiddlewareResponseHeadersOntoResponse,
+  resolveMiddlewareResponseStatus,
   type MiddlewareResponseMergeOptions,
 } from "./middleware-response-headers.js";
 
@@ -22,7 +23,7 @@ export function applyRouteHandlerMiddlewareContext(
   mergeMiddlewareResponseHeadersOntoResponse(responseHeaders, middlewareContext.headers, options);
 
   return new Response(response.body, {
-    status: middlewareContext.status ?? response.status,
+    status: resolveMiddlewareResponseStatus(response, middlewareContext.status),
     statusText: response.statusText,
     headers: responseHeaders,
   });

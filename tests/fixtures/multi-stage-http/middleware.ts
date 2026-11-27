@@ -1,6 +1,16 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
+  // Middleware sets a status, then the route calls redirect(). The redirect's
+  // own 307 wins, as in Next.js.
+  if (request.nextUrl.pathname === "/status-redirect-page") {
+    return NextResponse.rewrite(new URL("/app-stage/status-redirect", request.url), {
+      status: 404,
+    });
+  }
+  if (request.nextUrl.pathname === "/status-redirect-route") {
+    return NextResponse.rewrite(new URL("/api/status-redirect", request.url), { status: 404 });
+  }
   const aliasMatch = request.nextUrl.pathname.match(/^\/alias-(.+)$/);
   const response = aliasMatch
     ? NextResponse.rewrite(new URL(`/${aliasMatch[1]}`, request.url))

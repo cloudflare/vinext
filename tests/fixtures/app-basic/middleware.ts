@@ -411,6 +411,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     });
   }
 
+  // Issue #4946: middleware sets a status, then the route calls redirect() /
+  // permanentRedirect(). The redirect's own 307/308 must win.
+  if (pathname === "/middleware-rewrite-status-redirect") {
+    return NextResponse.rewrite(new URL("/middleware-status-redirect-target", request.url), {
+      status: 404,
+    });
+  }
+  if (pathname === "/middleware-rewrite-status-redirect-route") {
+    return NextResponse.rewrite(new URL("/api/middleware-status-redirect-route", request.url), {
+      status: 404,
+    });
+  }
+  if (pathname === "/middleware-status-permanent-redirect") {
+    return NextResponse.next({ status: 404 });
+  }
+
   // Action forward loop test: rewrite POSTs from /nextjs-compat/action-forward-loop
   // to /nextjs-compat/action-forward-loop-rewrite so the receiving page does not
   // bundle the action. Without the x-action-forwarded guard, a multi-worker
@@ -727,6 +743,9 @@ export const config = {
     "/middleware-rewrite-query",
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
+    "/middleware-rewrite-status-redirect",
+    "/middleware-status-permanent-redirect",
+    "/middleware-rewrite-status-redirect-route",
     "/middleware-rewrite-unprefixed/:path*",
     "/middleware-rewrite-prefetch-target",
     "/middleware-blocked",

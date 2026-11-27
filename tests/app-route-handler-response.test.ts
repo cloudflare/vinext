@@ -74,6 +74,19 @@ describe("app route handler response helpers", () => {
     await expect(result.text()).resolves.toBe("hello");
   });
 
+  it("keeps a redirect's own status over middleware's", () => {
+    // Next.js sets middleware's status before the handler runs; the handler's
+    // redirect sets its 307/308 afterwards.
+    const result = applyRouteHandlerMiddlewareContext(
+      new Response(null, { status: 308, headers: { location: "/about" } }),
+      { headers: new Headers({ "x-middleware": "mw" }), status: 404 },
+    );
+
+    expect(result.status).toBe(308);
+    expect(result.headers.get("location")).toBe("/about");
+    expect(result.headers.get("x-middleware")).toBe("mw");
+  });
+
   it("merges Vary and places middleware Set-Cookie before the response's own", async () => {
     const response = new Response("hello", {
       status: 200,
