@@ -5,6 +5,11 @@ import {
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import {
+  paramsFromJson,
+  staticParamsToJson,
+  staticPathsToJson,
+} from "./prerender-static-params-json.js";
 import type { RootParams } from "vinext/shims/root-params";
 import {
   runInWorkStoreScope,
@@ -122,7 +127,7 @@ async function handleStaticParamsEndpoint(
       }),
     );
     if (result === null) return jsonNullResponse();
-    return jsonResponse(result);
+    return jsonResponse(staticParamsToJson(result));
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
   }
@@ -151,7 +156,7 @@ async function handlePagesStaticPathsEndpoint(
     const locales = parseLocales(url.searchParams.get("locales"));
     const defaultLocale = url.searchParams.get("defaultLocale") ?? "";
     const result = await runOutsideWorkStoreScope(() => getStaticPaths({ locales, defaultLocale }));
-    return jsonResponse(result);
+    return jsonResponse(staticPathsToJson(result));
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
   }
@@ -175,7 +180,7 @@ function jsonNullResponse(): Response {
 function parseParentParams(raw: string | null): RootParams {
   if (!raw) return {};
 
-  const value = JSON.parse(raw);
+  const value = paramsFromJson(JSON.parse(raw));
   if (!isPlainObject(value)) return {};
 
   const params: RootParams = {};

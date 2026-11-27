@@ -54,6 +54,11 @@ import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/con
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import {
+  paramsToJson,
+  staticParamsFromJson,
+  staticPathsFromJson,
+} from "../server/prerender-static-params-json.js";
+import {
   normalizeNextDataPagePathname,
   shouldAddTrailingSlashToPagesDataPath,
 } from "../server/pages-data-route.js";
@@ -597,7 +602,10 @@ async function collectPagesPaths(options: {
         continue;
       }
 
-      const pathsResult = validatePagesStaticPathsResult(JSON.parse(text), route.pattern);
+      const pathsResult = validatePagesStaticPathsResult(
+        staticPathsFromJson(JSON.parse(text)),
+        route.pattern,
+      );
       if (pathsResult.fallback !== false) {
         fallbackRoutePatterns.push({ kind: "pages-page", pattern: route.pattern });
       }
@@ -765,13 +773,15 @@ async function collectAppPaths(options: {
         // Under Cache Components every empty result is rejected below, so a
         // composed resolver must not pass parents through one.
         const rejectEmptyResults = requireNonEmptyStaticParams;
-        const cacheKey = `${pattern}\0${JSON.stringify(params)}\0${rejectEmptyResults}`;
+        // Keeps a parent's own undefined param, which Next.js passes through.
+        const parentParamsJson = JSON.stringify(paramsToJson(params));
+        const cacheKey = `${pattern}\0${parentParamsJson}\0${rejectEmptyResults}`;
         let request = staticParamsCache.get(cacheKey);
         if (request === undefined) {
           request = (async () => {
             const search = new URLSearchParams({ pattern });
             if (Object.keys(params).length > 0) {
-              search.set("parentParams", JSON.stringify(params));
+              search.set("parentParams", parentParamsJson);
             }
             if (rejectEmptyResults) search.set("rejectEmptyResults", "1");
             const text = await fetchDiscoveryEndpoint(
@@ -780,21 +790,22 @@ async function collectAppPaths(options: {
               options.retryOptions,
             );
             if (text === null) return null;
-            const value = JSON.parse(text) as unknown;
+            const value = staticParamsFromJson(JSON.parse(text));
             if (!Array.isArray(value)) {
               throw new Error(`generateStaticParams must return an array for ${pattern}.`);
             }
+            // Each set is checked against its route only once composed, by
+            // routeStaticParamSets below, as Next.js validates the composed
+            // route params (build/static-paths/app.ts validateParams). A set
+            // missing a param (here or from a layout) leaves the route
+            // unprerendered instead of failing the build.
             return value.map((entry) => {
               if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
                 throw new Error(
                   `generateStaticParams must return parameter objects for ${pattern}.`,
                 );
               }
-              return validateDiscoveredParams(
-                { ...params, ...(entry as Record<string, unknown>) },
-                pattern,
-                "generateStaticParams",
-              );
+              return entry as Record<string, string | string[]>;
             });
           })();
           void request.catch(() => staticParamsCache.delete(cacheKey));
@@ -888,13 +899,19 @@ async function collectAppPaths(options: {
             }
           }
         }
-        if (paramSets !== null) paramSets = routeStaticParamSets(route, paramSets);
+        if (paramSets !== null) {
+          paramSets = routeStaticParamSets(route, paramSets, {
+            partialPrerender: options.cacheComponents && !isRouteHandler,
+          });
+        }
       } else {
         const results = await generateStaticParams({ params: {} });
         paramSets =
           results === null
             ? null
-            : routeStaticParamSets(route, Array.isArray(results) ? results : []);
+            : routeStaticParamSets(route, Array.isArray(results) ? results : [], {
+                partialPrerender: options.cacheComponents && !isRouteHandler,
+              });
       }
 
       if (!paramSets?.length) {
@@ -1044,7 +1061,8 @@ async function collectMetadataRoutePaths(options: {
         if (!Array.isArray(entry.staticParams)) {
           throw new Error(`generateStaticParams must return an array for ${routePattern}.`);
         }
-        for (const params of routeStaticParamSets({ pattern: routePattern }, entry.staticParams)) {
+        const staticParams = staticParamsFromJson(entry.staticParams) as unknown[];
+        for (const params of routeStaticParamSets({ pattern: routePattern }, staticParams)) {
           addMetadataPath(buildUrlFromParams(routePattern, params), route);
         }
         continue;
