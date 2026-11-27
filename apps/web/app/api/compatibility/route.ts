@@ -16,11 +16,12 @@
  * Body:
  *   {
  *     kind: "deploy" | string,
- *     runKey: string,         // GitHub run_id or other stable id
+ *     runKey: string,         // GitHub run_id or other stable id; unique per nextRef
  *     vinextRef?: string,
- *     nextRef?: string,
+ *     nextRef: string,        // Next.js ref tested, e.g. v16.2.6; one series per ref
  *     commitSha?: string,
  *     createdAt?: number,     // Unix millis; authenticated historical backfills only
+ *     startedAt?: number,     // Unix millis the workflow run was created; orders the run
  *     files: Array<{
  *       suite: string,        // test file path; joins to compat_suite_meta.suite
  *       total: number,
@@ -36,6 +37,7 @@
 import { getDb } from "@/app/lib/db/client";
 import { compatRuns, compatFileResults, type FileStatus } from "@/app/lib/db/schema";
 import { eq } from "drizzle-orm";
+import { isValidNextRef } from "../../lib/compat-version";
 import { requireIngestAuth } from "./_auth";
 
 type SubmitFile = {
@@ -50,9 +52,10 @@ type SubmitBody = {
   kind: string;
   runKey: string;
   vinextRef?: string;
-  nextRef?: string;
+  nextRef: string;
   commitSha?: string;
   createdAt?: number;
+  startedAt?: number;
   files: SubmitFile[];
 };
 
@@ -70,21 +73,33 @@ function deriveStatus(f: SubmitFile): FileStatus {
   return "skip";
 }
 
+/**
+ * Earliest accepted `startedAt`/`createdAt` (2023-01-01 UTC). Both are Unix
+ * millis; anything earlier is almost certainly seconds sent by mistake.
+ */
+const MIN_TIMESTAMP_MS = Date.UTC(2023, 0, 1);
+
+function isPastTimestamp(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= MIN_TIMESTAMP_MS &&
+    value <= Date.now()
+  );
+}
+
 function isValidBody(body: unknown): body is SubmitBody {
   if (!body || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
   if (typeof b.kind !== "string" || b.kind.length === 0) return false;
   if (typeof b.runKey !== "string" || b.runKey.length === 0) return false;
+  if (!isValidNextRef(b.nextRef)) return false;
   if (b.createdAt === undefined && b.runKey.startsWith("backfill:")) return false;
+  if (b.startedAt !== undefined) {
+    if (b.createdAt !== undefined || !isPastTimestamp(b.startedAt)) return false;
+  }
   if (b.createdAt !== undefined) {
-    if (
-      typeof b.createdAt !== "number" ||
-      !Number.isSafeInteger(b.createdAt) ||
-      b.createdAt <= 0 ||
-      b.createdAt > Date.now()
-    ) {
-      return false;
-    }
+    if (!isPastTimestamp(b.createdAt)) return false;
     const timestamp = new Date(b.createdAt).toISOString();
     if (
       !timestamp.endsWith("T02:00:00.000Z") ||
@@ -136,7 +151,10 @@ export async function POST(request: Request): Promise<Response> {
 
 async function writeRun(body: SubmitBody): Promise<Response> {
   const db = getDb();
-  const createdAt = body.createdAt ?? Date.now();
+  // Runs are ordered by when their workflow run was created, not when they finish,
+  // so an older run that overlaps a newer one and posts later doesn't become
+  // the latest run.
+  const createdAt = body.createdAt ?? body.startedAt ?? Date.now();
 
   // Aggregate totals.
   let total = 0;
@@ -150,16 +168,17 @@ async function writeRun(body: SubmitBody): Promise<Response> {
     skipped += f.skipped;
   }
 
-  // Atomic upsert by (kind, runKey). Drizzle compiles this to a single
-  // INSERT ... ON CONFLICT(kind, run_key) DO UPDATE SET ... — no race
-  // window between SELECT and INSERT for concurrent retried CI runs.
+  // Atomic upsert by (kind, nextRef, runKey): one GitHub Actions run
+  // publishes one run per Next.js version. Drizzle compiles this to a single
+  // INSERT ... ON CONFLICT(kind, next_ref, run_key) DO UPDATE SET ... — no
+  // race window between SELECT and INSERT for concurrent retried CI runs.
   const upserted = await db
     .insert(compatRuns)
     .values({
       kind: body.kind,
       runKey: body.runKey,
       vinextRef: body.vinextRef ?? null,
-      nextRef: body.nextRef ?? null,
+      nextRef: body.nextRef,
       commitSha: body.commitSha ?? null,
       createdAt,
       total,
@@ -168,10 +187,9 @@ async function writeRun(body: SubmitBody): Promise<Response> {
       skipped,
     })
     .onConflictDoUpdate({
-      target: [compatRuns.kind, compatRuns.runKey],
+      target: [compatRuns.kind, compatRuns.nextRef, compatRuns.runKey],
       set: {
         vinextRef: body.vinextRef ?? null,
-        nextRef: body.nextRef ?? null,
         commitSha: body.commitSha ?? null,
         createdAt,
         total,

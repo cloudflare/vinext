@@ -8,6 +8,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import vm from "node:vm";
+import { toSlash } from "pathslash";
 import { parseAst } from "vite";
 import { describe, it, expect } from "vite-plus/test";
 import {
@@ -22,6 +23,7 @@ import {
   rootBoundaryRouteFiles,
 } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import {
+  classifyAppPageRouteStaticEligibility,
   isAppInterceptRenderedDynamically,
   isAppPageRouteRenderedDynamically,
 } from "../packages/vinext/src/build/app-page-static-eligibility.js";
@@ -573,14 +575,15 @@ describe("App Router generated manifest construction", () => {
         layouts = [layoutPath],
       ): AppRoute => {
         const patternParts = pattern.split("/").filter(Boolean);
+        const routeSegments = patternParts.map((part) =>
+          part.startsWith(":") ? `[${part.slice(1)}]` : part,
+        );
         return {
           ...minimalAppRoutes[0],
           pattern,
           patternParts,
-          routeSegments: patternParts.map((part) =>
-            part.startsWith(":") ? `[${part.slice(1)}]` : part,
-          ),
-          pagePath: writeSource(`${patternParts.join("/")}/page.tsx`, pageSource),
+          routeSegments,
+          pagePath: writeSource(`${routeSegments.join("/")}/page.tsx`, pageSource),
           layouts,
           layoutTreePositions: layouts.map((_, index) => index),
           isDynamic,
@@ -621,6 +624,38 @@ describe("App Router generated manifest construction", () => {
         ["posts/:slug", undefined],
       ]);
       expect(toLinkPrefetchRoutes(routes).some((route) => route.rendersDynamically)).toBe(false);
+
+      // A layout generator above the last dynamic segment makes the route SSG
+      // only if it gives every param, which only running it tells.
+      const langLayoutPath = writeSource(
+        "[lang]/layout.tsx",
+        "export function generateStaticParams() { return []; }\nexport default function Layout({ children }) { return children; }",
+      );
+      const langRoute = (pageSource: string) =>
+        pageRoute("/:lang/:slug", true, pageSource, [layoutPath, langLayoutPath]);
+      const staticParamsOnly = langRoute(`export const dynamicParams = false;\n${page}`);
+      expect(classifyAppPageRouteStaticEligibility(staticParamsOnly, null)).toBe("every-param");
+      expect(isAppPageRouteRenderedDynamically(staticParamsOnly, null)).toBe(true);
+      // vinext never stores one whose parallel route slot exports a generator.
+      const withSlotGenerator: AppRoute = {
+        ...staticParamsOnly,
+        parallelSlots: [
+          {
+            configLayoutPaths: [],
+            defaultPath: null,
+            layoutPath: writeSource(
+              "@modal/layout.tsx",
+              "export function generateStaticParams() { return []; }\nexport default function Layout({ children }) { return children; }",
+            ),
+            name: "modal",
+            ownerTreePosition: 0,
+            pagePath: writeSource("@modal/[lang]/[slug]/page.tsx", page),
+            routeSegments: ["[lang]", "[slug]"],
+          } as unknown as AppRoute["parallelSlots"][number],
+        ],
+      };
+      expect(classifyAppPageRouteStaticEligibility(withSlotGenerator, null)).toBe("ineligible");
+      expect(classifyAppPageRouteStaticEligibility(langRoute(page), null)).toBe("ineligible");
     } finally {
       fs.rmSync(appDir, { force: true, recursive: true });
     }
@@ -665,6 +700,48 @@ describe("App Router generated manifest construction", () => {
       write("feed/@modal/(..)[name]/crossed/x/page.tsx");
       write("[name]/crossed/x/page.tsx", gsp);
       write("foo/[id]/x/page.tsx", gsp);
+      // A slot owner whose default renders dynamically.
+      write("deck/page.tsx");
+      write("deck/default.tsx", `${forceDynamic}${page}`);
+      write("deck/@modal/default.tsx");
+      write("deck/@modal/(..)slides/[id]/page.tsx", gsp);
+      write("slides/[id]/page.tsx", gsp);
+      // A slot beside the intercepted one whose default renders dynamically.
+      write("shelf/page.tsx");
+      write("shelf/@aside/page.tsx");
+      write("shelf/@aside/default.tsx", `${forceDynamic}${page}`);
+      write("shelf/@modal/default.tsx");
+      write("shelf/@modal/(..)books/[id]/page.tsx", gsp);
+      write("books/[id]/page.tsx", gsp);
+      // A slot owner whose default runs on the edge runtime.
+      write("rack/page.tsx");
+      write("rack/default.tsx", `export const runtime = "edge";\n${page}`);
+      write("rack/@modal/default.tsx");
+      write("rack/@modal/(..)crates/[id]/page.tsx", gsp);
+      write("crates/[id]/page.tsx", gsp);
+      // A slot whose default has generateStaticParams, beside an intercept
+      // with a dynamic segment below the owner and none.
+      write("tray/page.tsx");
+      write("tray/@zone/page.tsx");
+      write("tray/@zone/default.tsx", gsp);
+      write("tray/@modal/default.tsx");
+      write("tray/@modal/(..)cups/[id]/page.tsx");
+      write("cups/[id]/page.tsx", gsp);
+      // The same beside an intercept whose last dynamic segment is the owner's.
+      write("vault/[vid]/page.tsx", gsp);
+      write("vault/[vid]/@zone/page.tsx");
+      write("vault/[vid]/@zone/default.tsx", gsp);
+      write("vault/[vid]/@modal/default.tsx");
+      write("vault/[vid]/@modal/(.)coins/page.tsx");
+      write("vault/[vid]/coins/page.tsx", gsp);
+      // A slot default whose `dynamic` the walk visits after the owner's.
+      write("dock/page.tsx");
+      write("dock/default.tsx", `export const dynamic = "force-static";\n${page}`);
+      write("dock/@aside/page.tsx");
+      write("dock/@aside/default.tsx", `export const dynamic = "auto";\n${page}`);
+      write("dock/@modal/default.tsx");
+      write("dock/@modal/(..)boats/[id]/page.tsx");
+      write("boats/[id]/page.tsx", gsp);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const classifier = {
@@ -672,7 +749,8 @@ describe("App Router generated manifest construction", () => {
         intercept: (
           intercept: AppRoute["siblingIntercepts"][number],
           layoutPaths: readonly string[],
-        ) => isAppInterceptRenderedDynamically(intercept, layoutPaths, null),
+          slotDefaultPaths: readonly (string | null)[],
+        ) => isAppInterceptRenderedDynamically(intercept, layoutPaths, null, slotDefaultPaths),
       };
       const byPattern = new Map(
         toLinkPrefetchRoutes(graph.routes, classifier).map((route) => [
@@ -704,6 +782,24 @@ describe("App Router generated manifest construction", () => {
       // The intercepted response also renders the dynamic source route's branches.
       expect(summarize("cards/:id")).toEqual([undefined, [["board", "cards/:id", true]]]);
       expect(summarize("foo/:id/x")).toEqual([undefined, [["feed", ":name/crossed/x", true]]]);
+      // The intercepting route renders the owner's default in its children.
+      expect(summarize("slides/:id")).toEqual([undefined, [["deck", "slides/:id", true]]]);
+      expect(summarize("deck")).toEqual([undefined, undefined]);
+      // And every other slot's default beside the intercept.
+      expect(summarize("books/:id")).toEqual([undefined, [["shelf", "books/:id", true]]]);
+      expect(summarize("shelf")).toEqual([undefined, undefined]);
+      // Their runtime and generateStaticParams count too. Next.js walks the
+      // tree breadth-first, so a default beside the slot comes before the
+      // intercept's own deeper segments, and after the owner's.
+      expect(summarize("crates/:id")).toEqual([undefined, [["rack", "crates/:id", true]]]);
+      expect(summarize("cups/:id")).toEqual([undefined, [["tray", "cups/:id", true]]]);
+      expect(summarize("vault/:vid/coins")).toEqual([
+        undefined,
+        [["vault/:vid", "vault/:vid/coins", undefined]],
+      ]);
+      // Next.js visits children before the other slots, and the last value
+      // wins, so the other slot's default overrides the owner's.
+      expect(summarize("boats/:id")).toEqual([undefined, [["dock", "boats/:id", true]]]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
     } finally {
@@ -2120,6 +2216,9 @@ describe("App Router entry templates", () => {
     expect(code).toContain(
       'import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry"',
     );
+    expect(code).toContain(
+      "matchPagesRoute(pathname, request) {\n    return __matchPagesFallbackRoute(__pagesRequestEntry, pathname, request);",
+    );
     expect(code).not.toContain("virtual:vinext-rsc-entry");
     expect(code).toContain(
       'import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler"',
@@ -2470,13 +2569,16 @@ describe("App Router entry templates", () => {
   it("promotes interception-only RSC targets before not-found dispatch", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname, interceptionId)");
+    expect(code).toContain(
+      "matchInterceptRoute(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot)",
+    );
     expect(code).toContain("hasInterceptionId(interceptionId)");
     expect(code).toContain("return __routeMatcher.hasInterceptionId(interceptionId)");
     expect(code).toContain(
-      "const intercept = findIntercept(pathname, sourcePathname, interceptionId)",
+      "const intercept = findIntercept(pathname, sourcePathname, interceptionId, acceptsSourceWithoutSlot)",
     );
     expect(code).toContain("interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete");
+    expect(code).toContain("interceptionSourceLacksSlot: intercept.sourceRouteLacksSlot");
     expect(
       code.match(
         /findIntercept\(\s*interceptionPathname,\s*interceptionContext,\s*interceptionId,?\s*\)/g,
@@ -2505,6 +2607,39 @@ describe("App Router entry templates", () => {
     expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
     expect(firstUserImportIndex).toBeGreaterThanOrEqual(0);
     expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
+  });
+
+  it("generateRscEntry decides rewritten metadata paths from the loaded route modules", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-entry-metadata-"));
+    const filePath = path.join(tmpDir, "sitemap.ts");
+    fs.writeFileSync(filePath, "export default function sitemap() { return []; }");
+    const metadataRoutes: MetadataFileRoute[] = [
+      {
+        type: "sitemap",
+        isDynamic: true,
+        filePath,
+        routePrefix: "",
+        servedUrl: "/sitemap.xml",
+        contentType: "application/xml",
+      },
+    ];
+
+    try {
+      const code = generateRscEntry(
+        "/tmp/test/app",
+        minimalAppRoutes,
+        null,
+        metadataRoutes,
+        null,
+        "",
+        false,
+      );
+      expect(code).toContain(
+        "async metadataRouteAnswersPath(pathname) {\n    const { metadataRouteAnswersRewrittenPath: __metadataRouteAnswersRewrittenPath } =\n      await __loadMetadataRouteResponse();\n    return __metadataRouteAnswersRewrittenPath(metadataRoutes, pathname);",
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("generateRscEntry fails with a path-specific error when a static metadata file cannot be read", () => {
@@ -2609,6 +2744,17 @@ describe("App Router entry templates", () => {
     expect(code).toContain("__hybridPagesApplication ??= __shareIsolatePromise((async () => {");
     expect(code).toContain("await __pagesEntry.__ensureInstrumentation?.(ctx);");
     expect(code).toContain("})(), ctx);");
+  });
+
+  it("matches hybrid Pages routes against the initialized Pages application", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      hasPagesDir: true,
+    });
+
+    expect(() => parseAst(code)).not.toThrow();
+    expect(code).toContain(
+      "async matchPagesRoute(pathname, request) {\n    return __matchPagesFallbackRoute(await __ensureHybridPagesApplication(), pathname, request);",
+    );
   });
 
   // Ported from Next.js: test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
@@ -3174,7 +3320,7 @@ describe("Pages Router entry template", () => {
       );
       const globalsImportIndex = code.indexOf("/server-globals.js");
       const firstUserImportIndex = code.indexOf(
-        `import * as page_0 from ${JSON.stringify(path.join(pagesDir, "index.tsx"))}`,
+        `import * as page_0 from ${JSON.stringify(toSlash(path.join(pagesDir, "index.tsx")))}`,
       );
 
       expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
@@ -3359,8 +3505,8 @@ describe("Pages Router entry template", () => {
         instrumentationPath,
       );
 
-      expect(code).toContain(JSON.stringify(pagePath));
-      expect(code).toContain(JSON.stringify(apiPath));
+      expect(code).toContain(JSON.stringify(toSlash(pagePath)));
+      expect(code).toContain(JSON.stringify(toSlash(apiPath)));
       expect(code).toContain("createPagesPageHandler");
       expect(code).toContain("handlePagesApiRoute");
       expect(code).toContain("return _reportRequestError(");
@@ -3404,7 +3550,9 @@ describe("Pages Router entry template", () => {
         '__registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs"',
       );
       const registrationIndex = code.indexOf("await __ensureInstrumentationRegistered(");
-      const userModuleIndex = code.indexOf(`page_0 = await import(${JSON.stringify(pagePath)})`);
+      const userModuleIndex = code.indexOf(
+        `page_0 = await import(${JSON.stringify(toSlash(pagePath))})`,
+      );
 
       expect(loaderIndex).toBeGreaterThanOrEqual(0);
       expect(registrationIndex).toBeGreaterThan(loaderIndex);
@@ -3413,7 +3561,9 @@ describe("Pages Router entry template", () => {
       expect(code).toContain(
         "return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx)",
       );
-      expect(code).not.toContain(`const page_0 = await import(${JSON.stringify(pagePath)})`);
+      expect(code).not.toContain(
+        `const page_0 = await import(${JSON.stringify(toSlash(pagePath))})`,
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -3494,7 +3644,9 @@ describe("Pages Router entry template", () => {
         createValidFileMatcher(nextConfig.pageExtensions),
       );
 
-      expect(clientCode).toContain(`"/_error": () => import(${JSON.stringify(errorFilePath)})`);
+      expect(clientCode).toContain(
+        `"/_error": () => import(${JSON.stringify(toSlash(errorFilePath))})`,
+      );
       expect(clientCode).not.toContain('"/_error": () => import("next/error")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -3536,7 +3688,9 @@ describe("Pages Router entry template", () => {
       // The user's `instrumentation-client.ts` must be imported as a
       // side-effect import (no `from`, no `as`) so its top-level statements
       // execute when the client entry module is evaluated.
-      const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const userImportIndex = code.indexOf(
+        `import ${JSON.stringify(toSlash(instrumentationClientPath))}`,
+      );
       const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
       const hydrateRootIndex = code.indexOf("hydrateRoot(");
 

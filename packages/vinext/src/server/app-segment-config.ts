@@ -71,7 +71,7 @@ function isRouteSegmentDynamic(value: unknown): value is AppRouteSegmentDynamic 
   return DYNAMIC_VALUES.has(value);
 }
 
-function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
+export function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
   return FETCH_CACHE_VALUES.has(value);
 }
 
@@ -115,21 +115,6 @@ function isDynamicSegment(segment: string): boolean {
   return segment.startsWith("[") && segment.endsWith("]");
 }
 
-function resolveSegmentConfigOwnerPosition(
-  routeSegments: readonly string[],
-  treePosition: number,
-): number {
-  let ownerPosition = Math.min(treePosition - 1, routeSegments.length - 1);
-  while (ownerPosition >= 0) {
-    const segment = routeSegments[ownerPosition];
-    if (!segment.startsWith("@") && !(segment.startsWith("(") && segment.endsWith(")"))) {
-      break;
-    }
-    ownerPosition -= 1;
-  }
-  return ownerPosition;
-}
-
 function getParallelSegments(
   options: ResolveAppPageSegmentConfigOptions,
 ): readonly (AppRouteSegmentConfigModule | null | undefined)[] {
@@ -169,8 +154,27 @@ export function resolveAppPageDynamicConfig(
   return dynamicConfig;
 }
 
-function resolveDynamicParamsConfig(
-  options: ResolveAppPageSegmentConfigOptions,
+/**
+ * A route's `dynamicParams`: `false` when any of its segments sets it so,
+ * else `true` when one sets `true`.
+ *
+ * Next.js rejects the params its generators don't list only where it
+ * prerenders the route's paths, which `validateAppPageRouteDynamicParams`
+ * checks: never for a route that runs on the edge runtime, or in production
+ * for `dynamic = "force-dynamic"` or `revalidate = 0`, and otherwise when
+ * `generateStaticParams` sits at or below the route's last dynamic segment.
+ * Such a route without one renders any params, as a dynamic route. With
+ * `cacheComponents`, and in production for `dynamic = "force-static"` or
+ * `"error"`, Next.js prerenders the route's paths whatever its generators
+ * give. It also prerenders them when the generators give every row every
+ * one of the route's URL params.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+ */
+export function resolveAppPageDynamicParamsConfig(
+  options: Pick<
+    ResolveAppPageSegmentConfigOptions,
+    "layouts" | "page" | "parallelBranches" | "parallelSegments"
+  >,
 ): boolean | undefined {
   const parallelSegments = getParallelSegments(options);
   const segments = [...(options.layouts ?? []), options.page, ...parallelSegments];
@@ -184,76 +188,7 @@ function resolveDynamicParamsConfig(
     }
   }
 
-  if (dynamicParamsConfig !== false || !options.routeSegments) {
-    return dynamicParamsConfig;
-  }
-
-  const routeSegments = options.routeSegments;
-  let lastDynamicPosition = -1;
-  for (let index = routeSegments.length - 1; index >= 0; index--) {
-    if (isDynamicSegment(routeSegments[index])) {
-      lastDynamicPosition = index;
-      break;
-    }
-  }
-  if (lastDynamicPosition < 0) return dynamicParamsConfig;
-
-  const layouts = options.layouts ?? [];
-  const layoutPositions = options.layoutTreePositions ?? [];
-  let lastDynamicSegmentIsStaticOnly = false;
-  let lastDynamicSegmentHasStaticParams = false;
-
-  layouts.forEach((layout, index) => {
-    const ownerPosition = resolveSegmentConfigOwnerPosition(
-      routeSegments,
-      layoutPositions[index] ?? 0,
-    );
-    if (ownerPosition !== lastDynamicPosition) return;
-    if (layout?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
-    if (typeof layout?.generateStaticParams === "function") {
-      lastDynamicSegmentHasStaticParams = true;
-    }
-  });
-
-  if (options.page?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
-  if (typeof options.page?.generateStaticParams === "function") {
-    lastDynamicSegmentHasStaticParams = true;
-  }
-
-  for (const branch of options.parallelBranches ?? []) {
-    if (!branch) continue;
-    const branchStartPosition = routeSegments.length - (branch.routeSegments?.length ?? 0);
-    const checkSegment = (
-      segment: AppRouteSegmentConfigModule | null | undefined,
-      ownerPosition: number,
-    ) => {
-      if (ownerPosition !== lastDynamicPosition) return;
-      if (segment?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
-      if (typeof segment?.generateStaticParams === "function") {
-        lastDynamicSegmentHasStaticParams = true;
-      }
-    };
-
-    checkSegment(branch.layout, branchStartPosition - 1);
-    branch.configLayouts?.forEach((layout, index) => {
-      checkSegment(
-        layout,
-        branchStartPosition + (branch.configLayoutTreePositions?.[index] ?? 0) - 1,
-      );
-    });
-    checkSegment(branch.page, branchStartPosition + (branch.routeSegments?.length ?? 0) - 1);
-  }
-
-  if (!options.parallelBranches) {
-    for (const segment of parallelSegments) {
-      if (segment?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
-      if (typeof segment?.generateStaticParams === "function") {
-        lastDynamicSegmentHasStaticParams = true;
-      }
-    }
-  }
-
-  return lastDynamicSegmentIsStaticOnly || lastDynamicSegmentHasStaticParams ? false : undefined;
+  return dynamicParamsConfig;
 }
 
 function isCacheFetchCacheMode(value: FetchCacheMode): boolean {
@@ -287,7 +222,7 @@ export function resolveAppPageSegmentConfig(
     ...(dynamicConfig === undefined ? {} : { dynamicConfig }),
     revalidateSeconds: null,
   };
-  config.dynamicParamsConfig = resolveDynamicParamsConfig(options);
+  config.dynamicParamsConfig = resolveAppPageDynamicParamsConfig(options);
   let hasForceCache = false;
   let hasForceNoStore = false;
   let hasOnlyCache = false;
@@ -755,8 +690,9 @@ export function hasAppPageGenerateStaticParamsAtLastDynamicSegment(
  *
  * Next.js also treats a route as SSG when an ancestor's `generateStaticParams`
  * returns every pathname param (`hadAllParamsGenerated`). That depends on the
- * generator's output, which vinext doesn't compute per request, so such a
- * route is treated as dynamic here. Adding `generateStaticParams` to the last
+ * generator's output, so such a route is treated as dynamic here. Dispatch
+ * stores it only once its `dynamicParams = false` check has run the
+ * generators and shown that. Adding `generateStaticParams` to the last
  * dynamic segment (even returning `[]`) opts it in, on both.
  *
  * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts#L2333-L2408

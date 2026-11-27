@@ -340,6 +340,8 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.headers.get("x-mw-pathname")).toBe("/photos/42");
     const payload = await res.text();
     expect(payload).toContain("Photo Modal");
-    expect(payload).toContain("Photo Feed");
+    // The client keeps the feed page beneath the modal.
+    expect(payload).not.toContain("Photo Feed");
+    expect(payload).toContain('"__retainedElementIds":["page:/feed"');
   });
 });

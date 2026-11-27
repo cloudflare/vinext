@@ -175,19 +175,19 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   // Framework manifests and prerendered routes have one canonical location,
   // independent of where an adapter asks Vite to emit the executable RSC
-  // graph. Consumers such as cache prewarming always resolve these artifacts
-  // from dist/server.
-  const manifestDir = path.resolve(root, "dist", "server");
-  const buildOutDir = path.resolve(root, "dist");
+  // graph: <outDir>/server, where outDir is Vite's `build.outDir` ("dist" by
+  // default). Consumers such as cache prewarming read them from there.
+  const buildOutDir = path.resolve(root, options.routeRootConfig?.outDir ?? "dist");
+  const manifestDir = path.join(buildOutDir, "server");
   const configuredRscServerDir = path.resolve(
     root,
-    options.routeRootConfig?.rscOutDir ?? path.join("dist", "server"),
+    options.routeRootConfig?.rscOutDir ?? manifestDir,
   );
   const rscBundlePath = options.rscBundlePath ?? resolveBuiltRscEntryPath(configuredRscServerDir);
   const pagesBundlePath =
     options.pagesBundlePath ??
     resolveBuiltPagesEntryPath(
-      path.resolve(root, options.routeRootConfig?.ssrOutDir ?? path.join("dist", "server")),
+      path.resolve(root, options.routeRootConfig?.ssrOutDir ?? manifestDir),
     );
   // The emitted entry may live below its server root (for example
   // entries/app.js). Keep adjacent build metadata rooted at the configured
@@ -243,7 +243,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // (dist/client/ unless clientOutDir moves it) alongside the client assets.
   const outDir =
     mode === "export"
-      ? path.resolve(root, options.routeRootConfig?.clientOutDir ?? path.join("dist", "client"))
+      ? path.resolve(
+          root,
+          options.routeRootConfig?.clientOutDir ?? path.join(buildOutDir, "client"),
+        )
       : path.join(manifestDir, "prerendered-routes");
 
   // For hybrid builds (both app/ and pages/ present), start a single shared

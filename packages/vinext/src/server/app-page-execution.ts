@@ -69,7 +69,7 @@ const APP_PAGE_SLOT_ERROR_LAYOUT_INDEX = Symbol.for("vinext.appPage.slotErrorLay
 /**
  * Marker holding the id of the slot's own not-found boundary that catches the
  * slot's `notFound()` on the client, when one does. The document then renders
- * that boundary caught (see `resolveAppPageCaughtNotFoundBoundaries`).
+ * that boundary caught (see `resolveAppPageCaughtAccessBoundaries`).
  */
 const APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY = Symbol.for(
   "vinext.appPage.slotErrorNotFoundBoundary",
@@ -149,6 +149,17 @@ function getAppPageSlotErrorLayoutIndex(error: unknown): number | null {
  * the page-level boundary, or the segment one it passes the signal up to.
  */
 export const APP_PAGE_NOT_FOUND_BOUNDARY_ID = "page";
+
+/**
+ * The id of the boundary that catches the HTTP access fallback with
+ * `statusCode` that the route's page threw: the page-level boundary, or the
+ * segment one it passes the signal up to.
+ */
+export function getAppPageAccessBoundaryCatcherId(statusCode: number): string {
+  return statusCode === 404
+    ? APP_PAGE_NOT_FOUND_BOUNDARY_ID
+    : `${APP_PAGE_NOT_FOUND_BOUNDARY_ID}:${statusCode}`;
+}
 
 function getAppPageSlotErrorNotFoundBoundary(error: unknown): string | null {
   if (!error || typeof error !== "object") return null;
@@ -384,44 +395,107 @@ export function resolveAppPageShellSpecialError(
 }
 
 /**
- * The parallel slot not-found boundaries that catch the `notFound()` that
- * rejected an SSR shell, or null when any copy the RSC render threw isn't
- * caught inside its slot. On the client, each slot's own not-found boundary
- * catches its signal while the rest of the route renders, as in Next.js,
- * which sends an empty error shell and renders them in the browser. A copy
- * no slot threw is caught by the page's boundary beside them when the page
- * threw it, including from a component the page renders, which nothing tags.
- * One a layout or a template threw renders outside the caught boundaries, so
- * the document's render from the same payload throws it again and takes the
- * fallback, which keeps it above the slot's layout (see
- * `resolveAppPageShellSpecialError`). Without a slot's, that fallback renders.
+ * The boundaries that catch the HTTP access fallback that rejected an SSR
+ * shell, or null when any copy the RSC render threw isn't caught in the tree.
+ * On the client, each slot's own not-found boundary catches its signal while
+ * the rest of the route renders, as in Next.js, which sends an empty error
+ * shell and renders them in the browser. A copy no slot threw is caught by the
+ * page's boundary beside them when the page threw it, including from a
+ * component the page renders, which nothing tags. One a layout or a template
+ * threw renders outside the caught boundaries, so the document's render from
+ * the same payload throws it again and takes the fallback, which keeps it
+ * above the slot's layout (see `resolveAppPageShellSpecialError`). Without a
+ * slot's, that fallback renders.
+ *
+ * With `catchesRouteSignals`, as for a route with parallel slots, the page's
+ * boundary also catches a signal only the page's subtree threw, as it wraps
+ * only the `children` of its segment and leaves the slots beside it
+ * rendering. The page's own component tags its copies. One a component in
+ * the page's subtree threw has no tag, so the document counts the copies
+ * that only the page's entry renders (`countPageRejections`), and every
+ * copy, tagged or not, must be one of them. A layout's, a template's or
+ * another copy nothing tags takes the fallback: the flat
+ * payload still renders the entries below a layout that threw, which Next.js
+ * never renders, so the document must not carry it. A template that throws
+ * renders none of the page's entry below it, so its copy rejects the shell
+ * before any of the page's does. A slot's forbidden() or unauthorized()
+ * takes the fallback too, as slots have only not-found boundaries.
+ *
+ * `renderedSpecialErrors` holds every access signal the RSC render threw,
+ * whatever its status: the page's forbidden() beside a slot's notFound() is
+ * caught by each one's own boundary, so the document enables both, and
+ * `countPageRejections` counts the page entry's copies of the given copy's
+ * digest.
  */
-export function resolveAppPageCaughtNotFoundBoundaries(
+export function resolveAppPageCaughtAccessBoundaries(
   error: unknown,
   renderedSpecialErrors: readonly unknown[],
+  options?: {
+    catchesRouteSignals?: boolean;
+    countPageRejections?: (rendered: unknown) => number;
+  },
 ): readonly string[] | null {
   const specialError = resolveAppPageSpecialError(error);
-  if (specialError?.kind !== "http-access-fallback" || specialError.statusCode !== 404) {
-    return null;
-  }
+  if (specialError?.kind !== "http-access-fallback") return null;
+  const catchesRouteSignals = options?.catchesRouteSignals === true;
+  if (specialError.statusCode !== 404 && !catchesRouteSignals) return null;
   if (isThrownNavigationError(error) || renderedSpecialErrors.length === 0) return null;
   const boundaries = new Set<string>();
   let caughtInSlot = false;
+  // The page's copies of each status, with one copy nothing tags, if any.
+  const pageCopies = new Map<number, { count: number; untagged?: unknown }>();
   for (const rendered of renderedSpecialErrors) {
-    if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
+    const renderedError = resolveAppPageSpecialError(rendered);
+    if (renderedError?.kind !== "http-access-fallback" || renderedError.fromMetadata === true) {
+      return null;
+    }
+    const { statusCode } = renderedError;
+    if (statusCode !== 404 && !catchesRouteSignals) return null;
     // A layout's own signal renders outside every slot's boundary.
     if (getAppPageLayoutErrorLayoutIndex(rendered) !== null) return null;
     const boundary = getAppPageSlotErrorNotFoundBoundary(rendered);
-    if (boundary !== null) {
+    if (boundary !== null && statusCode === 404) {
       caughtInSlot = true;
       boundaries.add(boundary);
     } else if (getAppPageSlotErrorLayoutIndex(rendered) === null) {
-      boundaries.add(APP_PAGE_NOT_FOUND_BOUNDARY_ID);
+      const copies = pageCopies.get(statusCode) ?? { count: 0 };
+      copies.count++;
+      if (!isAppPagePageError(rendered)) copies.untagged = rendered;
+      pageCopies.set(statusCode, copies);
+      boundaries.add(getAppPageAccessBoundaryCatcherId(statusCode));
     } else {
       return null;
     }
   }
-  return caughtInSlot ? Array.from(boundaries) : null;
+  // The page's subtree throws once on the client, and the boundary for that
+  // signal hides the rest of it. So beside copies of the shell's status, its
+  // copies of another are left out. Beside a slot's notFound(), its signal of
+  // another status counts only from the page's own component: one from a
+  // component it renders may sit in a subtree the document never renders.
+  const otherStatuses = Array.from(pageCopies.keys()).filter(
+    (status) => status !== specialError.statusCode,
+  );
+  if (pageCopies.has(specialError.statusCode)) {
+    for (const status of otherStatuses) {
+      pageCopies.delete(status);
+      boundaries.delete(getAppPageAccessBoundaryCatcherId(status));
+    }
+  } else if (
+    otherStatuses.length > 1 ||
+    Array.from(pageCopies.values()).some(({ untagged }) => untagged !== undefined)
+  ) {
+    return null;
+  }
+  const isPageCopies = ({ count, untagged }: { count: number; untagged?: unknown }) =>
+    untagged === undefined || (options?.countPageRejections?.(untagged) ?? 0) >= count;
+  const groups = Array.from(pageCopies);
+  const caughtInPage = catchesRouteSignals && groups.every(([, copies]) => isPageCopies(copies));
+  // Beside a slot's caught notFound(), the page's boundary takes an untagged
+  // 404 as the page's, while its forbidden() or unauthorized() must be shown
+  // to be the page's.
+  const caughtBesideSlot =
+    caughtInSlot && groups.every(([status, copies]) => status === 404 || isPageCopies(copies));
+  return caughtInPage || caughtBesideSlot ? Array.from(boundaries) : null;
 }
 
 /**

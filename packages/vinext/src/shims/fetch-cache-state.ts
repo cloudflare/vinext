@@ -16,6 +16,8 @@ export type FetchDedupeEntry = {
   key: string;
   promise: Promise<Response>;
   response: Response | null;
+  /** Callers that joined this entry and are still waiting for its response. */
+  waiters: number;
 };
 
 // ---------------------------------------------------------------------------

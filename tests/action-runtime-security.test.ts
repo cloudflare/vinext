@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { toSlash } from "pathslash";
 import rsc from "@vitejs/plugin-rsc";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { createBuilder } from "vite";
@@ -300,9 +301,11 @@ export default function Page() {
   });
 
   it("keeps offline-computable action ids harmless by enforcing route ownership", async () => {
-    const normalizedActionPath = path.relative(
-      fixtureRoot,
-      await fs.realpath(path.join(fixtureRoot, "app/admin/actions.ts")),
+    const normalizedActionPath = toSlash(
+      path.relative(
+        await fs.realpath(fixtureRoot),
+        await fs.realpath(path.join(fixtureRoot, "app/admin/actions.ts")),
+      ),
     );
     const offlineActionId = `${createHash("sha256").update(normalizedActionPath).digest("hex").slice(0, 12)}#deleteEverything`;
 
@@ -408,4 +411,54 @@ export default function Page() {
     expect([200, 404]).toContain(response.status);
     expect(await response.text()).not.toContain("LOOP_ACTION_EXECUTED");
   });
+});
+
+describe("production server actions on Windows", () => {
+  // Vite resolves the root to its on-disk spelling (`C:`); vinext must agree or every action 404s.
+  it.runIf(process.platform === "win32")(
+    "runs an action when the project root has a lowercase drive letter",
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-action-lowercase-drive-"));
+      try {
+        await fs.symlink(path.resolve("node_modules"), path.join(root, "node_modules"));
+        const files = {
+          "package.json": '{"type":"module"}\n',
+          "app/layout.tsx":
+            "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+          "app/actions.ts":
+            "'use server';\nexport async function ping() { return \"PING_ACTION_EXECUTED\"; }\n",
+          "app/page.tsx":
+            'import { ping } from "./actions";\nexport default function Page() { return <form action={ping}><button>ping</button></form>; }\n',
+        };
+        for (const [relativePath, contents] of Object.entries(files)) {
+          await fs.mkdir(path.dirname(path.join(root, relativePath)), { recursive: true });
+          await fs.writeFile(path.join(root, relativePath), contents);
+        }
+        const lowercaseDriveRoot = root[0].toLowerCase() + root.slice(1);
+
+        const builder = await createBuilder({
+          root: lowercaseDriveRoot,
+          configFile: false,
+          plugins: [
+            vinext({ appDir: lowercaseDriveRoot, rsc: false }),
+            rsc({ entries: RSC_ENTRIES }),
+          ],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+
+        const serverDir = path.join(root, "dist", "server");
+        const pingActionId = findActionId(await readBuiltJavaScript(serverDir), "ping");
+        const server = await import(pathToFileURL(path.join(serverDir, "index.js")).href);
+        const response = await (server.default as BuiltHandler)(
+          actionRequest("/", pingActionId, []),
+        );
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("PING_ACTION_EXECUTED");
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 });

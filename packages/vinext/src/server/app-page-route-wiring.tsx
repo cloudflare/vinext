@@ -3,10 +3,13 @@ import {
   AppElementsWire,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_RETAINED_ELEMENT_IDS_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_STATIC_SIBLINGS_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
+  APP_STREAMING_METADATA_OUTLET_ID_PREFIX,
   normalizeAppElementsSlotBindings,
   type AppElementValue,
   type AppElements,
@@ -41,10 +44,12 @@ import {
   BfcacheChildrenBoundary,
   BfcacheSegmentBoundary,
   Children,
+  HttpAccessFallbackSlot,
   ParallelSlot,
   Slot,
 } from "vinext/shims/slot";
 import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
+import { RouteFontsInsertion, type AppRouteFonts } from "vinext/shims/route-fonts";
 import { fnv1a64 } from "vinext/internal/utils/hash";
 import { createBfcacheChildSegmentStateKey } from "./bfcache-identity.js";
 import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
@@ -60,12 +65,13 @@ import {
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import {
-  APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+  getAppPageAccessBoundaryCatcherId,
   tagAppPageLayoutError,
   tagAppPageSlotError,
 } from "./app-page-execution.js";
 import { createAppPageLayoutGate, registerAppPageLayoutGate } from "./app-page-layout-gate.js";
 import { hashMountedLayoutIdentity } from "./app-mounted-layouts.js";
+import { keepsMountedSlot, type MountedSlots } from "./app-mounted-slots-header.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
@@ -83,6 +89,11 @@ import {
   isAppPageRouteGroupSegment,
 } from "./app-page-segment-state.js";
 import { createAppPageSegmentPlan } from "./app-page-segment-plan.js";
+import {
+  createAppPageRouteHeadRef,
+  resolveAppPageRouteHeadRef,
+  type AppPageRouteHeadRef,
+} from "./app-page-route-head-ref.js";
 import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
   resolveAppPageModuleTraceSegment,
@@ -297,6 +308,11 @@ type BuildAppPageRouteElementOptions<
    */
   resolveHead?: (() => AppPageRouteHead) | null;
   resolvedMetadataPathname?: string;
+  /**
+   * The route's server-component font rules and preloads, which the payload
+   * carries for the browser to add after a client navigation.
+   */
+  routeFonts?: AppRouteFonts | null;
   scriptNonce?: string;
   streamingMetadataOutletSuspended?: boolean;
   trailingSlash?: boolean;
@@ -392,6 +408,20 @@ type BuildAppPageElementsOptions<
   interception?: AppElementsInterception | null;
   interceptionId?: string | null;
   interceptionContext?: string | null;
+  /**
+   * The render is of the source route beneath a slot intercept, which renders
+   * only the intercepting route's tree: the layouts down to the intercepted
+   * slot's owner and that slot. It leaves the source page, with
+   * `retainsPage`, the layouts and templates below the owner, the other slots
+   * and, with `retainsHead`, the head for the client to keep (see
+   * app-retained-elements.ts).
+   */
+  interceptionSourceRetention?: Readonly<{
+    /** Tree position of the folder holding the intercepted slot's directory. */
+    ownerTreePosition?: number | null;
+    retainsHead: boolean;
+    retainsPage: boolean;
+  }> | null;
   isRscRequest?: boolean;
   /**
    * The render can never be stored and, in production, is never sent with
@@ -405,7 +435,8 @@ type BuildAppPageElementsOptions<
    * navigation diverges from the client's router state.
    */
   mountedLayouts?: ReadonlySet<string> | null;
-  mountedSlotIds?: ReadonlySet<string> | null;
+  /** The slots the navigating client holds (see app-mounted-slots-header.ts). */
+  mountedSlots?: MountedSlots | null;
   renderIdentity?: AppPageRenderIdentity;
   /**
    * The render has no PPR (see app-page-dispatch.ts), so a loading-shell
@@ -414,6 +445,12 @@ type BuildAppPageElementsOptions<
    */
   routeTreeOnlyPrefetchShell?: boolean;
   renderMode?: AppRscRenderMode;
+  /**
+   * The interception source the render shows the whole intercepting route
+   * for, when that source shares none of its tree (see
+   * app-page-element-builder.ts).
+   */
+  wholeInterceptionSource?: string | null;
   routePath: string;
   semanticPageIdentity?: Readonly<{
     boundSegmentKey: string;
@@ -826,7 +863,7 @@ function createAppPageSlotBindings<
 }
 
 function createAppPageRouteHead(
-  resolveHead: (() => AppPageRouteHead) | null | undefined,
+  head: AppPageRouteHeadRef<AppPageRouteHead> | null,
   pathname: string,
   metadataPlacement: "body" | "head",
   trailingSlash?: boolean,
@@ -834,11 +871,11 @@ function createAppPageRouteHead(
   return (
     <>
       <meta charSet="utf-8" />
-      {resolveHead ? (
+      {head ? (
         <AppPageHead
+          head={head}
           metadataPlacement={metadataPlacement}
           pathname={pathname}
-          resolveHead={resolveHead}
           trailingSlash={trailingSlash}
         />
       ) : (
@@ -852,12 +889,12 @@ function createAppPageRouteHead(
 // renders it, so generateMetadata() and generateViewport() share React's
 // cache() with the page instead of running before the render.
 async function AppPageHead(props: {
+  head: AppPageRouteHeadRef<AppPageRouteHead>;
   metadataPlacement: "body" | "head";
   pathname: string;
-  resolveHead: () => AppPageRouteHead;
   trailingSlash?: boolean;
 }): Promise<ReactNode> {
-  const head = props.resolveHead();
+  const head = resolveAppPageRouteHeadRef(props.head);
   const [metadata, viewport] = await Promise.all([
     props.metadataPlacement === "head" ? head.metadata : null,
     head.viewport,
@@ -934,13 +971,13 @@ export function createAppPageRouteBodyMetadata(
 }
 
 async function AppPageStreamingMetadata(props: {
+  head: AppPageRouteHeadRef<AppPageRouteHead>;
   pathname: string;
-  resolveHead: () => AppPageRouteHead;
   scriptNonce?: string;
   trailingSlash?: boolean;
 }): Promise<ReactNode> {
   try {
-    const metadata = await props.resolveHead().metadata;
+    const metadata = await resolveAppPageRouteHeadRef(props.head).metadata;
     return createAppPageRouteBodyMetadata(
       metadata,
       props.pathname,
@@ -957,9 +994,9 @@ async function AppPageStreamingMetadata(props: {
 AppPageStreamingMetadata.displayName = "Vinext.StreamingMetadata";
 
 async function AppPageMetadataOutlet(props: {
-  resolveHead: () => AppPageRouteHead;
+  head: AppPageRouteHeadRef<AppPageRouteHead>;
 }): Promise<null> {
-  return props.resolveHead().outlet;
+  return resolveAppPageRouteHeadRef(props.head).outlet;
 }
 AppPageMetadataOutlet.displayName = "Vinext.MetadataOutlet";
 
@@ -1004,10 +1041,11 @@ export function buildAppPageElements<
     ? resolveAppPageChildrenSlotId(options.route.childrenSlot)
     : pageId;
   const metadataPlacement = options.metadataPlacement ?? "head";
+  const headRef = options.resolveHead ? createAppPageRouteHeadRef(options.resolveHead) : null;
   // Head resolution can fail after the render has started, so every resolved
   // head gets an outlet that rethrows inside the route's boundaries.
   const streamingMetadataOutletId = options.resolveHead
-    ? `__vinext_streaming_metadata_outlet:${routeId}`
+    ? `${APP_STREAMING_METADATA_OUTLET_ID_PREFIX}${routeId}`
     : null;
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
@@ -1265,10 +1303,14 @@ export function buildAppPageElements<
   // and a [null, null] head. Leave the streamed generateMetadata() tags out of
   // it too. A shell that renders a loading boundary keeps them, as Next.js's
   // walkTreeWithFlightRouterState() returns rscHead with that shell.
+  // A kept head keeps the tags its own render placed: the route refers to its
+  // streamed body element, which the client holds only when that render
+  // placed them there.
   const streamingMetadataBodyId =
-    options.resolveHead &&
-    metadataPlacement === "body" &&
-    (!isPrefetchLoadingShell || shouldRenderPrefetchLoadingShell)
+    options.interceptionSourceRetention?.retainsHead === true ||
+    (options.resolveHead &&
+      metadataPlacement === "body" &&
+      (!isPrefetchLoadingShell || shouldRenderPrefetchLoadingShell))
       ? `${APP_STREAMING_METADATA_BODY_ID_PREFIX}${routeId}`
       : null;
   // The children spine must reach every slot owner whose branch has a loading
@@ -1322,6 +1364,88 @@ export function buildAppPageElements<
       skippedLayoutIds.add(layoutEntry.id);
     }
   }
+  const routeHeadId = `${APP_ROUTE_HEAD_ID_PREFIX}${routeId}`;
+  const retainedElementIds = new Set<string>();
+  const interceptionSourceRetention = options.interceptionSourceRetention ?? null;
+  // Below the intercepted slot's owner, the client keeps the source's segments,
+  // so their boundary fallbacks don't render either: a signal there passes up
+  // to the boundaries the intercepting tree renders.
+  let retainedSourceOwnerTreePosition: number | null = null;
+  if (interceptionSourceRetention !== null) {
+    const ownerLayoutId =
+      interception === null
+        ? undefined
+        : slotBindings.find((binding) => binding.slotId === interception.slotId)?.ownerLayoutId;
+    const ownerTreePosition = layoutEntries.find(
+      (entry) => entry.id === ownerLayoutId,
+    )?.treePosition;
+    if (interception === null || ownerTreePosition === undefined) {
+      throw new Error(
+        `[vinext] Missing the layout owning the intercepted slot of ${options.routePath}`,
+      );
+    }
+    // The folder holding the slot's directory can sit below its layout, and
+    // its segment's boundaries are the intercepting tree's.
+    retainedSourceOwnerTreePosition =
+      interceptionSourceRetention.ownerTreePosition ?? ownerTreePosition;
+    // A source without a page renders the same empty carrier here as in its
+    // own render, which the client can't tell from a loading shell's.
+    if (interceptionSourceRetention.retainsPage) retainedElementIds.add(pageElementId);
+    for (const entry of layoutEntries) {
+      if (entry.treePosition > ownerTreePosition) retainedElementIds.add(entry.id);
+    }
+    // A segment's template sits inside its layout and wraps only `children`,
+    // so the slot owner's own template is beneath it too.
+    for (const entry of templateEntries) {
+      if (entry.treePosition >= ownerTreePosition) retainedElementIds.add(entry.id);
+    }
+    for (const slotPlan of segmentPlan.slots) {
+      if (slotPlan.includedInPayload && slotPlan.slotId !== interception.slotId) {
+        retainedElementIds.add(slotPlan.slotId);
+      }
+    }
+    if (interceptionSourceRetention.retainsHead) {
+      retainedElementIds.add(routeHeadId);
+      if (streamingMetadataBodyId) retainedElementIds.add(streamingMetadataBodyId);
+    }
+  }
+  const isRetainedSourceTreePosition = (treePosition: number): boolean =>
+    retainedSourceOwnerTreePosition !== null && treePosition > retainedSourceOwnerTreePosition;
+  // The route's own boundaries wrap only its page, so they keep the client's
+  // fallback whenever it keeps the page, even with the slot in the page's
+  // own folder.
+  const keepsRouteFallbacks =
+    interceptionSourceRetention?.retainsPage === true ||
+    isRetainedSourceTreePosition(routeSegments.length);
+  // A route with parallel slots renders each access boundary's file as its own
+  // element, keyed by the route and the boundary's position, so a payload for
+  // an intercepted route can leave the ones the client keeps with the source
+  // segments, and a refresh of the source supplies them when the client holds
+  // none.
+  const rendersFallbackElements = Object.keys(options.route.slots ?? {}).length > 0;
+  const renderAccessFallback = (
+    status: 401 | 403 | 404,
+    position: number | "page",
+    retained: boolean,
+    fallback: ReactNode,
+  ): ReactNode => {
+    if (!retained && !rendersFallbackElements) return fallback;
+    const id = AppElementsWire.encodeRouteFallbackId(routeId, status, position);
+    if (retained) {
+      retainedElementIds.add(id);
+    } else {
+      // The keyed fragment keeps the entry present when the file renders
+      // nothing: Flight drops an entry whose component returns no value.
+      elements[id] = (
+        <Fragment key="fallback">
+          {pageRenderDependency
+            ? renderAfterAppDependencies(fallback, [pageRenderDependency])
+            : fallback}
+        </Fragment>
+      );
+    }
+    return <HttpAccessFallbackSlot id={id} status={status} />;
+  };
   const slotPlansByKey = new Map(segmentPlan.slots.map((slot) => [slot.key, slot]));
   const resolveRouteSegmentResetKey = (treePosition: number): string =>
     resolveAppPageSegmentStateKey(routeSegments, treePosition, options.matchedParams);
@@ -1331,9 +1455,11 @@ export function buildAppPageElements<
     interceptionContext,
     layoutIds: layoutEntries.map((entry) => entry.id),
     rootLayoutTreePath,
+    routeGraphId: options.route.ids?.route ?? null,
     routeId,
     sourcePage: createAppPageSourcePage(options.sourcePageSegments ?? routeSegments),
     slotBindings,
+    wholeInterceptionSource: options.wholeInterceptionSource ?? null,
   });
   if (isPrefetchEmpty) {
     return {
@@ -1384,20 +1510,18 @@ export function buildAppPageElements<
   if (options.route.staticSiblings && options.route.staticSiblings.length > 0) {
     elements[APP_STATIC_SIBLINGS_KEY] = options.route.staticSiblings;
   }
-  if (options.resolveHead && streamingMetadataBodyId) {
+  if (headRef && streamingMetadataBodyId && !retainedElementIds.has(streamingMetadataBodyId)) {
     elements[streamingMetadataBodyId] = (
       <AppPageStreamingMetadata
+        head={headRef}
         pathname={options.resolvedMetadataPathname ?? options.routePath}
-        resolveHead={options.resolveHead}
         scriptNonce={options.scriptNonce}
         trailingSlash={options.trailingSlash}
       />
     );
   }
-  if (options.resolveHead && streamingMetadataOutletId) {
-    elements[streamingMetadataOutletId] = (
-      <AppPageMetadataOutlet resolveHead={options.resolveHead} />
-    );
+  if (headRef && streamingMetadataOutletId) {
+    elements[streamingMetadataOutletId] = <AppPageMetadataOutlet head={headRef} />;
   }
   const getEffectiveSlotParams = (slotKey: string, _slotName: string): AppPageParams =>
     slotPlansByKey.get(slotKey)?.params ?? options.matchedParams;
@@ -1408,7 +1532,11 @@ export function buildAppPageElements<
     if (layoutIndex !== undefined) {
       const layoutEntry = layoutEntries[layoutIndex];
       layoutDependenciesBefore[layoutIndex] = [...pageDependencies];
-      if (!skippedLayoutIds.has(layoutEntry.id) && getDefaultExport(layoutEntry.layoutModule)) {
+      if (
+        !skippedLayoutIds.has(layoutEntry.id) &&
+        !retainedElementIds.has(layoutEntry.id) &&
+        getDefaultExport(layoutEntry.layoutModule)
+      ) {
         const layoutDependency = createAppRenderDependency();
         layoutDependenciesByIndex.set(layoutIndex, layoutDependency);
         pageDependencies.push(layoutDependency);
@@ -1417,7 +1545,11 @@ export function buildAppPageElements<
     }
 
     const templateEntry = templateEntriesByTreePosition.get(treePosition);
-    if (!templateEntry || !getDefaultExport(templateEntry.templateModule)) {
+    if (
+      !templateEntry ||
+      retainedElementIds.has(templateEntry.id) ||
+      !getDefaultExport(templateEntry.templateModule)
+    ) {
       continue;
     }
 
@@ -1474,16 +1606,19 @@ export function buildAppPageElements<
   ) : (
     pageContent
   );
-  elements[pageElementId] = isPrefetchLoadingShell
-    ? null
-    : pageRenderDependency
-      ? pageElement
-      : renderAfterAppDependencies(pageElement, pageDependencies);
+  if (!retainedElementIds.has(pageElementId)) {
+    elements[pageElementId] = isPrefetchLoadingShell
+      ? null
+      : pageRenderDependency
+        ? pageElement
+        : renderAfterAppDependencies(pageElement, pageDependencies);
+  }
 
   for (const templateEntry of templateEntries) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {
       continue;
     }
+    if (retainedElementIds.has(templateEntry.id)) continue;
     const templateComponent = getDefaultExport(templateEntry.templateModule);
     if (!templateComponent) {
       continue;
@@ -1532,7 +1667,7 @@ export function buildAppPageElements<
       continue;
     }
     // The client keeps the one it holds.
-    if (skippedLayoutIds.has(layoutEntry.id)) continue;
+    if (skippedLayoutIds.has(layoutEntry.id) || retainedElementIds.has(layoutEntry.id)) continue;
     if (!layoutEntry.layoutModule) continue;
     const layoutComponent = traceGetLayoutOrPageModule(
       resolveAppPageModuleTraceSegment(routeSegments, layoutEntry.treePosition),
@@ -1621,7 +1756,7 @@ export function buildAppPageElements<
       isPrefetchLoadingShell &&
       prefetchLoadingEntry !== null &&
       ownerTreePosition === prefetchLoadingEntry.treePosition;
-    if (!includedInPayload) continue;
+    if (!includedInPayload || retainedElementIds.has(slotId)) continue;
     const slotOwnerParams = resolveAppPageSegmentParams(
       options.route.routeSegments,
       layoutEntries[targetIndex]?.treePosition ?? 0,
@@ -1650,12 +1785,13 @@ export function buildAppPageElements<
     // On soft nav (RSC): omit key when only default.tsx exists and the slot is
     // already mounted on the client. Absent key means the browser retains prior
     // slot content rather than replacing it. When the slot is not yet mounted
-    // (first entry into this layout), include the key so default.tsx renders.
+    // (first entry into this layout), or its owner renders for other params,
+    // include the key so default.tsx renders.
     if (
       !resolvedOverrideOrPageComponent &&
       resolvedDefaultComponent &&
       options.isRscRequest &&
-      options.mountedSlotIds?.has(slotId)
+      keepsMountedSlot(options.mountedSlots, slotId, segmentPlan.bfcacheSegmentIdentities[slotId])
     ) {
       continue;
     }
@@ -2035,7 +2171,7 @@ export function buildAppPageElements<
         providerId={pageElementId}
         segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
       >
-        <Slot id={pageElementId} />
+        <Slot id={pageElementId} page />
       </LayoutSegmentProvider>
       {renderElementWithMetadataOutlet ? null : streamingMetadataOutlet}
     </>
@@ -2080,7 +2216,10 @@ export function buildAppPageElements<
       // Dynamic param changes reset the pending boundary, while search-only changes
       // preserve it.
       routeChildren = (
-        <Suspense key={routeResetKey} fallback={<RouteLoadingComponent />}>
+        <Suspense
+          key={routeResetKey}
+          fallback={keepsRouteFallbacks ? null : <RouteLoadingComponent />}
+        >
           {routeChildren}
         </Suspense>
       );
@@ -2153,37 +2292,49 @@ export function buildAppPageElements<
   const notFoundComponent =
     getDefaultExport(notFoundPageModule) ??
     (layoutEntries.length === 0 ? DEFAULT_NOT_FOUND_COMPONENT : null);
-  // The boundary that catches the page's own notFound(), the page-level one or
+  const forbiddenComponent = getDefaultExport(forbiddenPageModule);
+  const unauthorizedComponent = getDefaultExport(unauthorizedPageModule);
+  // The boundary that catches the page's own signal, the page-level one or
   // else the deepest segment's, carries an id so that a document whose slot
-  // boundaries catch their slots' signals renders it caught beside them.
+  // boundaries catch their slots' signals, or whose parallel slots render
+  // beside it, renders it caught (see `resolveAppPageCaughtAccessBoundaries`).
   // A sibling intercept page brings its own boundaries and renders only for
   // an RSC navigation, which never replays a caught document, so the source
   // route's boundaries carry no id then.
-  const identifiesPageNotFoundCatcher = !renderElementWithMetadataOutlet;
+  const identifiesPageCatchers = !renderElementWithMetadataOutlet;
   const isPageNotFoundCaughtAtPage =
-    identifiesPageNotFoundCatcher &&
-    notFoundComponent !== null &&
-    notFoundOwnerTreePosition === null;
-  let pageNotFoundCatcherTreePosition: number | null = null;
-  if (identifiesPageNotFoundCatcher && !isPageNotFoundCaughtAtPage) {
-    for (const treePosition of notFoundBoundaries.keys()) {
-      if (
-        pageNotFoundCatcherTreePosition === null ||
-        treePosition > pageNotFoundCatcherTreePosition
-      ) {
-        pageNotFoundCatcherTreePosition = treePosition;
-      }
+    identifiesPageCatchers && notFoundComponent !== null && notFoundOwnerTreePosition === null;
+  const isPageForbiddenCaughtAtPage =
+    identifiesPageCatchers && forbiddenComponent !== null && forbiddenOwnerTreePosition === null;
+  const isPageUnauthorizedCaughtAtPage =
+    identifiesPageCatchers &&
+    unauthorizedComponent !== null &&
+    unauthorizedOwnerTreePosition === null;
+  const resolvePageCatcherTreePosition = (
+    boundaries: ReadonlyMap<number, AppPageAccessBoundary<TModule>>,
+    isPageCaughtAtPage: boolean,
+  ): number | null => {
+    if (!identifiesPageCatchers || isPageCaughtAtPage) return null;
+    let deepest: number | null = null;
+    for (const treePosition of boundaries.keys()) {
+      if (deepest === null || treePosition > deepest) deepest = treePosition;
     }
-  }
+    return deepest;
+  };
+  const pageCatcherTreePositions = new Map([
+    [404, resolvePageCatcherTreePosition(notFoundBoundaries, isPageNotFoundCaughtAtPage)],
+    [403, resolvePageCatcherTreePosition(forbiddenBoundaries, isPageForbiddenCaughtAtPage)],
+    [401, resolvePageCatcherTreePosition(unauthorizedBoundaries, isPageUnauthorizedCaughtAtPage)],
+  ]);
   if (notFoundComponent) {
     const NotFoundComponent = notFoundComponent;
     routeChildren = (
       <NotFoundBoundary
         resetKey={routeResetKey}
-        caughtId={isPageNotFoundCaughtAtPage ? APP_PAGE_NOT_FOUND_BOUNDARY_ID : undefined}
+        caughtId={isPageNotFoundCaughtAtPage ? getAppPageAccessBoundaryCatcherId(404) : undefined}
         fallback={
           notFoundOwnerTreePosition === null ? (
-            <NotFoundComponent />
+            renderAccessFallback(404, "page", keepsRouteFallbacks, <NotFoundComponent />)
           ) : (
             <HttpAccessFallbackPassthrough status={404} />
           )
@@ -2194,15 +2345,15 @@ export function buildAppPageElements<
     );
   }
 
-  const forbiddenComponent = getDefaultExport(forbiddenPageModule);
   if (forbiddenComponent) {
     const ForbiddenComponent = forbiddenComponent;
     routeChildren = (
       <ForbiddenBoundary
         resetKey={routeResetKey}
+        caughtId={isPageForbiddenCaughtAtPage ? getAppPageAccessBoundaryCatcherId(403) : undefined}
         fallback={
           forbiddenOwnerTreePosition === null ? (
-            <ForbiddenComponent />
+            renderAccessFallback(403, "page", keepsRouteFallbacks, <ForbiddenComponent />)
           ) : (
             <HttpAccessFallbackPassthrough status={403} />
           )
@@ -2213,15 +2364,17 @@ export function buildAppPageElements<
     );
   }
 
-  const unauthorizedComponent = getDefaultExport(unauthorizedPageModule);
   if (unauthorizedComponent) {
     const UnauthorizedComponent = unauthorizedComponent;
     routeChildren = (
       <UnauthorizedBoundary
         resetKey={routeResetKey}
+        caughtId={
+          isPageUnauthorizedCaughtAtPage ? getAppPageAccessBoundaryCatcherId(401) : undefined
+        }
         fallback={
           unauthorizedOwnerTreePosition === null ? (
-            <UnauthorizedComponent />
+            renderAccessFallback(401, "page", keepsRouteFallbacks, <UnauthorizedComponent />)
           ) : (
             <HttpAccessFallbackPassthrough status={401} />
           )
@@ -2324,7 +2477,12 @@ export function buildAppPageElements<
       if (segmentLoadingComponent) {
         const SegmentLoadingComponent = segmentLoadingComponent;
         segmentChildren = (
-          <Suspense key={segmentResetKey || routeResetKey} fallback={<SegmentLoadingComponent />}>
+          <Suspense
+            key={segmentResetKey || routeResetKey}
+            fallback={
+              isRetainedSourceTreePosition(treePosition) ? null : <SegmentLoadingComponent />
+            }
+          >
             {segmentChildren}
           </Suspense>
         );
@@ -2335,9 +2493,9 @@ export function buildAppPageElements<
     // Building bottom-up means Loading must wrap the leaf subtree first, then
     // access/error boundaries, Template, and finally the Layout slot.
     const accessBoundaries = [
-      [notFoundBoundaries, NotFoundBoundary],
-      [forbiddenBoundaries, ForbiddenBoundary],
-      [unauthorizedBoundaries, UnauthorizedBoundary],
+      [notFoundBoundaries, NotFoundBoundary, 404],
+      [forbiddenBoundaries, ForbiddenBoundary, 403],
+      [unauthorizedBoundaries, UnauthorizedBoundary, 401],
     ] as const;
     // Like Next.js's, every access boundary clears when the visible pathname
     // changes, even under an intercepted route whose reset key stays the
@@ -2351,24 +2509,29 @@ export function buildAppPageElements<
       treePosition,
       options.matchedParams,
     );
-    for (const [boundaries, AccessBoundary] of accessBoundaries) {
+    for (const [boundaries, AccessBoundary, status] of accessBoundaries) {
       const boundary = boundaries.get(treePosition);
       if (!boundary) continue;
       const BoundaryComponent = boundary.component;
-      segmentChildren =
-        AccessBoundary === NotFoundBoundary && treePosition === pageNotFoundCatcherTreePosition ? (
-          <NotFoundBoundary
-            resetKey={accessResetKey}
-            fallback={<BoundaryComponent />}
-            caughtId={APP_PAGE_NOT_FOUND_BOUNDARY_ID}
-          >
-            {segmentChildren}
-          </NotFoundBoundary>
-        ) : (
-          <AccessBoundary resetKey={accessResetKey} fallback={<BoundaryComponent />}>
-            {segmentChildren}
-          </AccessBoundary>
-        );
+      const fallback = renderAccessFallback(
+        status,
+        treePosition,
+        isRetainedSourceTreePosition(treePosition),
+        <BoundaryComponent />,
+      );
+      segmentChildren = (
+        <AccessBoundary
+          resetKey={accessResetKey}
+          fallback={fallback}
+          caughtId={
+            treePosition === pageCatcherTreePositions.get(status)
+              ? getAppPageAccessBoundaryCatcherId(status)
+              : undefined
+          }
+        >
+          {segmentChildren}
+        </AccessBoundary>
+      );
     }
 
     const segmentErrorComponent = getErrorBoundaryExport(
@@ -2432,10 +2595,15 @@ export function buildAppPageElements<
       const slotOverride = resolveSlotOverride(slotKey, slotName);
       const hasActiveSlotPage =
         getDefaultExport(slotOverride?.pageModule) !== null || getDefaultExport(slot.page) !== null;
+      const slotId = resolveAppPageSlotId(slot, layoutEntry.treePath);
       const shouldPreserveMountedSlot =
         !hasActiveSlotPage &&
         options.isRscRequest &&
-        options.mountedSlotIds?.has(resolveAppPageSlotId(slot, layoutEntry.treePath));
+        keepsMountedSlot(
+          options.mountedSlots,
+          slotId,
+          segmentPlan.bfcacheSegmentIdentities[slotId],
+        );
       if (shouldPreserveMountedSlot) {
         continue;
       }
@@ -2493,14 +2661,23 @@ export function buildAppPageElements<
     </GlobalErrorBoundary>
   );
 
+  // The head is its own entry, so a payload can leave it out for the client to
+  // keep the one it holds while the layout tree beside it re-renders.
+  if (!retainedElementIds.has(routeHeadId)) {
+    const routeHead = createAppPageRouteHead(
+      headRef,
+      options.resolvedMetadataPathname ?? options.routePath,
+      metadataPlacement,
+      options.trailingSlash,
+    );
+    elements[routeHeadId] = pageRenderDependency
+      ? renderAfterAppDependencies(routeHead, [pageRenderDependency])
+      : routeHead;
+  }
   const routeElement = (
     <>
-      {createAppPageRouteHead(
-        options.resolveHead,
-        options.resolvedMetadataPathname ?? options.routePath,
-        metadataPlacement,
-        options.trailingSlash,
-      )}
+      <Slot id={routeHeadId} />
+      {options.routeFonts ? <RouteFontsInsertion {...options.routeFonts} /> : null}
       {routeChildren}
       {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
@@ -2527,6 +2704,7 @@ export function buildAppPageElements<
         }
       : {},
     skippedLayoutIds.size > 0 ? { [APP_SKIPPED_LAYOUT_IDS_KEY]: [...skippedLayoutIds] } : {},
+    retainedElementIds.size > 0 ? { [APP_RETAINED_ELEMENT_IDS_KEY]: [...retainedElementIds] } : {},
   );
   registerAppPageLayoutGate(elements, layoutGate);
   return elements;

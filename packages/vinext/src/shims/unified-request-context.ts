@@ -31,6 +31,7 @@ import type {
   RootParamsState,
   VinextHeadersShimState,
 } from "./request-state-types.js";
+import type { FetchDedupeEntry } from "./fetch-cache-state.js";
 
 export { markFullyBufferedBody, preserveFullyBufferedBodyMetadata };
 
@@ -59,6 +60,10 @@ export type UnifiedRequestContext = {
   /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   requestCache: WeakMap<(...args: any[]) => any, unknown>;
+
+  // ── server/app-page-route-head-ref.ts ─────────────────────────────
+  /** The page heads this request's route trees render, by the id in their props. */
+  appPageRouteHeads: Map<string, () => unknown>;
 
   // ── next/server after() ───────────────────────────────────────────
   /** Shared lifecycle state for work deferred until the response closes. */
@@ -94,6 +99,12 @@ export type AfterRequestContext = {
   onTaskError?: (error: unknown) => void;
   /** Discards `after()` callbacks registered from now on. */
   cancelled?: boolean;
+  /**
+   * The fetch dedupe maps this request's renders used, including those of
+   * nested scopes, released once the response closes. `null` once released:
+   * fetches from then on are not memoized.
+   */
+  fetchDedupeMaps?: Set<Map<string, FetchDedupeEntry[]>> | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -161,6 +172,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestSignal: null,
     requestCache: new WeakMap(),
+    appPageRouteHeads: new Map(),
     draftModeAtHeadersClear: false,
     afterContext: {
       callbacks: [],
@@ -260,6 +272,32 @@ export function bindRequestContextSnapshot<T>(
 }
 
 /**
+ * Drop the request's fetch dedupe entries once its response is done. Each entry
+ * keeps an unread branch of a fetch response, and on workerd that branch's
+ * stream holds the request's async context frame, whose storage holds this
+ * context through a strong handle: left in place, the entries would keep the
+ * context and its responses alive for the life of the isolate.
+ */
+function releaseFetchDedupeEntries(ctx: UnifiedRequestContext): void {
+  const maps = ctx.afterContext.fetchDedupeMaps;
+  ctx.afterContext.fetchDedupeMaps = null;
+  if (!maps) return;
+  for (const entriesByUrl of maps) {
+    for (const entries of entriesByUrl.values()) {
+      for (const entry of entries) {
+        // Callers that joined before the release still share the response;
+        // the last of them takes the kept branch (see dedupeFetch).
+        if (entry.waiters > 0) continue;
+        const body = entry.response?.body;
+        if (body && !body.locked) body.cancel().catch(() => {});
+        entry.response = null;
+      }
+    }
+    entriesByUrl.clear();
+  }
+}
+
+/**
  * Release function-form `after()` work once the response body has closed.
  * All queued callbacks start together, matching Next.js' unbounded PromiseQueue.
  */
@@ -267,6 +305,7 @@ export async function closeAfterResponse(ctx: UnifiedRequestContext): Promise<vo
   const state = ctx.afterContext;
   if (!state.responseClosed) {
     state.responseClosed = true;
+    releaseFetchDedupeEntries(ctx);
     const callbacks = state.callbacks.splice(0);
     for (const callback of callbacks) startAfterCallback(ctx, callback);
     finishAfterCallbacksIfIdle(ctx);
@@ -315,6 +354,8 @@ export function closeAfterResponseWithBody(
   }
 
   if (isFullyBufferedBody(response) && !requiresResponseCloseTracking(ctx)) {
+    // The body is complete, so the render is done with its fetches.
+    releaseFetchDedupeEntries(ctx);
     return response;
   }
 
@@ -405,7 +446,7 @@ export function runWithUnifiedStateMutation<T>(
   // pendingCdnTagInvalidations), Set
   // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
   // dynamicFetchUrls),
-  // Map fields (_privateCache),
+  // Map fields (_privateCache, appPageRouteHeads),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,
   // requestScopedCacheLife, renderDynamicLatch) still share references with

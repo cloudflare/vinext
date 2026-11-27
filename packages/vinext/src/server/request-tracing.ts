@@ -156,6 +156,35 @@ export function consumeFrameworkRequestRoute(response: Response): Response {
   return fullyBuffered ? markFullyBufferedBody(cleaned) : cleaned;
 }
 
+type RequestTraceState = {
+  carriedError: Error | undefined;
+  route: string | undefined;
+  isRsc: boolean;
+};
+
+/**
+ * Build the request's trace store outside `traceFrameworkRequest`'s scopes, so
+ * its methods close over `state` alone. Defined inline, they would share the
+ * callback's closure context, which holds the request's `Response` (`result`
+ * and the resolved `resultPromise`). On workerd every async context frame that
+ * carries the store holds it through a strong handle, and a fully buffered
+ * response's body stream, created inside the store's frame, keeps that frame:
+ * the request and its response would never be collected.
+ */
+function createActiveRequestTrace(state: RequestTraceState): ActiveRequestTrace {
+  return {
+    recordError(error) {
+      state.carriedError = error;
+    },
+    setRoute(nextRoute, nextIsRsc, replace) {
+      if (replace || (state.route === undefined && nextRoute !== undefined)) {
+        state.route = nextRoute;
+      }
+      if (nextIsRsc !== undefined) state.isRsc = nextIsRsc;
+    },
+  };
+}
+
 export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T> {
   if (activeRequestTrace.getStore() && !input.detached) return input.callback();
 
@@ -180,40 +209,29 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
           type: "BaseServer.handleRequest",
         },
         async (span) => {
-          let carriedError: Error | undefined;
-          let route: string | undefined;
-          let isRsc = input.isRsc ?? false;
+          const state: RequestTraceState = {
+            carriedError: undefined,
+            route: undefined,
+            isRsc: input.isRsc ?? false,
+          };
           let result: T | undefined;
           let spanFinalized = false;
           const finalizeSpan = () => {
             if (spanFinalized) return;
             spanFinalized = true;
             finalizeFrameworkRequestSpan({
-              carriedError,
+              carriedError: state.carriedError,
               input,
-              isRsc,
+              isRsc: state.isRsc,
               method,
               parentSpan,
               result,
-              route,
+              route: state.route,
               span,
             });
           };
           try {
-            result = await activeRequestTrace.run(
-              {
-                recordError(error) {
-                  carriedError = error;
-                },
-                setRoute(nextRoute, nextIsRsc, replace) {
-                  if (replace || (route === undefined && nextRoute !== undefined)) {
-                    route = nextRoute;
-                  }
-                  if (nextIsRsc !== undefined) isRsc = nextIsRsc;
-                },
-              },
-              input.callback,
-            );
+            result = await activeRequestTrace.run(createActiveRequestTrace(state), input.callback);
             finalizeSpan();
             if (
               result instanceof Response &&

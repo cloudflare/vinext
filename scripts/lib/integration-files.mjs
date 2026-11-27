@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("../../", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 export function discoverIntegrationFiles() {
   let raw;

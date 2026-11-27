@@ -19,6 +19,7 @@ import {
 import { flushSync } from "react-dom";
 import { createRoot, hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
+import { AppRouterAnnouncer } from "../client/app-router-announcer.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   __basePath,
@@ -104,24 +105,30 @@ import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.j
 import { createAppRouteTree } from "./app-route-tree.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
+  ROUTE_MISS_DOCUMENT_NAVIGATION,
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
 } from "./app-browser-interception-context.js";
+import { getRouteMissInterceptionSourceHref } from "./app-interception-context-header.js";
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   resolveServerActionOperationLane,
+  resolveServerActionReturnValue,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
 } from "./app-browser-action-result.js";
 import {
+  createInterceptionSourceRefreshMerge,
   createSupplementalRefreshCoordinator,
-  mergeRefreshedParallelSlot,
   requireCompleteSupplementalRefresh,
   resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
+  resolveKeptSlots,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
+  supplyRetainedElements,
+  takesSupplementalRefreshes,
 } from "./app-browser-supplemental-refresh.js";
 import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
 import {
@@ -130,8 +137,10 @@ import {
   hydrateRootInTransition,
   resolveFetchedHydrationLocation,
 } from "./app-browser-hydration.js";
+import { stripBasePath } from "../utils/base-path.js";
 import {
   AppElementsWire,
+  bindAppElementsSlotRefreshPathname,
   getMountedSlotIdsHeader,
   resolveVisitedResponseInterceptionContext,
   type AppElements,
@@ -150,6 +159,7 @@ import {
   readHistoryStatePreviousNextUrl,
   resolveActiveRoutePaths,
   resolveInterceptionContextFromPreviousNextUrl,
+  resolveNavigationInterceptionSource,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type HistoryTraversalIntent,
@@ -164,6 +174,7 @@ import {
   findVisitedResponseForFullPrefetch,
   hasNavigationResponseHistoryLifetime,
   revokeHistoryRestoreNavigationReuse,
+  isVisitedResponseCacheEntryForPreviousNextUrl,
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
@@ -228,6 +239,10 @@ import {
 } from "./app-optimistic-routing.js";
 import { createMountedLayoutsHeader, holdsSkippedLayouts } from "./app-mounted-layouts.js";
 import {
+  resolveCommittedInterceptionSource,
+  resolveHeldRetainedElementIds,
+} from "./app-retained-elements.js";
+import {
   VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
@@ -238,6 +253,7 @@ import { stripRscCompletionMetadataResponse } from "./rsc-completion-metadata.js
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
 import {
   navigationPlanner,
+  type InterceptionSourceIdentity,
   type NavigationReuseFacts,
   type VisitedResponseCacheCandidateFacts,
 } from "./navigation-planner.js";
@@ -459,7 +475,13 @@ let clientNavigationCacheGeneration = 0;
 // the HMR handler to distinguish "still hydrating" (wait) from "was up, then
 // torn down by a render error" (full reload to recover).
 let browserRouterStateHasEverCommitted = false;
-let initialPrefetchRouterState: { pathAndSearch: string; routeId: string } | null = null;
+let initialPrefetchRouterState: {
+  pathAndSearch: string;
+  routeId: string;
+  routeMiss: boolean;
+  sourceInterceptionContext: null;
+  sourcePathname: null;
+} | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
 // Next.js loads every hard navigation through the router's MPA state, which
@@ -665,6 +687,51 @@ async function fetchPersistedSourcePageRefresh(options: {
 }
 
 /**
+ * The source pages to fetch for a payload for an intercepted route that the
+ * current state can't keep the source page beneath. Such a payload leaves
+ * that page for the state showing it to keep; one that reached another state,
+ * as a traversal back to it or a navigation from the whole intercepting route
+ * can, fetches the page from its own URL, as a refresh does.
+ */
+function resolveUnheldSourcePageRefreshes(
+  elements: AppElements,
+  targetUrl: URL,
+  previousNextUrl: string | null,
+): string[] {
+  if (resolveHeldRetainedElementIds(getBrowserRouterState(), elements, previousNextUrl) !== null) {
+    return [];
+  }
+  return resolvePersistedSourcePageRefreshes({
+    activeRoutePaths: [],
+    basePath: __basePath,
+    refreshUrl: targetUrl,
+    state: { previousNextUrl, slotBindings: [] },
+  });
+}
+
+function supplyUnheldSourcePages(
+  primary: Promise<AppElements>,
+  targetPathnames: readonly string[],
+  signal: AbortSignal,
+): ReturnType<typeof resolveSupplementalRefreshes<AppElements>> {
+  // The state the navigation started from is not the source's, so the request
+  // names no mounted slots for the server to leave out.
+  return resolveSupplementalRefreshes({
+    merge: supplyRetainedElements,
+    primary,
+    signal,
+    supplemental: targetPathnames.map(
+      (targetPathname) => (supplementalSignal: AbortSignal) =>
+        fetchPersistedSourcePageRefresh({
+          mountedSlotsHeader: null,
+          signal: supplementalSignal,
+          targetPathname,
+        }),
+    ),
+  });
+}
+
+/**
  * Decode a kept branch a refresh fetched from its own URL. Its client pages
  * read the query the server rendered it with, not the navigation's.
  */
@@ -688,7 +755,12 @@ async function decodeSupplementalRefresh(
     elements,
     new URL(renderedPathAndSearch ?? targetPathname, window.location.origin).search,
   );
-  return elements;
+  // The slots it rendered are refetched at the URL it was fetched from, like
+  // the slots a navigation commits.
+  return bindAppElementsSlotRefreshPathname(
+    elements,
+    stripBasePath(new URL(targetPathname, window.location.origin).pathname, __basePath),
+  );
 }
 
 function isSettledPrefetchCacheEntry(
@@ -862,6 +934,7 @@ type RenderNavigationPayloadOptions = {
   restoredBfcacheIds?: Readonly<Record<string, string>> | null;
   reuseCurrentBfcacheIds?: boolean;
   scrollIntent?: AppRouterScrollIntent | null;
+  suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   targetHref: string;
   traversalIntent?: HistoryTraversalIntent | null;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
@@ -890,6 +963,7 @@ async function renderNavigationPayload(
     restoredBfcacheIds: options.restoredBfcacheIds ?? null,
     reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
     scrollIntent: options.scrollIntent ?? null,
+    suppliedInterceptionSource: options.suppliedInterceptionSource ?? null,
     targetHistoryIndex: options.traversalIntent?.targetHistoryIndex,
     targetHref: options.targetHref,
     visibleCommitMode: options.visibleCommitMode ?? "transition",
@@ -913,13 +987,14 @@ async function commitSameUrlNavigatePayload(
     if (routeManifestLoad !== null) routeManifestLoaded = await routeManifestLoad;
     // Persisted interceptions and commit approval need the manifest. An action
     // that still owns the router reloads its page, like a hard-navigate commit
-    // decision. A superseded one goes on to the commit below, which discards it.
+    // decision, and still settles with its result. A superseded one goes on to
+    // the commit below, which discards it.
     if (
       !routeManifestLoaded &&
       browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
     ) {
       browserNavigationController.performHardNavigation(actionInitiation.href);
-      return undefined;
+      return resolveServerActionReturnValue(returnValue);
     }
   }
   if (revalidation !== "none" && routeManifestLoaded) {
@@ -939,20 +1014,24 @@ async function commitSameUrlNavigatePayload(
       basePath: __basePath,
       refreshUrl,
       state: actionInitiation.routerState,
-    }).filter(
-      (sourcePathname) =>
-        !persistedInterceptions.some(
-          (interception) => interception.targetPathname === sourcePathname,
-        ),
-    );
+    });
     if (persistedInterceptions.length > 0 || sourcePageRefreshes.length > 0) {
       supplementalHandle = serverActionSupplementalRefreshCoordinator.begin({
         activeNavigationId: browserNavigationController.getActiveNavigationId(),
         startedNavigationId: actionInitiation.navigationId,
       });
       const mountedSlotsHeader = getMountedSlotIdsHeader(actionInitiation.routerState.elements);
-      const supplemental = persistedInterceptions.map(
-        (interception) => (signal: AbortSignal) =>
+      // The source page an intercepted state names goes beneath the re-render
+      // only when the server rendered it as an intercept from that source.
+      const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+        basePath: __basePath,
+        keptSlots: resolveKeptSlots(actionInitiation.routerState.slotBindings),
+        previousNextUrl: actionInitiation.routerState.previousNextUrl,
+        refreshUrl,
+      });
+      const primaryElements = nextElements;
+      const supplemental = persistedInterceptions.map((interception) =>
+        sourcePageRefreshMerge.loadIntercepted(interception, primaryElements, (signal) =>
           fetchPersistedInterceptedSlotRefresh({
             interceptionContext: interception.interceptionContext,
             interceptionId: interception.interception.id,
@@ -960,19 +1039,28 @@ async function commitSameUrlNavigatePayload(
             signal,
             targetPathname: interception.targetPathname,
           }),
+        ),
       );
       for (const sourcePageRefresh of sourcePageRefreshes) {
-        supplemental.push((signal) =>
-          fetchPersistedSourcePageRefresh({
-            mountedSlotsHeader,
-            signal,
-            targetPathname: sourcePageRefresh,
-          }),
+        const load = persistedInterceptions.some(
+          (interception) => interception.targetPathname === sourcePageRefresh,
+        )
+          ? sourcePageRefreshMerge.loadLeftSlots
+          : sourcePageRefreshMerge.load;
+        supplemental.push(
+          load(sourcePageRefresh, primaryElements, (signal) =>
+            fetchPersistedSourcePageRefresh({
+              mountedSlotsHeader,
+              signal,
+              targetPathname: sourcePageRefresh,
+            }),
+          ),
         );
       }
       nextElements = resolveSupplementalRefreshes({
-        merge: mergeRefreshedParallelSlot,
-        primary: nextElements,
+        merge: sourcePageRefreshMerge.merge,
+        mergesInto: takesSupplementalRefreshes,
+        primary: primaryElements,
         signal: supplementalHandle.signal,
         supplemental,
       }).then((result) => {
@@ -1052,10 +1140,16 @@ function readVisitedResponseCacheCandidate(
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
   navigationKind: NavigationKind,
+  previousNextUrl: string | null,
 ): VisitedResponseCacheCandidate {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const match = findVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
-  if (!match || match.entry.navigationReuseRevoked) {
+  if (
+    !match ||
+    match.entry.navigationReuseRevoked ||
+    (navigationKind === "traverse" &&
+      !isVisitedResponseCacheEntryForPreviousNextUrl(match.entry, previousNextUrl))
+  ) {
     return {
       cacheKey,
       entry: null,
@@ -1122,6 +1216,7 @@ function storeVisitedResponseSnapshot(
   prefetchSnapshot: CachedRscResponse = snapshot,
   reuseAfterHistoryRestore: boolean = false,
   fromHydration: boolean = false,
+  previousNextUrl: string | null = null,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   // Router-state fingerprints intentionally give requests for the same visible
@@ -1138,6 +1233,7 @@ function storeVisitedResponseSnapshot(
     now,
     mountedSlotsHeader: requestMountedSlotsHeader,
     params,
+    previousNextUrl,
     response: snapshot,
     reuseAfterHistoryRestore,
   });
@@ -1170,9 +1266,17 @@ function clientNavigationSnapshotHref(snapshot: ClientNavigationRenderSnapshot):
 }
 
 type NavigationRequestState = {
+  /** Load the target's document, as Next.js does, instead of fetching it. */
+  documentNavigation?: true;
   interceptionContext: string | null;
   previousNextUrl: string | null;
 };
+
+// A render without a source page is the not-found page of a URL that matched
+// no route; a matched route's own notFound() keeps its route's segments.
+function isRouteMissRender(elements: AppElements): boolean {
+  return AppElementsWire.readMetadata(elements).sourcePage === null;
+}
 
 function getCurrentMatchedRoutePathname(): string | null {
   const routeKey = AppElementsWire.parseElementKey(getBrowserRouterState().routeId);
@@ -1203,27 +1307,49 @@ function getRequestState(
   // 3. otherwise, send no interception context.
   switch (navigationKind) {
     case "navigate": {
-      const currentPreviousNextUrl = getBrowserRouterState().previousNextUrl;
-      if (currentPreviousNextUrl !== null) {
-        return {
-          interceptionContext: resolveInterceptionContextFromPreviousNextUrl(
-            currentPreviousNextUrl,
-            __basePath,
-          ),
-          previousNextUrl: currentPreviousNextUrl,
-        };
+      const currentRouterState = getBrowserRouterState();
+      const navigationSource = resolveNavigationInterceptionSource(currentRouterState, __basePath);
+      const currentPreviousNextUrl = navigationSource.previousNextUrl;
+      const keptSource =
+        currentPreviousNextUrl === null
+          ? null
+          : {
+              interceptionContext: resolveInterceptionContextFromPreviousNextUrl(
+                currentPreviousNextUrl,
+                __basePath,
+              ),
+              previousNextUrl: currentPreviousNextUrl,
+            };
+      // An entry that renders an intercepting route's own tree sends the
+      // source it keeps only to the targets its tree path intercepts.
+      if (keptSource !== null && navigationSource.pathname === null) {
+        return keptSource;
       }
+      const currentPathname = navigationSource.pathname ?? window.location.pathname;
+      const currentRenderIsRouteMiss = isRouteMissRender(currentRouterState.elements);
+      // The source an intercepted state keeps, for its refreshes and
+      // traversals. An unmatched URL's not-found page sends /_not-found, as
+      // Next.js keeps that tree path as its `Next-Url`.
+      const currentSourceHref = currentRenderIsRouteMiss
+        ? getRouteMissInterceptionSourceHref(__basePath)
+        : window.location.pathname + window.location.search;
       const manifestInterceptionContext = resolveManifestNavigationInterceptionContext({
         basePath: __basePath,
-        currentPathname: window.location.pathname,
+        currentPathname,
+        currentRenderIsRouteMiss,
         routeManifest: getBrowserRouteManifest(),
         targetPathname,
       });
+      if (manifestInterceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION) {
+        return { documentNavigation: true, interceptionContext: null, previousNextUrl: null };
+      }
       if (manifestInterceptionContext !== null) {
-        return {
-          interceptionContext: manifestInterceptionContext,
-          previousNextUrl: window.location.pathname + window.location.search,
-        };
+        return (
+          keptSource ?? {
+            interceptionContext: manifestInterceptionContext,
+            previousNextUrl: currentSourceHref,
+          }
+        );
       }
       // Fallback: when the current page is a declared interception source and
       // the target URL still matches the declared target prefix, send the
@@ -1240,17 +1366,24 @@ function getRequestState(
       const middlewareRewriteInterceptionContext =
         resolveMiddlewareRewriteNavigationInterceptionContext({
           basePath: __basePath,
-          currentMatchedPathname: getCurrentMatchedRoutePathname(),
-          currentPathname: window.location.pathname,
+          // The intercepting route's tree path is the only one it navigates from.
+          currentMatchedPathname:
+            navigationSource.pathname === null ? getCurrentMatchedRoutePathname() : null,
+          currentPathname,
+          currentRenderIsRouteMiss,
           routeManifest: getBrowserRouteManifest(),
           targetPathname,
         });
+      if (middlewareRewriteInterceptionContext === ROUTE_MISS_DOCUMENT_NAVIGATION) {
+        return { documentNavigation: true, interceptionContext: null, previousNextUrl: null };
+      }
       if (middlewareRewriteInterceptionContext !== null) {
-        const currentHrefForFallback = window.location.pathname + window.location.search;
-        return {
-          interceptionContext: middlewareRewriteInterceptionContext,
-          previousNextUrl: currentHrefForFallback,
-        };
+        return (
+          keptSource ?? {
+            interceptionContext: middlewareRewriteInterceptionContext,
+            previousNextUrl: currentSourceHref,
+          }
+        );
       }
       return {
         interceptionContext: null,
@@ -1372,7 +1505,10 @@ function BrowserRoot({
   initialNavigationSnapshot: ClientNavigationRenderSnapshot;
 }) {
   const resolvedElements = use(initialElements);
-  const initialMetadata = AppElementsWire.readMetadata(resolvedElements);
+  // The slots the document rendered are refetched at the document's URL.
+  const initialMetadata = AppElementsWire.readMetadata(
+    bindAppElementsSlotRefreshPathname(resolvedElements, initialNavigationSnapshot.pathname),
+  );
   const [treeStateValue, setTreeStateValue] = useState<
     AppRouterState | Promise<AppRouterState> | MpaNavigationState
   >(() => ({
@@ -1534,6 +1670,9 @@ function BrowserRoot({
       createAppRouteTree({
         elements: treeState.elements,
         historyCommit: createElement(NavigationHistoryCommit, { renderId: treeState.renderId }),
+        // Keyed on the committed route payload, like Next.js keys its
+        // announcer on the committed router tree.
+        routeAnnouncer: createElement(AppRouterAnnouncer, { tree: treeState.elements }),
         routeId: treeState.routeId,
       }),
     ),
@@ -1902,6 +2041,28 @@ function registerServerActionCallback(): void {
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
             if (target.type === "push") saveScrollPosition();
+            // The redirect's render intercepts from the context the action
+            // sent, like a navigation's, and fetches the source page beneath
+            // it when the current state doesn't show that page.
+            let payload = Promise.resolve(elements);
+            const sourcePageRefreshes = resolveUnheldSourcePageRefreshes(
+              elements,
+              new URL(target.href, window.location.href),
+              actionInitiation.routerState.previousNextUrl,
+            );
+            if (sourcePageRefreshes.length > 0) {
+              const sourcePageHandle = serverActionSupplementalRefreshCoordinator.begin({
+                activeNavigationId: browserNavigationController.getActiveNavigationId(),
+                startedNavigationId: actionInitiation.navigationId,
+              });
+              payload = supplyUnheldSourcePages(
+                payload,
+                sourcePageRefreshes,
+                sourcePageHandle.signal,
+              )
+                .finally(() => sourcePageHandle.finish())
+                .then(requireCompleteSupplementalRefresh);
+            }
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
@@ -1914,14 +2075,21 @@ function registerServerActionCallback(): void {
               navId: actionInitiation.navigationId,
               operationLane: resolveServerActionOperationLane(revalidation),
               params: {},
-              payload: Promise.resolve(elements),
+              payload,
               payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
               pendingRouterState: null,
-              previousNextUrl: null,
+              // The action, and so its redirect's render, sent the context of
+              // the state it began in. Like Next.js, the redirect's entry keeps
+              // it when that render intercepted; any other render clears it.
+              previousNextUrl: actionInitiation.routerState.previousNextUrl,
               scrollIntent: actionScrollIntent,
               targetHref: target.href,
             }).catch(() => {
-              browserNavigationController.performHardNavigation(target.href);
+              // A newer navigation aborts the source page's fetch, and owns
+              // the document now.
+              if (browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)) {
+                browserNavigationController.performHardNavigation(target.href);
+              }
             });
           },
           syncCurrentHistoryState: (previousNextUrl, bfcacheIds) =>
@@ -2005,6 +2173,9 @@ function bootstrapHydration(
     initialPrefetchRouterState = {
       pathAndSearch: initialPathAndSearch,
       routeId: AppElementsWire.readMetadata(elements).routeId,
+      routeMiss: isRouteMissRender(elements),
+      sourceInterceptionContext: null,
+      sourcePathname: null,
     };
     return elements;
   });
@@ -2285,6 +2456,10 @@ function bootstrapHydration(
           currentPrevNextUrl,
           activeTraversalIntent?.historyState,
         );
+        if (requestState.documentNavigation === true) {
+          performHardNavigationForScrollIntent(currentHref);
+          return;
+        }
         const requestInterceptionContext = requestState.interceptionContext;
         const requestPreviousNextUrl = requestState.previousNextUrl;
         const shouldSupplementVisibleBranches =
@@ -2312,15 +2487,6 @@ function bootstrapHydration(
                 navigationKind === "traverse"
                   ? { previousNextUrl: requestPreviousNextUrl, slotBindings: [] }
                   : navigationInitiationState,
-            }).filter((sourcePathAndSearch) => {
-              if (
-                persistedRefreshInterceptions.some(
-                  (interception) => interception.targetPathname === sourcePathAndSearch,
-                )
-              ) {
-                return false;
-              }
-              return true;
             })
           : [];
         const hasSupplementalRefresh =
@@ -2431,6 +2597,7 @@ function bootstrapHydration(
               requestInterceptionContext,
               mountedSlotsHeader,
               navigationKind,
+              requestPreviousNextUrl,
             );
         const visitedResponseDecision = navigationPlanner.classifyVisitedResponseCacheCandidate(
           visitedResponseCandidate.facts,
@@ -2551,6 +2718,17 @@ function bootstrapHydration(
             restoredBfcacheIds,
             reuseCurrentBfcacheIds,
             scrollIntent,
+            // A traversal back to a tree this client committed for an
+            // intercepted route shows the source that commit put beneath it,
+            // as one whose response arrives fresh shows the source it fetched.
+            // It trusts the tree as only an approved commit stores one there
+            // outside hydration.
+            suppliedInterceptionSource:
+              navigationKind === "traverse" &&
+              cachedRoute.elements &&
+              cachedRoute.fromHydration !== true
+                ? resolveCommittedInterceptionSource(cachedRoute.elements)
+                : null,
             targetHref: currentHref,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
@@ -2851,8 +3029,25 @@ function bootstrapHydration(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
         if (hasSupplementalRefresh) {
-          const supplemental = persistedRefreshInterceptions.map(
-            (interception) => (signal: AbortSignal) =>
+          // A refresh or traversal renders the source page an intercepted
+          // state names beside the target. It goes beneath the target's payload
+          // only when the server rendered that payload as an intercept from
+          // that source.
+          const sourcePageRefreshMerge = createInterceptionSourceRefreshMerge({
+            basePath: __basePath,
+            keptSlots:
+              navigationKind === "traverse"
+                ? null
+                : resolveKeptSlots(navigationInitiationState.slotBindings),
+            previousNextUrl:
+              navigationKind === "traverse"
+                ? requestPreviousNextUrl
+                : navigationInitiationState.previousNextUrl,
+            refreshUrl: url,
+          });
+          const primaryPayload = Promise.resolve(rscPayload);
+          const supplemental = persistedRefreshInterceptions.map((interception) =>
+            sourcePageRefreshMerge.loadIntercepted(interception, primaryPayload, (signal) =>
               fetchPersistedInterceptedSlotRefresh({
                 interceptionContext: interception.interceptionContext,
                 interceptionId: interception.interception.id,
@@ -2860,19 +3055,36 @@ function bootstrapHydration(
                 signal,
                 targetPathname: interception.targetPathname,
               }),
+            ),
           );
+          // A traversal learns from its payload whether it takes the source
+          // page; one that doesn't neither waits for nor fails with it.
           for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
-            supplemental.push((signal) =>
-              fetchPersistedSourcePageRefresh({
-                mountedSlotsHeader,
-                signal,
-                targetPathname: persistedSourcePageRefresh,
-              }),
+            const load = persistedRefreshInterceptions.some(
+              (interception) => interception.targetPathname === persistedSourcePageRefresh,
+            )
+              ? sourcePageRefreshMerge.loadLeftSlots
+              : sourcePageRefreshMerge.load;
+            supplemental.push(
+              load(persistedSourcePageRefresh, primaryPayload, (signal) =>
+                fetchPersistedSourcePageRefresh({
+                  // A traversal starts from another entry's state, whose
+                  // mounted slots aren't the ones the intercepted payload
+                  // leaves to it.
+                  mountedSlotsHeader:
+                    navigationKind === "traverse" && requestInterceptionContext !== null
+                      ? null
+                      : mountedSlotsHeader,
+                  signal,
+                  targetPathname: persistedSourcePageRefresh,
+                }),
+              ),
             );
           }
           rscPayload = resolveSupplementalRefreshes({
-            merge: mergeRefreshedParallelSlot,
-            primary: Promise.resolve(rscPayload),
+            merge: sourcePageRefreshMerge.merge,
+            mergesInto: takesSupplementalRefreshes,
+            primary: primaryPayload,
             signal: navigationAbortHandle.signal,
             supplemental,
           })
@@ -2899,6 +3111,31 @@ function bootstrapHydration(
             continue;
           }
           rscPayload = Promise.resolve(elements);
+        }
+
+        // A payload for an intercepted route leaves the source page beneath it
+        // for the state showing that page to keep.
+        if (!hasSupplementalRefresh && requestInterceptionContext !== null) {
+          const elements = await rscPayload;
+          if (!browserNavigationController.isCurrentNavigation(navId)) return;
+          rscPayload = Promise.resolve(elements);
+          const sourcePageRefreshes = resolveUnheldSourcePageRefreshes(
+            elements,
+            url,
+            requestPreviousNextUrl,
+          );
+          if (sourcePageRefreshes.length > 0) {
+            // The Flight response above is already React's, so this request
+            // takes its own handle, which a newer navigation aborts.
+            const sourcePageAbortHandle = navigationAbortCoordinator.begin();
+            rscPayload = supplyUnheldSourcePages(
+              rscPayload,
+              sourcePageRefreshes,
+              sourcePageAbortHandle.signal,
+            )
+              .finally(() => sourcePageAbortHandle.release())
+              .then(requireCompleteSupplementalRefresh);
+          }
         }
 
         // Static hosts cannot supply the compatibility response header used by
@@ -3049,6 +3286,7 @@ function bootstrapHydration(
             const committedElements = {
               ...state.elements,
               [AppElementsWire.keys.layoutIds]: state.layoutIds,
+              [AppElementsWire.keys.retainedElementIds]: [],
               [AppElementsWire.keys.skippedLayoutIds]: [],
               [AppElementsWire.keys.slotBindings]: state.slotBindings,
             } satisfies AppElements;
@@ -3064,10 +3302,16 @@ function bootstrapHydration(
               DYNAMIC_NAVIGATION_CACHE_TTL,
               mountedSlotsHeader,
               committedElements,
-              // A payload that left out layouts only fits the state it merged into.
-              isCompleteAppPayloadMetadata(metadata),
+              // A payload that left out layouts only fits the state it merged
+              // into. One that leaves the source's elements beneath an
+              // intercepted route for the client to keep still replays as a
+              // prefetch: the navigation that consumes it fetches the source
+              // page when its state doesn't hold them, as for a fresh response.
+              metadata.skippedLayoutIds.length === 0,
               prefetchSnapshot,
               interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
+              false,
+              state.previousNextUrl,
             );
           }
         } catch {
@@ -3116,9 +3360,16 @@ function bootstrapHydration(
         return initialPrefetchRouterState;
       }
       const state = browserNavigationController.getBrowserRouterState();
+      const navigationSource = resolveNavigationInterceptionSource(state, __basePath);
       return {
         pathAndSearch: createSnapshotPathAndSearch(state.navigationSnapshot),
         routeId: state.routeId,
+        routeMiss: isRouteMissRender(state.elements),
+        sourceInterceptionContext: resolveInterceptionContextFromPreviousNextUrl(
+          navigationSource.previousNextUrl,
+          __basePath,
+        ),
+        sourcePathname: navigationSource.pathname,
       };
     },
     navigate: navigateRsc,

@@ -796,13 +796,18 @@ describe("Link App Router prefetch mode", () => {
         prefetchShellFirst: false,
         shouldPrefetch: true,
       });
+      // A middleware or proxy rewrite can still serve an href the manifest
+      // doesn't match, so it is prefetched as a learning-only shell. Next.js's
+      // createPrefetchURL() (client/components/app-router-utils.ts) only skips
+      // bots, development and external URLs.
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,
-        dynamicStaleTime: "verbatim",
+        dynamicStaleTime: "ignore",
         fallbackTtl: "static",
         prefetchShellFirst: false,
-        shouldPrefetch: false,
+        shouldPrefetch: true,
       });
+      expect(resolveAutoAppRoutePrefetch("https://example.com/about").shouldPrefetch).toBe(false);
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as any).window;

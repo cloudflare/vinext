@@ -1,7 +1,8 @@
-import { stripBasePath } from "../utils/base-path.js";
+import { restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   AppElementsWire,
+  bindAppElementsSlotRefreshPathname,
   getMountedSlotIds,
   getMountedSlotIdsHeader,
   type AppElements,
@@ -9,6 +10,7 @@ import {
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import { holdsSkippedLayouts } from "./app-mounted-layouts.js";
+import { resolveHeldRetainedElementIds } from "./app-retained-elements.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
 import {
   NEXT_ACTION_HEADER,
@@ -27,6 +29,7 @@ import { createCacheEntryReuseProof, type CacheEntryReuseProof } from "./cache-p
 import {
   navigationPlanner,
   resolveDefaultOrUnmatchedSlotPersistenceForLayouts,
+  type InterceptionSourceIdentity,
   type MountedParallelSlotSnapshot,
   type NavigationDecision,
   type OperationLane,
@@ -135,6 +138,9 @@ export type PendingNavigationCommit = {
   routeId: string;
   restoredHistorySnapshot?: boolean;
   skippedLayoutIds: readonly string[];
+  // The source beneath the intercepted tree a traversal restores, which this
+  // client committed over that source.
+  suppliedInterceptionSource?: InterceptionSourceIdentity;
 };
 
 export type AppNavigationPayloadOrigin = Readonly<
@@ -156,6 +162,7 @@ type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
 type CacheRestorableAppPayloadMetadata = Readonly<{
   cacheEntryReuseProof?: CacheEntryReuseProof;
   dynamicStaleTimeSeconds?: number;
+  retainedElementIds: readonly string[];
   skippedLayoutIds: readonly string[];
 }>;
 type DispatchPendingNavigationCommitDispositionDecision = {
@@ -163,6 +170,9 @@ type DispatchPendingNavigationCommitDispositionDecision = {
   preserveAbsentSlots: boolean;
   preserveElementIds: readonly string[];
   preservePreviousSlotIds: readonly string[];
+  // Elements the payload left for the client to keep, kept from the current
+  // state whatever the lane's own preservation rules would keep.
+  retainedElementIds?: readonly string[];
   trace: NavigationTrace;
 };
 type NonDispatchPendingNavigationCommitDispositionDecision = {
@@ -194,7 +204,7 @@ function createOperationRecord(options: {
 }
 
 export function isCompleteAppPayloadMetadata(metadata: CacheRestorableAppPayloadMetadata): boolean {
-  return metadata.skippedLayoutIds.length === 0;
+  return metadata.skippedLayoutIds.length === 0 && metadata.retainedElementIds.length === 0;
 }
 
 export function isCacheRestorableAppPayloadMetadata(
@@ -335,18 +345,19 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     options.currentState.activeOperation?.navigationId === options.startedNavigationId &&
     options.currentState.activeOperation.navigationCommitKind === "detached" &&
     options.pending.action.operation.navigationCommitKind === "authoritative";
-  // A navigation this one superseded can still advance the version: React may
-  // already be rendering its tree, or committed it before this payload
-  // arrived. That is not newer state than this navigation's, so as in Next.js
-  // the latest navigation commits on top of it. HMR passes its render id as
+  // A commit approved under an older navigation id can still advance the
+  // version: React may render a superseded navigation's tree, or a server
+  // action's revalidation, only after this navigation started. Commits are
+  // approved only while their navigation id is active, so that state was
+  // dispatched before this navigation began. As in Next.js, the latest
+  // navigation commits on top of it. HMR passes its render id as
   // startedNavigationId, so only a pending navigation compares ids.
-  const isSupersededNavigationCommit =
+  const isOlderNavigationCommit =
     options.pending.action.operation.navigationId === options.startedNavigationId &&
-    options.currentState.activeOperation?.lane === "navigation" &&
-    options.currentState.activeOperation.navigationId !== undefined &&
+    options.currentState.activeOperation?.navigationId !== undefined &&
     options.currentState.activeOperation.navigationId < options.startedNavigationId;
   const visibleCommitVersion =
-    isAuthoritativeSameNavigationHandoff || isSupersededNavigationCommit
+    isAuthoritativeSameNavigationHandoff || isOlderNavigationCommit
       ? options.pending.action.operation.startedVisibleCommitVersion
       : options.currentState.visibleCommitVersion;
   const verdict = verifyOperationTokenForCommit(token, {
@@ -379,9 +390,13 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     }),
   );
 
-  return mergeSkippedLayoutPreservation({
+  return mergeRetainedElementPreservation({
     currentState: options.currentState,
-    decision,
+    decision: mergeSkippedLayoutPreservation({
+      currentState: options.currentState,
+      decision,
+      pending: options.pending,
+    }),
     pending: options.pending,
   });
 }
@@ -443,6 +458,7 @@ function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshot {
       routeId: state.routeId,
     }),
     slotBindings: state.slotBindings,
+    wholeInterceptionSource: AppElementsWire.readMetadata(state.elements).wholeInterceptionSource,
   };
 }
 
@@ -466,6 +482,8 @@ function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnap
       routeId: pending.routeId,
     }),
     slotBindings: pending.action.slotBindings,
+    wholeInterceptionSource: AppElementsWire.readMetadata(pending.action.elements)
+      .wholeInterceptionSource,
   };
 }
 
@@ -525,6 +543,9 @@ function planPendingRootBoundaryFlightResponse(options: {
       result: {
         ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
         ...(options.pending.restoredHistorySnapshot ? { restoredHistorySnapshot: true } : {}),
+        ...(options.pending.suppliedInterceptionSource
+          ? { suppliedInterceptionSource: options.pending.suppliedInterceptionSource }
+          : {}),
         // Approval call sites must pass the executor's targetHref so the
         // planner trace and future hard-nav executor agree with the browser
         // URL. The fallback remains for lower-level tests and direct disposition
@@ -629,6 +650,36 @@ function mergeSkippedLayoutPreservation(options: {
   };
 }
 
+function mergeRetainedElementPreservation(options: {
+  currentState: AppRouterState;
+  decision: PendingNavigationCommitDispositionDecision;
+  pending: PendingNavigationCommit;
+}): PendingNavigationCommitDispositionDecision {
+  if (options.decision.disposition !== "dispatch") return options.decision;
+  const retainedElementIds = resolveHeldRetainedElementIds(
+    options.currentState,
+    options.pending.action.elements,
+    options.pending.previousNextUrl,
+  );
+  if (retainedElementIds?.length === 0) return options.decision;
+  // The navigation fetches what its state doesn't hold before it commits, so
+  // a payload that still names elements the state can't keep commits as a
+  // document navigation, never as a tree missing them. A detached commit only
+  // shows early what its navigation's own payload commits, so it leaves that
+  // payload to decide.
+  if (retainedElementIds === null || !options.pending.action.reuseCurrentBfcacheIds) {
+    return {
+      disposition:
+        options.pending.action.operation.navigationCommitKind === "detached"
+          ? "skip"
+          : "hard-navigate",
+      preserveElementIds: [],
+      trace: options.decision.trace,
+    };
+  }
+  return { ...options.decision, retainedElementIds };
+}
+
 function mergeSkippedLayoutSlotPreservation(options: {
   currentSlotBindings: readonly AppElementsSlotBinding[];
   preservePreviousSlotIds: readonly string[];
@@ -672,13 +723,87 @@ type CreatePendingNavigationCommitOptions = {
   renderId: number;
   restoredBfcacheIds?: BfcacheIdMap | null;
   reuseCurrentBfcacheIds?: boolean;
+  suppliedInterceptionSource?: InterceptionSourceIdentity | null;
   type: "navigate" | "replace" | "traverse";
 };
+
+// Next.js's interception markers, which only an intercepting route's
+// segments start with.
+const INTERCEPTION_MARKERS = ["(..)(..)", "(.)", "(..)", "(...)"] as const;
+
+function isInterceptionMarkerSegment(segment: string): boolean {
+  return INTERCEPTION_MARKERS.some((marker) => segment.startsWith(marker));
+}
+
+/** Whether a payload renders a sibling intercept, the intercepting route's own page. */
+export function rendersSiblingIntercept(metadata: {
+  interceptionContext: string | null;
+  sourcePage: string | null;
+}): boolean {
+  return (
+    metadata.interceptionContext !== null &&
+    metadata.sourcePage !== null &&
+    metadata.sourcePage.split("/").some(isInterceptionMarkerSegment)
+  );
+}
+
+export type NavigationInterceptionSource = {
+  /** The source the entry keeps, which its navigations send. */
+  previousNextUrl: string | null;
+  /**
+   * The path of the intercepting route's tree the entry renders, which decides
+   * whether a navigation intercepts, or null when the kept source decides.
+   */
+  pathname: string | null;
+};
+
+/**
+ * Where navigations and prefetches from an entry take their interception
+ * context. An intercepted entry sends the source it keeps. One that renders an
+ * intercepting route's own tree, a sibling intercept or a whole intercepting
+ * route, intercepts only the targets that tree's path intercepts, as Next.js's
+ * `nextUrl` stops at the interception marker: the path of the folders above
+ * the marker, with the source's values for their params. Those navigations
+ * still send the source it keeps, a page the server can check, and its
+ * refreshes and traversals send it whatever their target.
+ */
+export function resolveNavigationInterceptionSource(
+  state: Pick<AppRouterState, "elements" | "previousNextUrl">,
+  basePath: string,
+): NavigationInterceptionSource {
+  const source = resolveInterceptionContextFromPreviousNextUrl(state.previousNextUrl, basePath);
+  const metadata = AppElementsWire.readMetadata(state.elements);
+  const segments = metadata.sourcePage?.slice(1).split("/") ?? [];
+  const markerIndex = segments.findIndex(isInterceptionMarkerSegment);
+  // A whole intercepting route's source page runs through the slot's folders
+  // to the marker; one without a marker stops at the owner.
+  const ownerSegments =
+    source === null
+      ? null
+      : metadata.wholeInterceptionSource !== null
+        ? segments.slice(0, markerIndex === -1 ? -1 : markerIndex)
+        : rendersSiblingIntercept(metadata)
+          ? segments.slice(0, markerIndex)
+          : null;
+  if (source === null || ownerSegments === null) {
+    return { previousNextUrl: state.previousNextUrl, pathname: null };
+  }
+  const pathSegments = ownerSegments.filter((segment) => !/^\(.*\)$/.test(segment));
+  const ownerPath = pathSegments.some((segment) => /^\[{1,2}\.\.\./.test(segment))
+    ? source
+    : `/${source.split("/").filter(Boolean).slice(0, pathSegments.length).join("/")}`;
+  return { previousNextUrl: state.previousNextUrl, pathname: restoreBasePath(ownerPath, basePath) };
+}
 
 export function createPendingNavigationCommitFromElements(
   options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
 ): PendingNavigationCommit {
-  const elements = options.nextElements;
+  // The slots this response rendered are refetched at the URL it was
+  // committed for, the snapshot's pathname.
+  const elements = bindAppElementsSlotRefreshPathname(
+    options.nextElements,
+    options.navigationSnapshot.pathname,
+  );
   // Before any merge into the visible tree: a page still streaming when a
   // later navigation keeps its branch first renders under that navigation,
   // but reads the query of the response that delivered it.
@@ -693,7 +818,17 @@ export function createPendingNavigationCommitFromElements(
     options.previousNextUrl !== undefined
       ? options.previousNextUrl
       : options.currentState.previousNextUrl;
-  const previousNextUrl = metadata.interception === null ? null : requestedPreviousNextUrl;
+  // A payload of the whole intercepting route carries no interception proof,
+  // but still renders for its source, so a refresh or traversal sends that
+  // source again, as Next.js re-sends `previousNextUrl`. So does a sibling
+  // intercept's, whose page is the intercepting route's own, as Next.js does
+  // while its tree holds an interception route.
+  const previousNextUrl =
+    metadata.interception === null &&
+    metadata.wholeInterceptionSource === null &&
+    !rendersSiblingIntercept(metadata)
+      ? null
+      : requestedPreviousNextUrl;
 
   return {
     action: {
@@ -734,6 +869,9 @@ export function createPendingNavigationCommitFromElements(
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,
     skippedLayoutIds: metadata.skippedLayoutIds,
+    ...(options.suppliedInterceptionSource
+      ? { suppliedInterceptionSource: options.suppliedInterceptionSource }
+      : {}),
   };
 }
 

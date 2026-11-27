@@ -279,6 +279,7 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       }
       for (const ir of slot.interceptingRoutes) {
         imports.getLazyLoaderVar(ir.pagePath);
+        if (ir.ownerDefaultPath) imports.getLazyLoaderVar(ir.ownerDefaultPath);
         if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
         for (const forbiddenPath of ir.forbiddenPaths ?? []) {
           imports.getLazyLoaderVar(forbiddenPath);
@@ -417,6 +418,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           interceptNotFoundTreePositions: ${JSON.stringify(ir.notFoundTreePositions ?? [])},
           page: null,
           __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
+          ownerDefault: null,
+          __loadOwnerDefault: ${ir.ownerDefaultPath ? imports.getLazyLoaderVar(ir.ownerDefaultPath) : "null"},
           notFound: null,
           __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath) : "null"},
           notFoundTreePosition: ${ir.notFoundTreePosition ?? "null"},

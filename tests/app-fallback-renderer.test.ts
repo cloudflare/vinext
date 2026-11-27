@@ -70,11 +70,15 @@ function createRenderer(overrides?: {
           if (!preloads || preloads.length === 0) return "";
           return preloads.map((p) => `<${p.href}>; rel=preload`).join(", ");
         },
+        getFontOwners(route: { pattern?: string } | null, render?: "global-not-found") {
+          if (render) return [render];
+          return route?.pattern === undefined ? ["routeless"] : [`route:${route.pattern}`];
+        },
         getFontLinks() {
           return ["/styles.css"];
         },
-        getFontPreloads() {
-          return [{ href: "/font.woff2", type: "font/woff2" }];
+        getFontPreloads(owners?: readonly string[] | null) {
+          return [{ href: `/font.woff2?owners=${owners?.join(",") ?? "all"}`, type: "font/woff2" }];
         },
         getFontStyles() {
           return [".font { font-family: Test; }"];
@@ -178,6 +182,47 @@ describe("app fallback renderer factory", () => {
 
     expect(responseA?.status).toBe(404);
     expect(responseB?.status).toBe(404);
+  });
+
+  // Issue #4810: a fallback render carries the fonts of the route it renders
+  // for, or of a render without a matched route.
+  it("scopes font preloads to the rendered route", async () => {
+    const { renderer } = createRenderer();
+    const routeResponse = await renderer.renderNotFound(
+      { notFound: notFoundModule, params: {}, pattern: "/posts/[slug]" },
+      false,
+      new Request("https://example.com/posts/missing"),
+      undefined,
+      undefined,
+      { headers: null, status: null },
+    );
+    const routelessResponse = await renderer.renderNotFound(
+      null,
+      false,
+      new Request("https://example.com/missing"),
+      undefined,
+      undefined,
+      { headers: null, status: null },
+    );
+    const errorResponse = await renderer.renderErrorBoundary(
+      { error: routeErrorModule, params: {}, pattern: "/broken" },
+      new Error("boom"),
+      false,
+      new Request("https://example.com/broken"),
+      undefined,
+      undefined,
+      { headers: null, status: null },
+    );
+
+    expect(routeResponse?.headers.get("link")).toBe(
+      "</font.woff2?owners=route:/posts/[slug]>; rel=preload",
+    );
+    expect(routelessResponse?.headers.get("link")).toBe(
+      "</font.woff2?owners=routeless>; rel=preload",
+    );
+    expect(errorResponse?.headers.get("link")).toBe(
+      "</font.woff2?owners=route:/broken>; rel=preload",
+    );
   });
 
   it("delegates renderNotFound to renderHttpAccessFallback with status 404", async () => {
@@ -569,6 +614,7 @@ describe("app fallback renderer default global error UI", () => {
       createRscOnErrorHandler: () => () => null,
       fontProviders: {
         buildFontLinkHeader: () => "",
+        getFontOwners: () => null,
         getFontLinks: () => [],
         getFontPreloads: () => [],
         getFontStyles: () => [],
@@ -713,6 +759,10 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     expect(html).toContain("global-not-found");
     // Root layout was NOT applied — it would have rendered <html lang="en">.
     expect(html).not.toContain('lang="en"');
+    // Nor its fonts: the render reads global-not-found's own (issue #4810).
+    expect(response?.headers.get("link")).toBe(
+      "</font.woff2?owners=global-not-found>; rel=preload",
+    );
   });
 
   it("keeps the request that starts the global-not-found import alive until it settles", async () => {
@@ -843,6 +893,11 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     expect(html).not.toContain('lang="en"');
     expect((html?.match(/<html/gi) ?? []).length).toBe(1);
     expect((html?.match(/<body/gi) ?? []).length).toBe(1);
+    // It renders without the root layout, so without its fonts either: it
+    // reads the global-not-found render's owners, not the routeless ones.
+    expect(response?.headers.get("link")).toBe(
+      "</font.woff2?owners=global-not-found>; rel=preload",
+    );
   });
 
   it("keeps root not-found for explicit notFound when global-not-found is absent", async () => {

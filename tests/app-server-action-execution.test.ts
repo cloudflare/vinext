@@ -1744,7 +1744,7 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
     expect(buildPageElement).toHaveBeenCalledWith(
       expect.objectContaining({
-        interceptOpts: { slot: "modal" },
+        interceptOpts: { rendersInterceptionSource: true, slot: "modal" },
         params: sourceParams,
         route: sourceRoute,
       }),
@@ -3919,6 +3919,142 @@ describe("app server action execution helpers", () => {
     modeSpy.mockRestore();
     revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
+  });
+
+  // Like an intercepted navigation, the whole intercepting route re-renders
+  // under its source's params, root params included.
+  it("re-renders a whole intercepting route under its source's root params", async () => {
+    const ownerRoute: TestRoute = {
+      id: "[lang]/club/[slug]",
+      page: {},
+      params: ["lang", "slug"],
+      pattern: "/:lang/club/:slug",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "club", "[slug]"],
+    };
+    const targetRoute: TestRoute = {
+      id: "[lang]/club/[slug]/pics/[id]",
+      page: {},
+      params: ["lang", "slug", "id"],
+      pattern: "/:lang/club/:slug/pics/:id",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "club", "[slug]", "pics", "[id]"],
+    };
+    let rendered!: { lang: Promise<string | string[] | undefined>; route: TestRoute };
+    const buildPageElement = vi.fn((options: { route: TestRoute }) => {
+      rendered = { lang: getRootParam("lang"), route: options.route };
+      return "intercepted-page";
+    });
+
+    const response = await runWithRootParamsScope({ lang: "fr" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement,
+          cleanPathname: "/fr/club/static/pics/1",
+          currentRouteMatch: {
+            params: { id: "1", lang: "fr", slug: "static" },
+            route: targetRoute,
+          },
+          currentRoutePathname: "/fr/club/static/pics/1",
+          findIntercept() {
+            return {
+              matchedParams: { id: "1", lang: "en", slug: "static" },
+              page: { default: "modal-pic" },
+              rendersWholeInterceptingRoute: true,
+              slotKey: "modal",
+              sourceMatchedParams: { lang: "en", slug: "static" },
+              sourceRouteIndex: 1,
+            };
+          },
+          getSourceRoute(sourceRouteIndex) {
+            return sourceRouteIndex === 1 ? ownerRoute : undefined;
+          },
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              await Promise.resolve(revalidatePath("/fr/club/static/pics/1"));
+              return "revalidated";
+            });
+          },
+          toInterceptOpts(intercept) {
+            return {
+              interceptBranchSegments: ["(.)pics", "[id]"],
+              interceptPage: intercept.page,
+              interceptSlotKey: intercept.slotKey,
+              slot: intercept.slotKey,
+            };
+          },
+        }),
+      ),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(rendered.route).toBe(ownerRoute);
+    await expect(rendered.lang).resolves.toBe("en");
+  });
+
+  it("re-renders a slot interception's source under the source's root params", async () => {
+    const sourceRoute: TestRoute = {
+      id: "[lang]/feed",
+      page: {},
+      params: ["lang"],
+      pattern: "/:lang/feed",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "feed"],
+    };
+    const targetRoute: TestRoute = {
+      id: "[lang]/photos/[id]",
+      page: {},
+      params: ["lang", "id"],
+      pattern: "/:lang/photos/:id",
+      rootParamNames: ["lang"],
+      routeSegments: ["[lang]", "photos", "[id]"],
+    };
+    let rendered!: { lang: Promise<string | string[] | undefined>; route: TestRoute };
+    const buildPageElement = vi.fn((options: { route: TestRoute }) => {
+      rendered = { lang: getRootParam("lang"), route: options.route };
+      return "intercepted-page";
+    });
+
+    const response = await runWithRootParamsScope({ lang: "fr" }, () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          buildPageElement,
+          cleanPathname: "/fr/photos/1",
+          currentRouteMatch: { params: { id: "1", lang: "fr" }, route: targetRoute },
+          currentRoutePathname: "/fr/photos/1",
+          findIntercept() {
+            return {
+              matchedParams: { id: "1", lang: "fr" },
+              page: { default: "modal-photo" },
+              slotKey: "modal",
+              sourceMatchedParams: { lang: "en" },
+              sourceRouteIndex: 1,
+            };
+          },
+          getSourceRoute(sourceRouteIndex) {
+            return sourceRouteIndex === 1 ? sourceRoute : undefined;
+          },
+          loadServerAction() {
+            return Promise.resolve(async () => {
+              await Promise.resolve(revalidatePath("/fr/photos/1"));
+              return "revalidated";
+            });
+          },
+          toInterceptOpts(intercept) {
+            return {
+              interceptBranchSegments: ["photos", "[id]"],
+              interceptPage: intercept.page,
+              interceptSlotKey: intercept.slotKey,
+              slot: intercept.slotKey,
+            };
+          },
+        }),
+      ),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(rendered.route).toBe(sourceRoute);
+    await expect(rendered.lang).resolves.toBe("en");
   });
 
   it("takes a same-route intercepted re-render's fetch defaults from the interception", async () => {

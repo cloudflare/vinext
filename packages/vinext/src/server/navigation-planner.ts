@@ -3,7 +3,7 @@ import {
   matchRoutePatternPrefix,
   matchRoutePatternWithOptionalDynamicSegments,
 } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { normalizePathnameForRouteMatch, splitPathnameForRouteMatch } from "../routing/utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import type {
   BrowserRouteManifest,
@@ -36,6 +36,7 @@ import {
   type NavigationTraceFields,
   type NavigationTraceReasonCode,
 } from "./navigation-trace.js";
+import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
 import {
   verifyOperationTokenForCacheReuse,
   type OperationLane,
@@ -60,6 +61,8 @@ export type RouteSnapshot = {
   displayUrl: string;
   matchedUrl: string;
   slotBindings: readonly ParallelSlotBindingSnapshot[];
+  /** The source a payload renders the whole intercepting route for. */
+  wholeInterceptionSource: string | null;
 };
 
 export type InterceptionSnapshot = {
@@ -161,6 +164,9 @@ export type FlightResult = {
   cacheEntryReuseProof?: CacheEntryReuseProof;
   href: string;
   restoredHistorySnapshot?: boolean;
+  // The source beneath the intercepted tree a traversal restores, which this
+  // client committed over that source.
+  suppliedInterceptionSource?: InterceptionSourceIdentity;
   targetSnapshot: RouteSnapshot;
 };
 
@@ -947,11 +953,46 @@ function resolveRouteManifestRootLayoutTreePath(
   return routeManifest.segmentGraph.rootBoundaries.get(route.rootBoundaryId)?.treePath ?? null;
 }
 
+/**
+ * The topology a payload of the whole intercepting route rendered: the slot
+ * owner's layouts and root layout, which the direct target route's need not
+ * share. Its root layout must head its layouts and be a root boundary the
+ * manifest knows, as its slot bindings name only its layouts.
+ */
+function resolveRenderedRouteTopologySnapshot(
+  routeManifest: BrowserRouteManifest,
+  snapshot: RouteSnapshot,
+): RouteTopologyResolution {
+  const rootLayoutTreePath = snapshot.rootBoundaryId;
+  if (
+    rootLayoutTreePath === null ||
+    snapshot.layoutIds[0] !== AppElementsWire.encodeLayoutId(rootLayoutTreePath)
+  ) {
+    return { kind: "unknown" };
+  }
+  for (const rootBoundary of routeManifest.segmentGraph.rootBoundaries.values()) {
+    if (rootBoundary.treePath !== rootLayoutTreePath) continue;
+    return {
+      kind: "known",
+      topology: {
+        layoutIds: snapshot.layoutIds,
+        rootBoundaryId: rootBoundary.id,
+        rootLayoutTreePath,
+        slotBindings: snapshot.slotBindings,
+      },
+    };
+  }
+  return { kind: "unknown" };
+}
+
 function resolveRouteTopologySnapshot(options: {
   routeManifest: BrowserRouteManifest | null;
   slotBindingSource: RouteTopologySlotBindingSource;
   snapshot: RouteSnapshot;
 }): RouteTopologyResolution {
+  if (options.routeManifest !== null && options.snapshot.wholeInterceptionSource !== null) {
+    return resolveRenderedRouteTopologySnapshot(options.routeManifest, options.snapshot);
+  }
   const route =
     options.routeManifest === null
       ? null
@@ -1267,7 +1308,7 @@ function resolveInterceptedSourceSlotPersistenceForLayouts(options: {
   return preservedSlotIds.sort(compareAppElementsSlotIds);
 }
 
-type VisibleInterceptionSourceIdentity = {
+export type InterceptionSourceIdentity = {
   matchedUrl: string;
   routeId: string;
 };
@@ -1285,12 +1326,24 @@ type InterceptedPreservationValidation =
 
 function getVisibleInterceptionSourceIdentity(
   snapshot: RouteSnapshot,
-): VisibleInterceptionSourceIdentity {
+  routeManifest: BrowserRouteManifest | null,
+): InterceptionSourceIdentity {
   if (snapshot.interception) {
     return {
       matchedUrl: snapshot.interception.sourceMatchedUrl,
       routeId: snapshot.interception.sourceRouteId,
     };
+  }
+  // The whole intercepting route renders for its source too, though it carries
+  // no interception proof. A link in it intercepts from that same source, as
+  // Next.js keeps sending it as `Next-Url`, so it names the source the way an
+  // interception proof does, once the manifest knows a route for it.
+  const wholeSource = snapshot.wholeInterceptionSource;
+  if (wholeSource !== null && routeManifest !== null && isInterceptionMatchedUrlPath(wholeSource)) {
+    const matchedUrl = normalizePath(normalizePathnameForRouteMatch(wholeSource));
+    if (findRouteManifestRouteByMatchedUrl(routeManifest, matchedUrl) !== null) {
+      return { matchedUrl, routeId: AppElementsWire.encodeRouteId(matchedUrl, null) };
+    }
   }
   const concreteMatchedUrl = matchedUrlFromConcreteRouteId(snapshot.routeId);
   return {
@@ -1427,6 +1480,7 @@ function validateInterceptedPreservation(options: {
   lane: OperationLane;
   restoredHistorySnapshot: boolean;
   routeManifest: BrowserRouteManifest | null;
+  suppliedSource: InterceptionSourceIdentity | null;
   targetSnapshot: RouteSnapshot;
   targetTopology: RouteTopologySnapshot;
 }): InterceptedPreservationValidation {
@@ -1445,7 +1499,12 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  const sourceIdentity = getVisibleInterceptionSourceIdentity(options.currentSnapshot);
+  // A traversal that restores a tree this client committed for an intercepted
+  // route shows the source that commit put beneath it, not the visible state's.
+  const sourceIdentity =
+    options.lane === "traverse" && options.suppliedSource !== null
+      ? options.suppliedSource
+      : getVisibleInterceptionSourceIdentity(options.currentSnapshot, options.routeManifest);
   if (
     !options.restoredHistorySnapshot &&
     (proof.sourceMatchedUrl !== sourceIdentity.matchedUrl ||
@@ -1479,7 +1538,15 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  const preservedLayoutIdSet = new Set(preservedLayoutIds);
+  // The slot renders in a layout of the source tree the commit shows: the one
+  // the visible state keeps, or, for a traversal that restores its own tree,
+  // the source's own layouts.
+  const showsOwnSourceTree =
+    options.lane === "traverse" &&
+    (options.restoredHistorySnapshot || options.suppliedSource !== null);
+  const sourceTreeLayoutIdSet = new Set(
+    showsOwnSourceTree ? options.targetTopology.layoutIds : preservedLayoutIds,
+  );
   const targetSlotBinding = options.targetTopology.slotBindings.find(
     (binding) => binding.slotId === proof.slotId,
   );
@@ -1487,7 +1554,7 @@ function validateInterceptedPreservation(options: {
     !targetSlotBinding ||
     targetSlotBinding.state !== "active" ||
     targetSlotBinding.ownerLayoutId === null ||
-    !preservedLayoutIdSet.has(targetSlotBinding.ownerLayoutId)
+    !sourceTreeLayoutIdSet.has(targetSlotBinding.ownerLayoutId)
   ) {
     return {
       kind: "rejected",
@@ -1504,11 +1571,17 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  const preserveDefaultOrUnmatchedSlotIds = resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
-    currentSlotBindings: options.currentTopology.slotBindings,
-    preservedLayoutIds,
-    targetSlotBindings: options.targetTopology.slotBindings,
-  }).filter((slotId) => slotId !== proof.slotId);
+  // A traversal that restores a committed tree for an intercepted route keeps
+  // no slot the visible state shows, as a traversal without an intercept keeps
+  // none.
+  const preserveDefaultOrUnmatchedSlotIds =
+    options.lane === "traverse" && options.suppliedSource !== null
+      ? []
+      : resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
+          currentSlotBindings: options.currentTopology.slotBindings,
+          preservedLayoutIds,
+          targetSlotBindings: options.targetTopology.slotBindings,
+        }).filter((slotId) => slotId !== proof.slotId);
   const preserveSourceSlotIds =
     options.lane === "navigation"
       ? resolveInterceptedSourceSlotPersistenceForLayouts({
@@ -1650,6 +1723,7 @@ function planFlightResponseArrived(options: {
       lane: options.event.token.lane,
       restoredHistorySnapshot: options.event.result.restoredHistorySnapshot === true,
       routeManifest: options.routeManifest,
+      suppliedSource: options.event.result.suppliedInterceptionSource ?? null,
       targetSnapshot,
       targetTopology: targetTopology.topology,
     });

@@ -93,6 +93,7 @@ const projectServers = {
       "app-router-prod/action-error-sanitization.spec.ts",
       "app-router-prod/special-error-navigation.spec.ts",
       "app-router-prod/rsc-compatibility-id.spec.ts",
+      "app-router-prod/action-compatibility-skew.spec.ts",
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
       "app-router-prod/public-file-encoding.spec.ts",
@@ -109,6 +110,7 @@ const projectServers = {
       "app-router-prod/client-reference-flight-chunks.spec.ts",
       "app-router-prod/cookie-notice-chunk-names.spec.ts",
       "app-router-prod/same-origin-absolute-href-prefetch.spec.ts",
+      "app-router-prod/middleware-rewrite-prefetch.spec.ts",
       "app-router-prod/middleware-external-rewrite-host.spec.ts",
       "app-router-prod/hybrid-route-handler-exposure.spec.ts",
       "app-router-prod/settled-prefetch-suspense.spec.ts",
@@ -116,8 +118,11 @@ const projectServers = {
       "app-router-prod/prefetched-shell-async-metadata.spec.ts",
       "app-router-prod/soft-nav-rsc-cache.spec.ts",
       "app-router-prod/rsc-miss-document.spec.ts",
+      "app-router-prod/every-param-cache.spec.ts",
+      "app-router-prod/interception-repeated-navigation-cache.spec.ts",
       "app-router-prod/image-local-patterns.spec.ts",
       "app-router-prod/image-source-cache-control.spec.ts",
+      "app-router/font-navigation.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
       "app-router/tsconfig-exact-path.spec.ts",
@@ -456,7 +461,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4215" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../../examples/app-router-cloudflare/node_modules node_modules) && npx vp run vinext#build && npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4215",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../examples/app-router-cloudflare/node_modules node_modules) && (cd ../../../.. && npx vp run vinext#build) && npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4215",
       cwd: "./tests/e2e/cloudflare-static-export/fixture",
       port: 4215,
       reuseExistingServer: !process.env.CI,
@@ -574,7 +579,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4186" },
     server: {
       command:
-        "cd ../../.. && npx vp run vinext#build && cd tests/fixtures/use-params-app-pages && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4186",
+        "cd ../../.. && npx vp run vinext#build && cd tests/fixtures/use-params-app-pages && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4186 --outDir out",
       cwd: "./tests/fixtures/use-params-app-pages",
       port: 4186,
       reuseExistingServer: !process.env.CI,
@@ -598,7 +603,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4209" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/ppr-impact-demo/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && npx wrangler dev --config dist/server/wrangler.json --port 4209",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/ppr-impact-demo/node_modules node_modules) && (cd ../../../.. && npx vp run vinext#build) && node ../../../../packages/vinext/dist/cli.js build && npx wrangler dev --config dist/server/wrangler.json --port 4209",
       cwd: "./tests/e2e/cacheability-components/fixture",
       port: 4209,
       reuseExistingServer: !process.env.CI,
@@ -610,7 +615,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4188" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/app-basic/node_modules node_modules) && npx vp run vinext#build && NEXT_DEPLOYMENT_ID=vinext-front-redirect-e2e node ../../../../packages/vinext/dist/cli.js build && NEXT_DEPLOYMENT_ID=vinext-front-redirect-e2e node ../../../../packages/vinext/dist/cli.js start --port 4188",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/app-basic/node_modules node_modules) && (cd ../../../.. && npx vp run vinext#build) && NEXT_DEPLOYMENT_ID=vinext-front-redirect-e2e node ../../../../packages/vinext/dist/cli.js build && NEXT_DEPLOYMENT_ID=vinext-front-redirect-e2e node ../../../../packages/vinext/dist/cli.js start --port 4188",
       cwd: "./tests/e2e/app-front-redirect-issue/fixture",
       port: 4188,
       reuseExistingServer: !process.env.CI,
@@ -725,7 +730,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4200" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../../fixtures/app-basic/node_modules node_modules) && npx vp run vinext#build && node ../../../../../packages/vinext/dist/cli.js build && node ../../../../../packages/vinext/dist/cli.js start --port 4200",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../fixtures/app-basic/node_modules node_modules) && (cd ../../../../.. && npx vp run vinext#build) && node ../../../../../packages/vinext/dist/cli.js build && node ../../../../../packages/vinext/dist/cli.js start --port 4200",
       cwd: "./tests/e2e/web-worker/fixtures/vinext",
       port: 4200,
       reuseExistingServer: !process.env.CI,
@@ -737,7 +742,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4201" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../../fixtures/cf-app-basic/node_modules node_modules) && npx vp run vinext#build && npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4201",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../fixtures/cf-app-basic/node_modules node_modules) && (cd ../../../../.. && npx vp run vinext#build) && npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4201",
       cwd: "./tests/e2e/web-worker/fixtures/cloudflare",
       port: 4201,
       reuseExistingServer: !process.env.CI,
@@ -771,7 +776,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4222" },
     server: {
       command:
-        "npx vp run vinext#build && npx vp build --config vite.cloudflare.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4222",
+        "npx vp run vinext#build && npx vp build --config vite.cloudflare.config.ts && npx wrangler dev --config out/server/wrangler.json --port 4222",
       cwd: "./tests/fixtures/module-federation-host",
       port: 4222,
       reuseExistingServer: !process.env.CI,
@@ -792,7 +797,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4202" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/cf-app-basic/node_modules node_modules) && npx vp run vinext#build && NEXT_DEPLOYMENT_ID=test-deployment-id npx vp build && NEXT_DEPLOYMENT_ID=test-deployment-id npx wrangler dev --config dist/server/wrangler.json --port 4202",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/cf-app-basic/node_modules node_modules) && (cd ../../../.. && npx vp run vinext#build) && NEXT_DEPLOYMENT_ID=test-deployment-id npx vp build && NEXT_DEPLOYMENT_ID=test-deployment-id npx wrangler dev --config dist/server/wrangler.json --port 4202",
       cwd: "./tests/e2e/nextjs-worker/fixture",
       port: 4202,
       reuseExistingServer: !process.env.CI,

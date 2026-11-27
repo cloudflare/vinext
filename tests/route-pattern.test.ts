@@ -6,6 +6,7 @@ import {
   normalizeStaticPathsEntry,
   routePattern,
   routePatternParts,
+  withoutInterceptionMarker,
 } from "../packages/vinext/src/routing/route-pattern.js";
 
 describe("route pattern helpers", () => {
@@ -62,6 +63,33 @@ describe("route pattern helpers", () => {
 
     expect(Object.hasOwn(catchAllParam ?? {}, "__proto__")).toBe(true);
     expect(catchAllParam?.__proto__).toEqual(["first", "second"]);
+  });
+
+  // Next.js keeps an interception marker in the URL of a metadata file below a
+  // marker-prefixed dynamic segment and matches the param after it.
+  it("keeps the interception marker of a marker-prefixed dynamic segment", () => {
+    expect(routePatternParts("/feed/(.)[id]/(..)(..)[slug]/icon-abc")).toEqual([
+      "feed",
+      "(.):id",
+      "(..)(..):slug",
+      "icon-abc",
+    ]);
+    expect(routePatternParts("/(...)[...slug]/icon")).toEqual(["(...)[...slug]", "icon"]);
+    expect(
+      fillRoutePatternSegments("/feed/(.)[id]/(..)[slug]/icon-abc", { id: "1", slug: ["a"] }),
+    ).toBe("/feed/(.)1/(..)a/icon-abc");
+    expect(fillRoutePatternSegments("/feed/(.)[id]/icon-abc", {})).toBeNull();
+    // A catch-all behind a marker fills no URL, so its file heads nothing.
+    expect(fillRoutePatternSegments("/(...)[...slug]/icon-abc", { slug: ["a", "b"] })).toBeNull();
+    expect(fillRoutePatternSegments("/(.)[[...slug]]/icon-abc", { slug: ["a"] })).toBeNull();
+    expect(
+      matchRoutePattern(
+        ["feed", "(.)1", "(..)(..)a%2Fb", "icon"],
+        routePatternParts("/feed/(.)[id]/(..)(..)[slug]/icon"),
+      ),
+    ).toEqual({ id: "1", slug: "a/b" });
+    expect(matchRoutePattern(["feed", "1", "icon"], ["feed", "(.):id", "icon"])).toBeNull();
+    expect(matchRoutePattern(["feed", "(.)", "icon"], ["feed", "(.):id", "icon"])).toBeNull();
   });
 
   it("treats literal route segments ending in pattern markers as literals", () => {
@@ -195,5 +223,21 @@ describe("normalizeStaticPathsEntry", () => {
     expect(normalizeStaticPathsEntry("/files/a%2Fb", "/files/:name")).toEqual({
       params: { name: "a/b" },
     });
+  });
+});
+
+describe("withoutInterceptionMarker", () => {
+  it("reads a marker-prefixed dynamic segment as that segment", () => {
+    expect(withoutInterceptionMarker("(.)[id]")).toBe("[id]");
+    expect(withoutInterceptionMarker("(..)[...slug]")).toBe("[...slug]");
+    expect(withoutInterceptionMarker("(..)(..)[[...rest]]")).toBe("[[...rest]]");
+    expect(withoutInterceptionMarker("(...)[id]")).toBe("[id]");
+  });
+
+  it("keeps any other segment", () => {
+    expect(withoutInterceptionMarker("(.)photo")).toBe("(.)photo");
+    expect(withoutInterceptionMarker("[id]")).toBe("[id]");
+    expect(withoutInterceptionMarker("(group)")).toBe("(group)");
+    expect(withoutInterceptionMarker("photo")).toBe("photo");
   });
 });

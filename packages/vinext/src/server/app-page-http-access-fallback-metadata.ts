@@ -41,6 +41,8 @@ type ResolveHttpAccessFallbackMetadataOptions<
   applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   basePath?: string;
   fallbackOnFileMetadataError?: boolean;
+  fileMetadataParams?: AppPageParams;
+  fileMetadataRouteSegments?: readonly string[] | null;
   metadataRoutes: readonly MetadataFileRoute[];
   routePath: string;
 };
@@ -200,6 +202,8 @@ export function resolveHttpAccessFallbackMetadata<TModule extends AppPageHeadMod
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath,
     fallbackOnFileMetadataError: options.fallbackOnFileMetadataError,
+    fileMetadataParams: options.fileMetadataParams,
+    fileMetadataRouteSegments: options.fileMetadataRouteSegments,
     metadataRoutes: options.metadataRoutes,
     params: options.params,
     routePath: options.routePath,

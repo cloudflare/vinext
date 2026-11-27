@@ -46,9 +46,11 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_ROUTE_MISS_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
+import { isPrerenderNotFoundPathname, isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 import type { ReactFormState } from "react-dom/client";
 import {
   getRequestExecutionContext,
@@ -63,7 +65,12 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
-import { hasBasePath, restoreBasePath, stripBasePath } from "../utils/base-path.js";
+import {
+  hasBasePath,
+  removeTrailingSlash,
+  restoreBasePath,
+  stripBasePath,
+} from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import {
   buildRequestHeadersFromMiddlewareResponse,
@@ -76,8 +83,12 @@ import {
   mergeMiddlewareResponseHeadersOntoResponse,
   withExternalRewriteResponseHeaders,
 } from "./middleware-response-headers.js";
-import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
+import {
+  normalizeInterceptionContextHeader,
+  ROUTE_MISS_INTERCEPTION_CONTEXT,
+} from "./app-interception-context-header.js";
 import type {
+  AppPrerenderMetadataRoutePathsRequest,
   AppPrerenderRootParamNamesMap,
   AppPrerenderStaticParamsMap,
 } from "./app-prerender-endpoints.js";
@@ -117,6 +128,7 @@ import {
   normalizeDefaultLocalePathname,
   shouldRestoreLocaleRootTrailingSlash,
 } from "./pages-i18n.js";
+import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import {
   badRequestResponse,
   notFoundResponse,
@@ -305,17 +317,6 @@ function markConditionalRedirectCacheability(redirect: NextRedirect): void {
   }
 }
 
-function haveSameRequestCookies(
-  first: ReadonlyMap<string, string>,
-  second: ReadonlyMap<string, string>,
-): boolean {
-  if (first.size !== second.size) return false;
-  for (const [name, value] of first) {
-    if (second.get(name) !== value) return false;
-  }
-  return true;
-}
-
 function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolean {
   const firstKeys = Object.keys(first);
   const secondKeys = Object.keys(second);
@@ -388,6 +389,8 @@ type RunAppMiddlewareOptions = {
   hadBasePath: boolean;
   isDataRequest: boolean;
   middlewareRequest?: Request;
+  /** False reports an external rewrite without proxying it. */
+  proxyExternalRewrite?: boolean;
   request: Request;
   /** `shouldRestoreLocaleRootTrailingSlash` for the raw request pathname. */
   restoreLocaleRootTrailingSlash?: boolean;
@@ -416,6 +419,11 @@ export type AppRscHandlerRoute = {
   > | null;
 };
 
+type PagesRouteMatchResult =
+  | { route: { isDynamic: boolean; pattern: string } }
+  | "indeterminate"
+  | null;
+
 type AppRscRouteMatch<TRoute> = {
   /**
    * For an interception match, the source route and params the interception
@@ -425,7 +433,30 @@ type AppRscRouteMatch<TRoute> = {
    */
   authorizationParams?: AppPageParams;
   authorizationRoute?: TRoute;
+  /**
+   * Whether a direct request to the target renders every layout the
+   * intercepted render takes from the source, with the same params.
+   */
+  interceptionRendersTargetLayouts?: boolean;
+  /** The same for the raw match, which draft mode and server actions render. */
+  interceptionRawRendersTargetLayouts?: boolean;
   interceptionSourceIsConcrete?: boolean;
+  /**
+   * /_not-found names no route, so a root-level intercept's own owner stands
+   * in for it, for that context alone.
+   */
+  interceptionRendersRootOwnerFromRouteMiss?: boolean;
+  /**
+   * The source has no slot to render the intercept into. Unless the request
+   * renders the whole intercepting route, only a source rewrite to a route
+   * that has the slot can still make the request intercept.
+   */
+  interceptionSourceLacksSlot?: boolean;
+  /**
+   * The source shares none of the intercepting route's tree, so the request
+   * renders that tree whole, from the slot owner's route.
+   */
+  interceptionRendersWholeInterceptingRoute?: boolean;
   params: AppPageParams;
   route: TRoute;
 };
@@ -773,7 +804,11 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
    * Absent in the request-only stage, which has no route modules and sends
    * route tree prefetches to the full graph.
    */
-  isDynamicParamsMiss?: (route: TRoute, params: AppPageParams) => Promise<boolean>;
+  isDynamicParamsMiss?: (
+    route: TRoute,
+    params: AppPageParams,
+    pathname: string,
+  ) => Promise<boolean>;
   ensureInstrumentation?: (ctx: ExecutionContextLike | null) => Promise<void>;
   /**
    * Register cache adapters configured via the vinext() `cache` option. Wired
@@ -792,7 +827,9 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     routePathname: string,
   ) => Promise<Response | null>;
   isMetadataRoutePath?: (cleanPathname: string) => boolean | Promise<boolean>;
-  getPrerenderMetadataRoutePaths?: () => Promise<unknown>;
+  getPrerenderMetadataRoutePaths?: (
+    request: AppPrerenderMetadataRoutePathsRequest,
+  ) => Promise<unknown>;
   createPprFallbackShells?: (
     route: Pick<AppRscHandlerRoute, "params" | "pattern" | "rootParamNames">,
     params: AppPageParams,
@@ -803,6 +840,11 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
   isMetadataRoute?: (pathname: string) => boolean;
+  /**
+   * Whether a metadata route answers a rewrite destination rather than leaving
+   * it to later routing, without running the route.
+   */
+  metadataRouteAnswersPath?: (pathname: string) => boolean | Promise<boolean>;
   isDev: boolean;
   hasInterceptionId: (interceptionId: string) => boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
@@ -810,11 +852,22 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     pathname: string,
     sourcePathname: string,
     interceptionId?: string | null,
+    acceptsSourceWithoutSlot?: boolean,
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   /** `matchRequestRoute` without its decoded static page substitution. */
   matchRawRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
+  /**
+   * The Pages route `renderPagesFallback` renders for a raw route pathname,
+   * matched without rendering it, or `"indeterminate"` when only rendering a
+   * path no App route matches tells whether Pages serves it. Provided when the
+   * app has a Pages directory.
+   */
+  matchPagesRoute?: (
+    pathname: string,
+    request: Request,
+  ) => PagesRouteMatchResult | Promise<PagesRouteMatchResult>;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   prefetchInlining?: PrefetchInliningConfig;
@@ -869,6 +922,8 @@ async function applyRewrite(
     rewrites: NextRewrite[];
     /** Raw pathname identity used for config source matching and capture substitution. */
     paramsPathname?: string;
+    /** Whether a staged response stage exists, so an external proxy answers in the uncached request stage. */
+    staged: boolean;
     validateExternalRewriteRequest: () => Promise<Response | null>;
   },
   cleanPathname: string,
@@ -902,12 +957,15 @@ async function applyRewrite(
     // Next.js proxies a next.config external rewrite without the config and
     // middleware headers it staged, though its Set-Cookie patch still puts
     // middleware's cookies ahead of the upstream's.
+    const response = withExternalRewriteResponseHeaders(
+      await configMatchers.proxyExternalRequest(proxyRequest, rewritten),
+      new Headers(),
+      options.middlewareContext.headers?.getSetCookie() ?? [],
+    );
+    // The proxied response is answered in the uncached request stage, so a
+    // staged response stage and its shared cache never see this request.
     return markAppRscResponseConfigHeadersApplied(
-      withExternalRewriteResponseHeaders(
-        await configMatchers.proxyExternalRequest(proxyRequest, rewritten),
-        new Headers(),
-        options.middlewareContext.headers?.getSetCookie() ?? [],
-      ),
+      options.staged ? withRequestStageBypassCacheState(response) : response,
     );
   }
 
@@ -1118,7 +1176,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const {
     url,
     isRscRequest,
-    interceptionContextHeader,
+    interceptionContextHeader: normalizedInterceptionContext,
     interceptionIdHeader,
     mountedSlotsHeader,
     renderMode,
@@ -1140,15 +1198,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // header for the route matcher's deliberate one-decode contract, while
   // carrying the decoded canonical pathname for middleware authorization.
   let interceptionSourcePathname: string | null = null;
-  if (isRscRequest && interceptionContextHeader !== null) {
+  if (isRscRequest && normalizedInterceptionContext !== null) {
     try {
-      interceptionSourcePathname = decodeInterceptionSourcePathname(interceptionContextHeader);
+      interceptionSourcePathname = decodeInterceptionSourcePathname(normalizedInterceptionContext);
     } catch {
-      options.clearRequestContext();
-      setInterceptionResponseUncacheable(true);
-      return badRequestResponse();
+      // Next.js never rejects a request over its `Next-Url`, so a context that
+      // names no canonical source is treated as absent and the target renders
+      // on its own.
     }
   }
+  // An unusable context then routes exactly like an absent one, while its raw
+  // value still keeps the response out of shared caches above.
+  const interceptionContextHeader =
+    isRscRequest && interceptionSourcePathname === null ? null : normalizedInterceptionContext;
   const { pathname, requestPathname } = normalized;
   let cleanPathname = pathname;
   let resolvedUrl = cleanPathname + url.search;
@@ -1166,10 +1228,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const basePathState = { basePath: options.basePath, hadBasePath };
   let cleanPathnameIsRequestPathname = true;
+  // The prerender step's request for the 404 page is a route miss, as in
+  // Next.js, even where a top-level dynamic or catch-all route would match it.
+  // The path binds the marker to that request: a same-origin subrequest that
+  // forwards the incoming headers still matches its own route. A rewrite that
+  // keeps the path (a same-path or query-only one) leaves it a miss, while one
+  // to another path matches that path's route.
+  const isUnrewrittenPrerenderNotFound = () =>
+    isPrerenderNotFoundRequest(request) &&
+    isPrerenderNotFoundPathname(pathname) &&
+    isPrerenderNotFoundPathname(cleanPathname);
   const matchCleanPathname = () =>
-    cleanPathnameIsRequestPathname && options.matchRequestRoute
-      ? options.matchRequestRoute(requestPathname)
-      : options.matchRoute(cleanPathname);
+    isUnrewrittenPrerenderNotFound()
+      ? null
+      : cleanPathnameIsRequestPathname && options.matchRequestRoute
+        ? options.matchRequestRoute(requestPathname)
+        : options.matchRoute(cleanPathname);
 
   if (
     interceptionIdHeader !== null &&
@@ -1201,9 +1275,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     sourceMatch: AppRscRouteMatch<TRoute> | null,
     sourceContext: string | null = interceptionContextHeader,
   ): boolean => {
-    if (sourceMatch === null) return false;
+    if (
+      sourceMatch === null ||
+      (sourceMatch.interceptionSourceLacksSlot === true &&
+        sourceMatch.interceptionRendersWholeInterceptingRoute !== true)
+    ) {
+      return false;
+    }
     if (sourceMatch.interceptionSourceIsConcrete !== undefined) {
-      return sourceMatch.interceptionSourceIsConcrete;
+      return (
+        sourceMatch.interceptionSourceIsConcrete ||
+        (sourceContext === ROUTE_MISS_INTERCEPTION_CONTEXT &&
+          sourceMatch.interceptionRendersRootOwnerFromRouteMiss === true)
+      );
     }
     // Backward-compatible fallback for custom/older entry glue. Route identity
     // proves existence; match the raw context like a direct request to it.
@@ -1331,10 +1415,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               redirect.destinationQuery,
             ),
           );
-    return new Response(null, {
+    const response = new Response(null, {
       status: redirect.statusCode,
       headers: { Location: location },
     });
+    // As for a middleware answer, a staged response stage and its shared
+    // cache never see this request.
+    return dispatchResponseStage ? withRequestStageBypassCacheState(response) : response;
   }
 
   const rscCacheBustingRedirect =
@@ -1440,6 +1527,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // stage and its shared cache never see this request.
       return dispatchResponseStage ? withRequestStageBypassCacheState(response) : response;
     }
+    if (middlewareResult.kind === "externalRewrite") {
+      // Only a source run asks to leave an external rewrite unproxied.
+      throw new Error("[vinext] Middleware left the request's external rewrite unproxied");
+    }
 
     cleanPathname = middlewareResult.cleanPathname;
     didMiddlewareRewrite = middlewareResult.rewritten;
@@ -1512,7 +1603,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               (props.bypassInterceptionContextCache ||
                 // Next.js lets an explicit next.config public policy cache a
                 // force-dynamic route, so only bypass when no such policy matched.
-                (props.forceDynamic === true && responseStagePolicy === null)))
+                (props.forceDynamic === true && responseStagePolicy === null))) ||
+            // An interception context never selects a metadata or not-found
+            // render, but its raw value stays in the stage's request headers
+            // and RSC URL hash, so it would only split their shared entries.
+            ((props.kind === "app-metadata" || props.kind === "app-not-found") &&
+              hasRawInterceptionContext)
               ? "bypass"
               : canUseSharedWorkerResponseStage
                 ? "shared"
@@ -1521,6 +1617,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.kind === "app-page"
               ? prepareSharedAppPageDispatch(stageRequest, cache)
               : stageRequest;
+          // A next.config provider policy can store a render vinext never
+          // stores itself, under a key every client shares, so that render
+          // stays whole rather than leaving out the layouts a navigation holds.
+          if (
+            cache === "shared" &&
+            props.kind === "app-page" &&
+            responseStagePolicy !== null &&
+            dispatchRequest.headers.has(VINEXT_MOUNTED_LAYOUTS_HEADER)
+          ) {
+            const headers = new Headers(dispatchRequest.headers);
+            headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
+            dispatchRequest = cloneRequestWithHeaders(dispatchRequest, headers);
+          }
           let dispatchProps = props;
           let canonicalRsc: { headers: Headers; navigation: boolean } | null = null;
           if (
@@ -1788,6 +1897,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
         ),
         rewrites: [rewrite],
+        staged: dispatchResponseStage !== undefined,
         validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
       },
       matchPathname(cleanPathname),
@@ -1911,13 +2021,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // the subsequent page dispatch. Document requests remain direct-route-only.
   const directPreActionMatch = filesystemRouteEligible ? matchCleanPathname() : null;
   const preActionRoutePathname = cleanPathnameIsRequestPathname ? requestPathname : cleanPathname;
-  // Interception renders the *source* route's tree for this request. Next.js
-  // never does that: its generated rewrite points at the intercepting route and
-  // the client keeps the segments it already holds, so only the requested target
-  // is rendered server-side. Because vinext renders the source tree instead, one
-  // request reaches a second route that the middleware run above never saw, since
-  // that run received the target's cleanPathname. The source pathname arrives in
-  // a client header, so authorize it before anything downstream renders from it.
+  // An intercepted render renders the source route's layouts down to the
+  // intercepting route, with the source's params, and leaves the rest of the
+  // source to the client. Unless the target's own route renders those layouts
+  // too, they belong to a second route that the middleware run above never
+  // saw, since that run received the target's cleanPathname. Next.js renders
+  // them under the target's request alone. The source pathname arrives in a
+  // client header, so authorize it before anything downstream renders from it.
   // Authorization takes the steps a direct request to the source takes, in
   // order: trailing-slash canonicalization, config redirects, middleware,
   // beforeFiles rewrites, then afterFiles rewrites for a dynamic source.
@@ -1930,6 +2040,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // server action POST without `RSC: 1`, renders without one.
   let interceptionSourceContext =
     interceptionSourcePathname !== null ? interceptionContextHeader : null;
+  // The public pathname the client sends can name a route without the
+  // intercepted slot that its middleware rewrites to one with it, so accept
+  // such a source until authorization below reaches the final one.
   let interceptionSourceMatch =
     filesystemRouteEligible &&
     interceptionSourcePathname !== null &&
@@ -1938,6 +2051,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           preActionRoutePathname,
           interceptionContextHeader,
           interceptionIdHeader,
+          true,
         ) ?? null)
       : null;
   let hasVerifiedInterceptionSource = provesConcreteInterceptionSource(interceptionSourceMatch);
@@ -1963,11 +2077,52 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     bypassInterceptionContextCache = true;
     setInterceptionResponseUncacheable(true);
   };
+  // `matchRequestRoute` answers an encoded request such as `/%61`, which
+  // reaches `/[slug]` raw, with the static `/a` whose prerender Next.js
+  // serves, and routing (rewrites, Pages arbitration) treats it as `/a`, as
+  // Next.js's filesystem check does. Draft mode and server actions skip that
+  // cache in Next.js, so they render the raw-matched page.
+  const rendersRawRequestMatch =
+    options.matchRawRequestRoute !== undefined &&
+    (isPossibleAppRouteActionRequest(request) ||
+      isDraftModeRequest(request, options.draftModeSecret) ||
+      isDraftModeEnabled());
+  // A direct request to the target renders every layout the intercepted render
+  // takes from the source, with the same params, so the target's own request
+  // authorized them. Next.js renders an intercepting route under the target's
+  // request alone, never the source's.
+  // The proof is the one for the target the request renders: the raw match
+  // for a request that renders it, one whose pathname no rewrite has changed
+  // yet, as `usesRawRequestMatch()` decides. Unlike that check, this one does
+  // not exempt an interception-only target, which renders no raw match: it
+  // then requires the raw proof too, which can only refuse more.
+  const mayRenderRawRequestMatch = () => rendersRawRequestMatch && cleanPathnameIsRequestPathname;
+  const rendersTargetLayoutsFor = (
+    match: {
+      interceptionRendersTargetLayouts?: boolean;
+      interceptionRawRendersTargetLayouts?: boolean;
+    } | null,
+  ): boolean =>
+    mayRenderRawRequestMatch()
+      ? match?.interceptionRawRendersTargetLayouts === true
+      : match?.interceptionRendersTargetLayouts === true;
+  const rendersTargetLayouts = rendersTargetLayoutsFor(interceptionSourceMatch);
+  // A source without the intercepted slot never renders itself: the request
+  // renders the whole intercepting route instead, or the route with the slot
+  // that a source rewrite reaches. When authorization refuses such a source,
+  // the request renders the target directly, as one without an interception
+  // context does. So does a refused /_not-found, the context of an unmatched
+  // URL's not-found page: Next.js renders its intercept from `Next-Url` alone
+  // and never runs middleware or redirects on it, so the navigation must not
+  // take the source's redirect or 404.
+  const isRouteMissSource = interceptionContextHeader === ROUTE_MISS_INTERCEPTION_CONTEXT;
+  let droppedSource = false;
   if (
     interceptionSourceMatch !== null &&
     interceptionContextHeader !== null &&
     interceptionSourcePathname !== null &&
-    !isSameInterceptionSource(interceptionSourceMatch, directPreActionMatch)
+    !isSameInterceptionSource(interceptionSourceMatch, directPreActionMatch) &&
+    !rendersTargetLayouts
   ) {
     // A direct request to a non-canonical spelling redirects to the canonical
     // one first, so every later step sees that. The client can legitimately
@@ -1982,6 +2137,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ? interceptionSourcePathname
       : (normalizeTrailingSlashPathname(interceptionSourcePathname, options.trailingSlash) ??
         interceptionSourcePathname);
+    let rewroteToNonInterceptingSource = false;
     const adoptRewrittenInterceptionSource = (rewrittenPathname: string): boolean => {
       // The raw context was matched before this rewrite, so it can name another
       // route: with an unprefixed default locale, `/feed` rewrites to
@@ -1990,23 +2146,65 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // the client sends back, so it must satisfy the inbound header contract;
       // otherwise keep the raw match. Either way the selected source must be
       // the exact route and params the rewrite reaches, so a rewrite cannot
-      // select a source it did not route the claimed source to.
-      const rewrittenInterceptionSourceMatch = isValidInterceptionSourceContext(rewrittenPathname)
+      // select a source it did not route the claimed source to. /_not-found
+      // names no route of its own, so only a rewrite that keeps that path
+      // keeps its source.
+      if (
+        isRouteMissSource &&
+        removeTrailingSlash(rewrittenPathname) !== ROUTE_MISS_INTERCEPTION_CONTEXT
+      ) {
+        return false;
+      }
+      // That rewrite may add a trailing slash; the lookup takes /_not-found
+      // as the client sent it, under the rules for that source.
+      const rewrittenSourcePathname = isRouteMissSource
+        ? ROUTE_MISS_INTERCEPTION_CONTEXT
+        : rewrittenPathname;
+      const rewrittenInterceptionSourceMatch = isValidInterceptionSourceContext(
+        rewrittenSourcePathname,
+      )
         ? (options.matchInterceptRoute?.(
             preActionRoutePathname,
-            rewrittenPathname,
+            rewrittenSourcePathname,
             interceptionIdHeader,
           ) ?? null)
         : null;
       if (rewrittenInterceptionSourceMatch !== null) {
         interceptionSourceMatch = rewrittenInterceptionSourceMatch;
-        interceptionSourceContext = rewrittenPathname;
+        interceptionSourceContext = rewrittenSourcePathname;
       }
-      const rewrittenSourceMatch = options.matchRoute(rewrittenPathname);
-      return (
+      const rewrittenSourceMatch = options.matchRoute(rewrittenSourcePathname);
+      const adoptsRewrittenSource =
         interceptionSourceMatch !== null &&
-        isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch)
-      );
+        (isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch) ||
+          (isRouteMissSource &&
+            rewrittenSourceMatch === null &&
+            interceptionSourceMatch.interceptionRendersRootOwnerFromRouteMiss === true));
+      // The client derives the context it sends from the tree it rendered, so
+      // a source this rewrite routes to a page that does not intercept the
+      // target sends that page instead, which renders the target directly.
+      rewroteToNonInterceptingSource =
+        !adoptsRewrittenSource &&
+        rewrittenInterceptionSourceMatch === null &&
+        isValidInterceptionSourceContext(rewrittenPathname);
+      return adoptsRewrittenSource;
+    };
+    // A rewrite that routes the source to a page that does not intercept the
+    // target drops it too, since that source never renders. Whether the source
+    // lacks the slot is the raw source's, not that of a route a rewrite
+    // reached.
+    const rawSourceLacksSlot = interceptionSourceMatch.interceptionSourceLacksSlot === true;
+    const dropsRefusedSource = (): boolean => {
+      if (!isRouteMissSource && !rawSourceLacksSlot && !rewroteToNonInterceptingSource) {
+        return false;
+      }
+      interceptionSourceMatch = null;
+      interceptionSourceContext = null;
+      droppedSource = true;
+      hasVerifiedInterceptionSource = false;
+      bypassInterceptionContextCache = hasRawInterceptionContext;
+      setInterceptionResponseUncacheable(true);
+      return true;
     };
     // A direct request to a redirected source never renders it.
     if (
@@ -2016,7 +2214,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         preMiddlewareRequestContext,
         currentBasePathState(),
         dispatchResponseStage ? undefined : markConditionalRedirectCacheability,
-      )
+      ) &&
+      !dropsRefusedSource()
     ) {
       options.clearRequestContext();
       return notFoundResponse();
@@ -2024,7 +2223,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // Raw pathname the source's config rewrites match, like `paramsPathname`
     // for the target's beforeFiles rewrites.
     let sourceRulesPathname = sourceRequestPathname;
-    if (runMiddleware) {
+    // The source request shares the target's query. Later rules see the query
+    // middleware or earlier destinations left, as the target's own rewrites do.
+    let sourceRulesResolvedUrl = resolvedUrl;
+    let didRewriteSource = false;
+    // The request headers source middleware left, which the source's config
+    // rewrites match as they would a direct request's.
+    let sourceRulesHeadersContext: ReturnType<typeof headersContextFromRequest> | null = null;
+    if (runMiddleware && !droppedSource) {
       const sourceUrl = new URL(userlandRequest.url);
       sourceUrl.search = new URL(resolvedUrl, url).search;
       // Source middleware must see the URL a direct request to the source
@@ -2050,24 +2256,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       sourceMiddlewareRequest.headers.delete(VINEXT_MW_CTX_HEADER);
       // Strip Flight headers on this owned branch before applyAppMiddleware so
       // it does not need another body tee solely to hide transport metadata.
+      // Source middleware sees the client's own headers, as a direct request to
+      // the source carries them, never what the target's middleware set.
       for (const header of FLIGHT_HEADERS) sourceMiddlewareRequest.headers.delete(header);
-      const targetHeadersContext = getHeadersContext();
-      const targetRequestHeaders = targetHeadersContext
-        ? new Headers(targetHeadersContext.headers)
-        : null;
-      targetRequestHeaders?.delete(VINEXT_MW_CTX_HEADER);
-      for (const header of FLIGHT_HEADERS) targetRequestHeaders?.delete(header);
-      // Chain source authorization from the request identity already established
-      // by target middleware, while keeping transport-only headers hidden.
-      if (targetRequestHeaders) {
-        const sourceHeaderNames = Array.from(sourceMiddlewareRequest.headers.keys());
-        for (const header of sourceHeaderNames) {
-          sourceMiddlewareRequest.headers.delete(header);
-        }
-        for (const [name, value] of targetRequestHeaders) {
-          sourceMiddlewareRequest.headers.append(name, value);
-        }
-      }
       const sourceMiddlewareContext: AppRscMiddlewareContext = {
         headers: null,
         requestHeaders: null,
@@ -2079,7 +2270,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // Keep source authorization in a child request context. In particular,
       // NextResponse.next({ request: { headers } }) mutates the live headers
       // context; allowing those overrides to escape would make the target render
-      // observe headers from a different route.
+      // observe headers from a different route. Next.js renders the intercepted
+      // tree under the target's request alone.
       let sourceMiddlewareResult: ApplyAppMiddlewareResult;
       try {
         sourceMiddlewareResult = await runWithHeadersContext(sourceHeadersContext, () =>
@@ -2092,6 +2284,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             externalRewriteRequest: request,
             hadBasePath: resolvedPathnameHasBasePath,
             isDataRequest: isMiddlewareDataRequest,
+            // The request discards whatever the middleware of a /_not-found
+            // source or of one without the slot answers, so it must not fetch
+            // an external rewrite for either.
+            proxyExternalRewrite: !isRouteMissSource && !rawSourceLacksSlot,
             request: sourceMiddlewareRequest,
             // From the spelling a direct request uses: a basePath root drops
             // its slash in `sourceUrl`, while a direct request keeps `/docs/`.
@@ -2132,119 +2328,203 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             : "middleware is eligible for this pathname",
         );
       }
-      if (sourceMiddlewareResult.kind === "response") {
-        if (request.body && !request.body.locked) {
-          void request.body.cancel().catch(() => {});
-        }
-        options.clearRequestContext();
-        // As for the target's middleware, this ends in the uncached request stage.
-        return dispatchResponseStage
-          ? withRequestStageBypassCacheState(sourceMiddlewareResult.response)
-          : sourceMiddlewareResult.response;
-      }
-      // The source and target share one render context. Existing target headers
-      // and all cookies are identity-bearing and may not be replaced/deleted by
-      // source middleware. Pure header additions are safe to retain and are
-      // copied into the live render context instead of silently discarded.
-      let sourceHeadersCompatible = true;
-      if (targetRequestHeaders) {
-        for (const [name, value] of targetRequestHeaders) {
-          if (sourceHeadersContext.headers.get(name) !== value) {
-            sourceHeadersCompatible = false;
-            break;
-          }
-        }
-      }
-      if (
-        !targetHeadersContext ||
-        !targetRequestHeaders ||
-        !sourceHeadersCompatible ||
-        !haveSameRequestCookies(targetHeadersContext.cookies, sourceHeadersContext.cookies)
-      ) {
-        options.clearRequestContext();
-        return notFoundResponse();
-      }
-      let addedSourceHeader = false;
-      for (const [name, value] of sourceHeadersContext.headers) {
-        if (!targetRequestHeaders.has(name)) {
-          targetHeadersContext.headers.set(name, value);
-          addedSourceHeader = true;
-        }
-      }
-      if (addedSourceHeader) {
-        targetHeadersContext.readonlyHeaders = undefined;
-        // Source-route middleware runs after the initial response-stage
-        // eligibility decision. A header added here is observable by the
-        // intercepted render, so its representation is request-specific.
-        canUseSharedWorkerResponseStage = false;
-      }
-      if (sourceMiddlewareResult.rewritten) {
-        // Rewrites such as locale insertion are valid only when they resolve to
-        // the exact source route and params selected for interception. A
-        // different route, params, or query would authorize one identity and
-        // render another, so fail closed instead. A destination outside the
-        // basePath resolves no route at all.
-        if (
-          (options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) ||
-          sourceMiddlewareResult.search !== sourceUrl.search ||
-          !adoptRewrittenInterceptionSource(sourceMiddlewareResult.cleanPathname)
-        ) {
+      if (sourceMiddlewareResult.kind === "externalRewrite") {
+        // Reported only for a source the request drops when middleware answers.
+        if (!dropsRefusedSource()) {
           options.clearRequestContext();
           return notFoundResponse();
         }
-        sourceRulesPathname = sourceMiddlewareResult.cleanPathname;
+      } else if (sourceMiddlewareResult.kind === "response") {
+        if (!dropsRefusedSource()) {
+          if (request.body && !request.body.locked) {
+            void request.body.cancel().catch(() => {});
+          }
+          options.clearRequestContext();
+          // As for the target's middleware, this ends in the uncached request stage.
+          return dispatchResponseStage
+            ? withRequestStageBypassCacheState(sourceMiddlewareResult.response)
+            : sourceMiddlewareResult.response;
+        }
+        void sourceMiddlewareResult.response.body?.cancel().catch(() => {});
+      } else {
+        sourceRulesHeadersContext = sourceHeadersContext;
+        if (sourceMiddlewareResult.rewritten) {
+          // A destination outside the basePath resolves no route at all.
+          if (options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) {
+            if (!dropsRefusedSource()) {
+              options.clearRequestContext();
+              return notFoundResponse();
+            }
+          } else {
+            // A direct request takes the config rewrites from the middleware
+            // destination, so the route they leave it on decides below.
+            sourceRulesPathname = sourceMiddlewareResult.cleanPathname;
+            sourceRulesResolvedUrl =
+              sourceMiddlewareResult.cleanPathname +
+              (sourceMiddlewareResult.search ?? sourceUrl.search);
+            didRewriteSource = true;
+          }
+        }
       }
     }
     if (
-      HAS_CONFIG_REWRITES &&
-      (options.configRewrites.beforeFiles.length || options.configRewrites.afterFiles.length)
+      !droppedSource &&
+      (didRewriteSource ||
+        (HAS_CONFIG_REWRITES &&
+          (options.configRewrites.beforeFiles.length ||
+            options.configRewrites.afterFiles.length ||
+            options.configRewrites.fallback.length)))
     ) {
       const { matchRewrite } = await import("../config/config-matchers.js");
-      // The source request shares the target's cookies and query. Rebuild
-      // the rest from the live headers context, which now also carries any
-      // header source middleware added, such as a `Host` the target lacked.
-      const sourceRewriteContext = requestContextForResolvedUrl(
-        buildPostMwRequestContext(userlandRequest),
-        resolvedUrl,
-        url,
-      );
+      // The source request's headers and cookies are those source middleware
+      // left, as for a direct request to it.
+      const sourceRulesRequestContext =
+        sourceRulesHeadersContext === null
+          ? buildPostMwRequestContext(userlandRequest)
+          : buildPostMwRequestContext(userlandRequest, sourceRulesHeadersContext);
+      let didRewriteSourceExternally = false;
+      const unrewrittenSourceRoute =
+        interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route;
+      // A /_not-found that a root-level owner stands in for matches no route,
+      // so it takes the afterFiles and then the fallback rules.
+      const unrewrittenSourceMatchesNoRoute =
+        interceptionSourceMatch.interceptionRendersRootOwnerFromRouteMiss === true;
+      // The route a direct request to the rewritten source pathname reaches,
+      // in the order the target's own routing takes: a static App route, then
+      // a Pages route over the App route it outranks. A Pages entry without
+      // matchers leaves a path to its render, which answers 404 for one it
+      // does not serve, so only rendering the path could tell.
+      const sourceRulesRoute = async (): Promise<
+        { isApp: boolean; route: { isDynamic: boolean } } | "indeterminate" | null
+      > => {
+        if (!didRewriteSource) {
+          return unrewrittenSourceMatchesNoRoute
+            ? null
+            : { isApp: true, route: unrewrittenSourceRoute };
+        }
+        const appRoute = options.matchRoute(sourceRulesPathname)?.route ?? null;
+        if (appRoute !== null && !appRoute.isDynamic) return { isApp: true, route: appRoute };
+        // Pages routes match the headers the source's rules see, as the
+        // target's Pages routes match those its middleware left.
+        const pagesMatch = options.matchPagesRoute
+          ? await options.matchPagesRoute(
+              sourceRulesPathname,
+              new Request(userlandRequest.url, { headers: sourceRulesRequestContext.headers }),
+            )
+          : null;
+        if (pagesMatch === "indeterminate") {
+          if (appRoute === null) return "indeterminate";
+        } else if (
+          pagesMatch !== null &&
+          pagesRouteHasPriorityOverAppRoute(pagesMatch.route, appRoute)
+        ) {
+          return { isApp: false, route: pagesMatch.route };
+        }
+        return appRoute === null ? null : { isApp: true, route: appRoute };
+      };
+      // The image endpoint, a metadata route or a public file a rewrite
+      // reaches serves itself instead of the source. Each ends routing as a
+      // static route does; a dynamic metadata route would take later rules
+      // too, but stopping there only leaves the target to render directly.
+      // The base of a sitemap with generateSitemaps, a child of a sitemap
+      // without it, and an image child without generateImageMetadata get no
+      // metadata response, so a direct request takes later rules there. The
+      // request stage, which does not load the route modules, treats every
+      // such candidate as answering, so the source is refused there.
+      const reachesFilesystemOutput = async (): Promise<boolean> =>
+        isImageOptimizationPath(sourceRulesPathname) ||
+        ((await options.metadataRouteAnswersPath?.(sourceRulesPathname)) ?? false) ||
+        options.publicFiles.has(normalizePathnameForRouteMatch(sourceRulesPathname));
+      const reachedByDirectRequest = async () =>
+        didRewriteSource && (await reachesFilesystemOutput())
+          ? { isApp: false, route: { isDynamic: false } }
+          : await sourceRulesRoute();
       // Applies one phase's rules to the source as a direct request does:
-      // every beforeFiles rule in turn, afterFiles up to the first destination
-      // that matches a route. Returns whether the source may still intercept.
-      const rewriteSource = (rewrites: NextRewrite[], stopAtRoute: boolean): boolean => {
-        let didRewriteSource = false;
+      // every beforeFiles rule in turn, afterFiles and fallback up to the
+      // first destination that matches a route. Returns false once a rule
+      // rewrites the source to an external URL, which proxies it instead.
+      const rewriteSource = async (
+        rewrites: NextRewrite[],
+        stopAtRoute: boolean,
+      ): Promise<boolean> => {
         for (const rewrite of rewrites) {
           const destination = matchRewrite(
             matchPathname(sourceRulesPathname),
             [rewrite],
-            sourceRewriteContext,
+            requestContextForResolvedUrl(sourceRulesRequestContext, sourceRulesResolvedUrl, url),
             currentBasePathState(),
             matchPathname(sourceRulesPathname),
             dispatchResponseStage === undefined ? markConditionalRewriteCacheability : undefined,
           );
           if (!destination) continue;
-          // An external rewrite proxies instead of rendering the source, and a
-          // destination query would render it with different search params.
-          if (isExternalUrl(destination) || destination.includes("?")) return false;
+          if (isExternalUrl(destination)) {
+            didRewriteSourceExternally = true;
+            return false;
+          }
+          sourceRulesResolvedUrl = mergeRewriteQuery(sourceRulesResolvedUrl, destination);
           sourceRulesPathname = pathnameForResolvedUrl(destination);
           didRewriteSource = true;
-          if (stopAtRoute && options.matchRoute(sourceRulesPathname)) break;
+          if (stopAtRoute && (await reachedByDirectRequest()) !== null) break;
         }
-        return !didRewriteSource || adoptRewrittenInterceptionSource(sourceRulesPathname);
+        return true;
       };
-      // A direct request that reaches a dynamic route after beforeFiles still
-      // takes the afterFiles rules before that route is accepted, so a rule
-      // that rewrites the source away for this client refuses it here too. A
-      // static route is final before afterFiles.
-      if (
-        !rewriteSource(options.configRewrites.beforeFiles, false) ||
-        ((interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route).isDynamic &&
-          !rewriteSource(options.configRewrites.afterFiles, true))
-      ) {
+      // A direct request takes the afterFiles rules unless beforeFiles leave it
+      // on a static route or a public file, and the fallback rules if neither
+      // matches after those, so the source may intercept only where the last
+      // phase leaves it. A rule that rewrites the source away for this client
+      // refuses it here, and a later one can route it back. A Pages route or
+      // public file serves itself there instead of the source.
+      const mayInterceptRewrittenSource = async (): Promise<boolean> => {
+        if (!(await rewriteSource(options.configRewrites.beforeFiles, false))) return false;
+        let reached = await reachedByDirectRequest();
+        if (reached === null || (reached !== "indeterminate" && reached.route.isDynamic)) {
+          if (!(await rewriteSource(options.configRewrites.afterFiles, true))) return false;
+          reached = await reachedByDirectRequest();
+          if (reached === null) {
+            if (!(await rewriteSource(options.configRewrites.fallback, true))) return false;
+            reached = await reachedByDirectRequest();
+          }
+        }
+        if (!didRewriteSource) return true;
+        // A path a Pages entry without matchers may serve is refused rather
+        // than rendered to find out, which leaves the target to render
+        // directly, as a page that serves the path would.
+        if (reached === "indeterminate" || (reached !== null && !reached.isApp)) {
+          rewroteToNonInterceptingSource = true;
+          return false;
+        }
+        // Rewrites such as locale insertion are valid only when they resolve to
+        // the exact source route and params selected for interception, with
+        // the search params the target request carries. A different route,
+        // params, or query would authorize one identity and render another, so
+        // fail closed instead.
+        return (
+          adoptRewrittenInterceptionSource(sourceRulesPathname) &&
+          new URL(sourceRulesResolvedUrl, url).searchParams.toString() ===
+            new URL(resolvedUrl, url).searchParams.toString()
+        );
+      };
+      const mayInterceptSource = await mayInterceptRewrittenSource();
+      // A source a rule proxies elsewhere never renders here, so the request
+      // renders the target directly, as for a page without the intercept.
+      if (didRewriteSourceExternally) rewroteToNonInterceptingSource = true;
+      if (!mayInterceptSource && !dropsRefusedSource()) {
         options.clearRequestContext();
         return notFoundResponse();
       }
     }
+  }
+  if (droppedSource) {
+    // The proof that let the selector and shared caches through named the
+    // refused source.
+    if (interceptionIdHeader !== null) {
+      options.clearRequestContext();
+      setInterceptionResponseUncacheable(true);
+      return badRequestResponse();
+    }
+    hasVerifiedInterceptionSource = false;
+    bypassInterceptionContextCache = hasRawInterceptionContext;
+    setInterceptionResponseUncacheable(bypassInterceptionContextCache);
   }
   if (interceptionSourceMatch !== null) {
     hasVerifiedInterceptionSource = provesConcreteInterceptionSource(
@@ -2253,9 +2533,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     );
     if (!hasVerifiedInterceptionSource) {
       // A slot-owner fallback stands in for a source with no route of its own,
-      // so a direct request to that source renders no such tree. Render the
-      // target as a direct request instead, as Next.js does when its
-      // interception rewrite does not apply.
+      // so a direct request to that source renders no such tree, and a source
+      // without the intercepted slot whose owner has no route of its own has
+      // nowhere to render the intercept. Render the target as a direct request
+      // instead, as Next.js does when its interception rewrite does not apply.
       if (interceptionIdHeader !== null) {
         options.clearRequestContext();
         setInterceptionResponseUncacheable(true);
@@ -2276,16 +2557,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : null;
   const preActionMatch = directPreActionMatch ?? interceptionPreActionMatch;
   const isInterceptionMatch = interceptionPreActionMatch !== null;
-  // `matchRequestRoute` answers an encoded request such as `/%61`, which
-  // reaches `/[slug]` raw, with the static `/a` whose prerender Next.js
-  // serves, and routing (rewrites, Pages arbitration) treats it as `/a`, as
-  // Next.js's filesystem check does. Draft mode and server actions skip that
-  // cache in Next.js, so they render the raw-matched page.
-  const rendersRawRequestMatch =
-    options.matchRawRequestRoute !== undefined &&
-    (isPossibleAppRouteActionRequest(request) ||
-      isDraftModeRequest(request, options.draftModeSecret) ||
-      isDraftModeEnabled());
   // Middleware can enable or disable draft mode for this request.
   const isActiveDraftMode = () =>
     getActiveDraftModeState() ?? isDraftModeRequest(request, options.draftModeSecret);
@@ -2451,7 +2722,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const renderPagesForMatchKind = async (
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
-    if (!filesystemRouteEligible) return null;
+    if (!filesystemRouteEligible || isUnrewrittenPrerenderNotFound()) return null;
     // Pages routes match the raw request pathname, as in the Pages-only
     // pipeline and Next.js: static segments keep their encoded identity, so
     // `/%66r/...` is not the `fr` locale and `/%61bout` is not `/about`, and the
@@ -2475,6 +2746,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           const cache =
             responseStageProbeMode ||
             pagesOnDemandRevalidate ||
+            // As for a metadata route, a raw interception context selects no
+            // Pages render and would only split the shared entries.
+            hasRawInterceptionContext ||
             hasPagesPreviewCookie(stageRequest.headers.get("cookie")) ||
             (resourceKind === "page" && dataKind === "static" && hasRequestAwareDocument)
               ? "bypass"
@@ -2639,6 +2913,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
           ),
           rewrites: [rewrite],
+          staged: dispatchResponseStage !== undefined,
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
         matchPathname(cleanPathname),
@@ -2731,6 +3006,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
             ),
             rewrites: [rewrite],
+            staged: dispatchResponseStage !== undefined,
             validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
           },
           matchPathname(cleanPathname),
@@ -2796,7 +3072,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         isSameInterceptionSource(finalInterceptionSourceMatch, {
           params: interceptionSourceMatch.authorizationParams ?? interceptionSourceMatch.params,
           route: interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route,
-        });
+        }) &&
+        // A source left unauthorized for the target it was matched with must
+        // still share its layouts with the target a later rewrite reached.
+        (!rendersTargetLayouts || rendersTargetLayoutsFor(finalInterceptionSourceMatch));
       if (interceptionIdHeader !== null && !hasVerifiedFinalInterceptionSource) {
         options.clearRequestContext();
         setInterceptionResponseUncacheable(true);
@@ -2994,7 +3273,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       canResumeRoutingAfterMiss() &&
       !isActiveDraftMode() &&
       options.isDynamicParamsMiss &&
-      (await runStaticParamsCheckDetached(() => options.isDynamicParamsMiss!(route, params)))
+      (await runStaticParamsCheckDetached(() =>
+        options.isDynamicParamsMiss!(route, params, cleanPathname),
+      ))
     ) {
       // The rejected match seeded its root params before routing finished.
       setRootParams(null);

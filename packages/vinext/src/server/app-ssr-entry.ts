@@ -40,8 +40,11 @@ import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
 import {
   CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL,
+  countPageEntryRejections,
   withCaughtNotFoundBoundaries,
+  withRenderedPageEntry,
   type CaughtNotFoundBoundaries,
+  type RenderedPageEntry,
 } from "vinext/shims/caught-not-found-boundaries";
 import {
   BeforeInteractiveContext,
@@ -65,6 +68,7 @@ import {
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
+import { trackQueuedFlightRuns } from "./queued-flight-runs.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -95,7 +99,7 @@ import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import { createRenderStreamCancellation, isAppRenderAbortError } from "./app-render-abort-error.js";
-import { getNextErrorDigest } from "./next-error-digest.js";
+import { getNextErrorDigest, parseNextHttpErrorDigest } from "./next-error-digest.js";
 import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigation-errors";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 // @ts-expect-error — resolved by the vinext Vite plugin in SSR environments.
@@ -417,6 +421,12 @@ export async function handleSsr(
      * 404). Omitted, every client reference loads first.
      */
     preloadRoutePattern?: string | null;
+    /**
+     * A boundary's document, which replaces the route's page and the layouts
+     * below the boundary, so it doesn't link the stylesheets of the route's
+     * rendered files (`RouteClientReferenceSet.linked`), as Next.js doesn't.
+     */
+    isBoundaryRender?: boolean;
     formState?: ReactFormState | null;
     basePath?: string;
     /**
@@ -457,17 +467,35 @@ export async function handleSsr(
     isCacheCandidate?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
     /**
+     * Whether a caught document that can't render answers with its error
+     * shell. Defaults to fallbackToErrorDocumentOnShellError; a regeneration,
+     * which takes no error document for its own shell's failure, stores this
+     * one as a request render does.
+     */
+    fallbackToErrorDocumentOnCaughtShellError?: boolean;
+    /**
      * Whether the RSC render threw the given shell error. As in Next.js, in
      * dev the error document carries only an error that the HTML render alone
      * threw, for the overlay: the browser reports the others itself.
      */
     isServerComponentError?: (error: unknown) => boolean;
     /**
-     * The parallel slot not-found boundaries that catch the error that
-     * rejected the shell, or null when none catches it. The document then
-     * renders again from the same payload with them caught.
+     * Whether the RSC render threw the given error as a `dynamic = "error"`
+     * route's request API access, which fails static generation.
      */
-    resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
+    isStaticGenerationError?: (error: unknown) => boolean;
+    /**
+     * The boundaries that catch the error that rejected the shell, a parallel
+     * slot's not-found or the route's own, or null when none catches it. The
+     * document then renders again from the same payload with them caught.
+     * `countPageRejections` counts the copies with the given error's digest
+     * that only the route's page entry rendered, from the page's component or
+     * any component in its subtree.
+     */
+    resolveCaughtNotFoundBoundaries?: (
+      error: unknown,
+      countPageRejections: (rendered: unknown) => number,
+    ) => readonly string[] | null;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
@@ -511,9 +539,13 @@ export async function handleSsr(
     // shows the same document as a warm one, except for those whose modules
     // evaluate asynchronously, which it streams like Next.js. A PPR fallback
     // shell aborts on the next tick, so it loads every reference first.
-    const routeReferences = options?.pprFallbackShellSignal
+    const resolvedReferences = options?.pprFallbackShellSignal
       ? undefined
       : resolveRouteClientReferences(routeClientReferences, options?.preloadRoutePattern);
+    const routeReferences =
+      resolvedReferences && options?.isBoundaryRender
+        ? { ...resolvedReferences, linked: [] }
+        : resolvedReferences;
     const streamedReferences = createStreamedClientReferences(
       routeReferences,
       options?.scriptNonce,
@@ -608,7 +640,13 @@ export async function handleSsr(
             } as PreloadModuleOptions);
           }
           if (!flightRoot) {
-            flightRoot = createFromReadableStream<AppWireElements>(ssrStream, SSR_FLIGHT_OPTIONS);
+            // The root renders once the Flight client has decoded every chunk
+            // queued with the one that completed it, so the tree it renders
+            // doesn't stop at a chunk of the same flush (#4770).
+            const flight = trackQueuedFlightRuns(ssrStream);
+            flightRoot = flight.afterCurrentRun(
+              createFromReadableStream<AppWireElements>(flight.stream, SSR_FLIGHT_OPTIONS),
+            );
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
@@ -620,6 +658,7 @@ export async function handleSsr(
           const routeTree = createAppRouteTree({
             elements,
             historyCommit: null,
+            routeAnnouncer: null,
             routeId: metadata.routeId,
           });
           const identityMapTree = createReactElement(
@@ -677,8 +716,11 @@ export async function handleSsr(
           { value: registerBeforeInteractiveInlineScript },
           ssrTree,
         );
+        // The page entry the document renders, so a shell error can be traced
+        // to the page's subtree.
+        const renderedPageEntry: RenderedPageEntry = {};
         const ssrRoot = withScriptNonce(
-          withAppRouterTree(treeWithBeforeInteractive),
+          withAppRouterTree(withRenderedPageEntry(renderedPageEntry, treeWithBeforeInteractive)),
           options?.scriptNonce,
         );
 
@@ -792,15 +834,49 @@ export async function handleSsr(
         let caughtShellError: unknown;
         let caughtBoundaries: CaughtNotFoundBoundaries | null = null;
         let shouldDelayInitialHtmlPull = false;
-        // Fizz has no error boundaries, so a parallel slot's notFound() rejects
-        // the shell. The root to render the document again with, from the same
-        // payload, with the slot boundaries that catch it on the client
-        // rendering their fallback, or null when any copy isn't caught in its
-        // slot. No server component runs again.
+        // Fizz has no error boundaries, so a parallel slot's notFound(), or the
+        // page's own signal in a route with parallel slots, rejects the shell.
+        // The root to render the document again with, from the same
+        // payload, with the boundaries that catch it on the client rendering
+        // their fallback, or null when any copy isn't caught in the tree. No
+        // server component runs again.
+        const resolveCaughtNotFoundBoundaries = (error: unknown): readonly string[] | null =>
+          options?.resolveCaughtNotFoundBoundaries?.(error, (rendered) =>
+            countPageEntryRejections(renderedPageEntry, rendered),
+          ) ?? null;
         const prepareCaughtNotFoundRoot = (error: unknown): ReactElement | null => {
-          const caughtNotFoundBoundaries =
-            options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
+          const caughtNotFoundBoundaries = resolveCaughtNotFoundBoundaries(error);
           if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
+          return prepareCaughtRoot(error, caughtNotFoundBoundaries);
+        };
+        // The Flight render goes on after the shell rejected, so a signal it
+        // throws later, such as an async page's forbidden() after a slot's
+        // notFound(), can reject the caught render. When the boundaries that
+        // catch every signal thrown so far include the render's and more, it
+        // renders again with them. Each render adds at least one, so this ends.
+        const widenCaughtNotFoundRoot = (
+          error: unknown,
+          caughtRenderError: unknown,
+        ): ReactElement | null => {
+          const digest = getNextErrorDigest(caughtRenderError);
+          const previous = caughtBoundaries?.ids;
+          if (digest === null || parseNextHttpErrorDigest(digest) === null || !previous) {
+            return null;
+          }
+          const caughtNotFoundBoundaries = resolveCaughtNotFoundBoundaries(error);
+          if (
+            !caughtNotFoundBoundaries ||
+            caughtNotFoundBoundaries.length <= previous.size ||
+            !Array.from(previous).every((id) => caughtNotFoundBoundaries.includes(id))
+          ) {
+            return null;
+          }
+          return prepareCaughtRoot(error, caughtNotFoundBoundaries);
+        };
+        const prepareCaughtRoot = (
+          error: unknown,
+          caughtNotFoundBoundaries: readonly string[],
+        ): ReactElement | null => {
           // Decode the payload again inside this render, so that it hints the
           // client references' stylesheets and modules to this document, like
           // the render it replaces. A fallback shell's stays open, as its SSR
@@ -815,13 +891,77 @@ export async function handleSsr(
           flightRoot = null;
           beforeInteractiveInlineScripts.length = 0;
           clearServerInsertedHTML();
-          resetStreamedClientReferences(streamedReferences, routeReferences);
+          // The document's head carries the shell signal's tags, and none for
+          // what the discarded renders threw.
+          errorMetaRenderer.restart([error]);
+          // The caught boundaries replace the files below them, which the
+          // route's linked stylesheets include. Next.js sends an error shell
+          // without stylesheets here, so link only what this render reads.
+          resetStreamedClientReferences(
+            streamedReferences,
+            routeReferences && { ...routeReferences, linked: [] },
+          );
           const boundaries: CaughtNotFoundBoundaries = {
             ids: new Set(caughtNotFoundBoundaries),
             rendered: new Set(),
           };
           caughtBoundaries = boundaries;
           return withCaughtNotFoundBoundaries(boundaries, ssrRoot);
+        };
+        // A caught document that can't render answers by how it failed. A
+        // notFound(), forbidden() or unauthorized() outside the caught
+        // boundaries leaves the shell's own error to its fallback document,
+        // which a boundary above catches, as does any failure of a render
+        // that takes no error document. A client-rendering bailout or dynamic
+        // usage goes on as the shell's own would, and a `dynamic = "error"`
+        // request API access fails the render. Any other failure, a
+        // boundary's file or a slot beside it that redirects or throws,
+        // answers as Next.js does there: its error shell with the shell
+        // error's status, and the payload, which the browser renders. Its
+        // boundaries catch the signal, and their files redirect or throw
+        // there.
+        const renderCaughtErrorShell = (
+          error: unknown,
+          caughtRenderError: unknown,
+        ): ReadableStream<Uint8Array> => {
+          if (
+            isBailoutToCSRError(caughtRenderError) ||
+            isDynamicServerError(caughtRenderError) ||
+            options?.isStaticGenerationError?.(caughtRenderError) === true
+          ) {
+            throw caughtRenderError;
+          }
+          const digest = getNextErrorDigest(caughtRenderError);
+          if (
+            (options?.fallbackToErrorDocumentOnCaughtShellError ??
+              options?.fallbackToErrorDocumentOnShellError) !== true ||
+            (digest !== null && parseNextHttpErrorDigest(digest) !== null)
+          ) {
+            throw error;
+          }
+          caughtBoundaries = null;
+          caughtShellError = error;
+          shellErrorRecovered = true;
+          // Nor does the error shell: Next.js's carries no refresh tag for a
+          // redirect the failed render threw, which the browser follows from
+          // the payload.
+          errorMetaRenderer.restart([error]);
+          streamedReferences.unlinked = streamedReferences.unlinked.filter((id) =>
+            streamedReferences.streamed.has(id),
+          );
+          // A failure only this render hits reaches the dev overlay, as the
+          // shell's own does. A redirect the browser follows is none.
+          if (
+            !isNavigationSignalError(caughtRenderError) &&
+            options?.isServerComponentError?.(caughtRenderError) !== true
+          ) {
+            ssrOnlyShellError = caughtRenderError;
+          }
+          return renderSsrErrorDocumentShell(
+            bootstrapModuleUrl,
+            options?.scriptNonce,
+            assetCrossOrigin,
+          );
         };
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
@@ -846,11 +986,22 @@ export async function handleSsr(
           try {
             htmlStream = await prerenderFallbackShell(ssrRoot);
           } catch (error) {
-            const caughtRoot = prepareCaughtNotFoundRoot(error);
+            let caughtRoot = prepareCaughtNotFoundRoot(error);
             if (!caughtRoot) throw error;
-            // A slot's not-found boundary that throws replaces the 404.
-            htmlStream = await prerenderFallbackShell(caughtRoot);
-            caughtShellError = error;
+            for (;;) {
+              try {
+                htmlStream = await prerenderFallbackShell(caughtRoot);
+                caughtShellError = error;
+              } catch (caughtRenderError) {
+                const widenedRoot = widenCaughtNotFoundRoot(error, caughtRenderError);
+                if (widenedRoot) {
+                  caughtRoot = widenedRoot;
+                  continue;
+                }
+                htmlStream = renderCaughtErrorShell(error, caughtRenderError);
+              }
+              break;
+            }
           }
         } else {
           let streamingHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
@@ -871,23 +1022,33 @@ export async function handleSsr(
             htmlStream = streamingHtmlStream;
           } catch (error) {
             void streamingHtmlStream?.cancel().catch(() => {});
-            const caughtRoot = prepareCaughtNotFoundRoot(error);
+            let caughtRoot = prepareCaughtNotFoundRoot(error);
             if (caughtRoot) {
-              let caughtHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
-              try {
-                caughtHtmlStream = await runWithStreamedClientReferences(streamedReferences, () =>
-                  renderToReadableStream(caughtRoot, renderOptions),
-                );
-                if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
-              } catch (caughtRenderError) {
-                // A slot's not-found boundary that throws replaces the 404.
-                void caughtHtmlStream?.cancel().catch(() => {});
-                throw caughtRenderError;
+              for (;;) {
+                let caughtHtmlStream:
+                  | Awaited<ReturnType<typeof renderToReadableStream>>
+                  | undefined;
+                try {
+                  const root = caughtRoot;
+                  caughtHtmlStream = await runWithStreamedClientReferences(streamedReferences, () =>
+                    renderToReadableStream(root, renderOptions),
+                  );
+                  if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
+                  renderComplete = caughtHtmlStream.allReady;
+                  shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
+                  caughtShellError = error;
+                  htmlStream = caughtHtmlStream;
+                } catch (caughtRenderError) {
+                  void caughtHtmlStream?.cancel().catch(() => {});
+                  const widenedRoot = widenCaughtNotFoundRoot(error, caughtRenderError);
+                  if (widenedRoot) {
+                    caughtRoot = widenedRoot;
+                    continue;
+                  }
+                  htmlStream = renderCaughtErrorShell(error, caughtRenderError);
+                }
+                break;
               }
-              renderComplete = caughtHtmlStream.allReady;
-              shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
-              caughtShellError = error;
-              htmlStream = caughtHtmlStream;
             } else if (
               options?.fallbackToErrorDocumentOnShellError !== true ||
               isNavigationSignalError(error) ||
@@ -902,6 +1063,11 @@ export async function handleSsr(
               // the error, so no server component runs, or reports, again.
               // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx (getErrorRSCPayload)
               shellErrorRecovered = true;
+              // The error document shows none of the route's files, so it
+              // links none of their stylesheets, as Next.js's doesn't.
+              streamedReferences.unlinked = streamedReferences.unlinked.filter((id) =>
+                streamedReferences.streamed.has(id),
+              );
               if (options?.isServerComponentError?.(error) !== true) ssrOnlyShellError = error;
               htmlStream = renderSsrErrorDocumentShell(
                 bootstrapModuleUrl,
@@ -1010,10 +1176,13 @@ export async function handleSsr(
         // By that point React Fizz has rendered the layout's `<head>` children
         // (which is where the Script shim registers), so the captured array is
         // populated. We deliberately return a snapshot — `flushBuffered` will
-        // not re-invoke us, and any beforeInteractive Script that renders
-        // later (inside a Suspense boundary further down the tree) falls back
-        // to its inline location, matching the documented guarantee that
-        // ordering applies to scripts rendered in the initial shell.
+        // not re-invoke us. A beforeInteractive Script that renders after this
+        // snapshot (for example inside a Suspense boundary that resolves
+        // later) still registers and returns null, so it is never emitted. A render that
+        // waits for `allReady` first registers every such Script before this
+        // runs. Next.js renders a late Script's queue push in place, but its
+        // bootstrap has usually drained the queue by then, so it doesn't run
+        // there either; Next.js documents these scripts for the root layout.
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
 

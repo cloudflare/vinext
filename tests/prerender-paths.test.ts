@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -639,6 +640,58 @@ describe("prerender path manifest", () => {
     },
   );
 
+  it("lists the paths of a route whose layout generator gives every param under dynamicParams = false", async () => {
+    // app/[lang]/[slug]/page.tsx has no generator, so Next.js prerenders the
+    // route only because its rows have every param. dynamicParams = false on
+    // the page or any layout lets vinext's request check store it.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    for (const [folder, page, layout] of [
+      ["page-false", "export const dynamicParams = false;\n", ""],
+      ["layout-false", "", "export const dynamicParams = false;\n"],
+    ]) {
+      writeFile(
+        `app/${folder}/[lang]/layout.tsx`,
+        [
+          layout,
+          "export function generateStaticParams() { return [{ lang: 'en', slug: 'a' }]; }",
+          "export default function Layout({ children }) { return children; }",
+        ].join("\n"),
+      );
+      writeFile(
+        `app/${folder}/[lang]/[slug]/page.tsx`,
+        `${page}export default function Page() { return null; }\n`,
+      );
+    }
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pattern = new URL(
+        input instanceof Request ? input.url : String(input),
+      ).searchParams.get("pattern");
+      if (pattern?.startsWith("layouts:") && pattern.endsWith("[lang]")) {
+        return Response.json([{ lang: "en", slug: "a" }]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(
+      expect.arrayContaining(["/page-false/en/a", "/layout-false/en/a"]),
+    );
+    const unlisted = (pathname: string) =>
+      manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.unlisted;
+    expect(unlisted("/page-false/en/a")).toBeUndefined();
+    expect(unlisted("/layout-false/en/a")).toBeUndefined();
+  });
+
   it("passes a nested dynamic route only its layouts' params as parent params", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
@@ -1026,6 +1079,348 @@ describe("prerender path manifest", () => {
     expect(manifest?.rscPaths).toEqual([]);
   });
 
+  it("discovers the metadata routes Next.js prerenders as Route Handler warm targets", async () => {
+    // Next.js prerenders static metadata routes and the ones whose own module
+    // generates their params; see getWarmableMetadataRoutes for the probe.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/docs/[[...slug]]/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/favicon.ico", "icon");
+    writeFile("app/opengraph-image.png", "png");
+    // Next.js serves and prerenders this at /shop/-/twitter-image.png.
+    writeFile("app/shop/[id]/twitter-image.png", "png");
+    writeFile("app/sitemap.ts", "export default function sitemap() { return []; }");
+    writeFile(
+      "app/docs/opengraph-image.tsx",
+      "export function generateImageMetadata() { return []; }\nexport default function Image() {}",
+    );
+    writeFile(
+      "app/blog/[slug]/opengraph-image.tsx",
+      "export function generateStaticParams() { return []; }\nexport default function Image() {}",
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          // The staged build lists its static files with the hash it links.
+          { paths: ["/favicon.ico"], routePattern: "/favicon.ico", search: "?built-hash" },
+          {
+            paths: ["/opengraph-image.png"],
+            routePattern: "/opengraph-image.png",
+            search: "?og-hash",
+          },
+          {
+            paths: ["/shop/-/twitter-image.png"],
+            routePattern: "/shop/-/twitter-image.png",
+            search: "?twitter-hash",
+          },
+          { paths: ["/sitemap.xml"], routePattern: "/sitemap.xml" },
+          {
+            paths: ["/docs/opengraph-image/one", "/docs/opengraph-image/two"],
+            routePattern: "/docs/opengraph-image",
+            search: "?docs-hash",
+          },
+          {
+            routePattern: "/blog/:slug/opengraph-image",
+            staticParams: [{ slug: "first" }, { slug: "with space" }],
+          },
+          // Below `@modal/(.)[id]`, the head links `/feed/(.)7/...`.
+          {
+            routePattern: "/feed/(.):id/opengraph-image-abc",
+            staticParams: [{ id: "7" }, { id: "a b" }],
+          },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    const metadataPaths = [
+      "/blog/first/opengraph-image",
+      "/blog/with%20space/opengraph-image",
+      "/docs/opengraph-image/one",
+      "/docs/opengraph-image/two",
+      "/favicon.ico",
+      "/feed/(.)7/opengraph-image-abc",
+      "/feed/(.)a%20b/opengraph-image-abc",
+      "/opengraph-image.png",
+      "/shop/-/twitter-image.png",
+      "/sitemap.xml",
+    ];
+    expect([...(manifest?.routeHandlerPaths ?? [])].sort()).toEqual(metadataPaths);
+    // The /docs catch-all page doesn't claim the metadata routes below it.
+    expect(manifest?.paths).toEqual(["/"]);
+    expect(manifest?.routePatterns).toMatchObject({
+      "/blog/first/opengraph-image": {
+        kind: "app-route",
+        metadataRoute: true,
+        pattern: "/blog/:slug/opengraph-image",
+      },
+      "/docs/opengraph-image/one": {
+        kind: "app-route",
+        metadataRoute: true,
+        metadataSearch: "?docs-hash",
+        pattern: "/docs/opengraph-image",
+      },
+      // Pages link a static image with the deployed build's hash of the
+      // file, which `--skip-build` keeps after the source file changes.
+      "/favicon.ico": {
+        kind: "app-route",
+        metadataRoute: true,
+        metadataSearch: "?built-hash",
+        pattern: "/favicon.ico",
+      },
+      "/sitemap.xml": { kind: "app-route", metadataRoute: true, pattern: "/sitemap.xml" },
+    });
+    expect(manifest?.routePatterns?.["/sitemap.xml"]?.metadataSearch).toBeUndefined();
+    const metadataRequest = fetchMock.mock.calls.find(([input]) =>
+      (input instanceof Request ? input.url : String(input)).includes(
+        "/__vinext/prerender/metadata-routes",
+      ),
+    );
+    expect(metadataRequest?.[0]).toBe(
+      "https://staged.example.workers.dev/__vinext/prerender/metadata-routes?warm=1",
+    );
+    expect(new Headers(metadataRequest?.[1]?.headers).get("x-vinext-prerender-secret")).toBe(
+      "staged-discovery-secret",
+    );
+  });
+
+  it("warms the metadata routes the deployed build serves after the source drops them", async () => {
+    // No Next.js test port applies: `--skip-build` warms the staged build,
+    // whose routes the Worker lists even when the source no longer has them.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { paths: ["/favicon.ico"], routePattern: "/favicon.ico", search: "?built-hash" },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/favicon.ico"]);
+    expect(manifest?.routePatterns?.["/favicon.ico"]).toMatchObject({
+      metadataRoute: true,
+      metadataSearch: "?built-hash",
+      pattern: "/favicon.ico",
+    });
+  });
+
+  it("hashes static metadata files itself when no server is running", async () => {
+    // No Next.js test port applies: the hash matches the links vinext's build
+    // writes.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/favicon.ico", "icon");
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/favicon.ico"]);
+    expect(manifest?.routePatterns?.["/favicon.ico"]).toMatchObject({
+      metadataRoute: true,
+      metadataSearch: `?${createHash("sha1").update("icon").digest("hex").slice(0, 16)}`,
+      pattern: "/favicon.ico",
+    });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("lists only one-URL metadata routes for traffic-aware warming", async () => {
+    // No Next.js test port applies: traffic-aware warming is vinext-specific.
+    // It runs no generators, so the Worker lists only routes with one URL.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/[...slug]/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/favicon.ico", "icon");
+    writeFile("app/opengraph-image.tsx", "export default function Image() {}");
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { paths: ["/favicon.ico"], routePattern: "/favicon.ico", search: "?built-hash" },
+          { paths: ["/opengraph-image"], routePattern: "/opengraph-image", search: "?og-hash" },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: ["/opengraph-image", "/docs/guide"],
+      candidatePathsOnly: true,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/favicon.ico", "/opengraph-image"]);
+    // The catch-all page doesn't claim the traffic-picked metadata path.
+    expect([...(manifest?.paths ?? [])].sort()).toEqual(["/", "/docs/guide"]);
+    expect(manifest?.routePatterns?.["/opengraph-image"]).toMatchObject({
+      kind: "app-route",
+      metadataRoute: true,
+      metadataSearch: "?og-hash",
+      pattern: "/opengraph-image",
+    });
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        (input instanceof Request ? input.url : String(input)).endsWith(
+          "/__vinext/prerender/metadata-routes?warm=1&dynamicPaths=0",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("matches routing rules to a metadata route's unslashed pathname", async () => {
+    // No Next.js test port applies: warm-time routing checks are vinext's. The
+    // runtime serves a metadata route without the trailingSlash redirect.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile("app/opengraph-image.tsx", "export default function Image() {}");
+    writeFile("app/icon.tsx", "export default function Icon() {}");
+    writeFile(
+      "next.config.mjs",
+      [
+        "export default {",
+        "  trailingSlash: true,",
+        "  redirects: async () => [",
+        "    { source: '/opengraph-image/', destination: '/', permanent: false },",
+        "    { source: '/icon', destination: '/', permanent: false },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { paths: ["/opengraph-image"], routePattern: "/opengraph-image" },
+          { paths: ["/icon"], routePattern: "/icon" },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+      responseVary: "verbatim",
+    });
+
+    // The runtime requests /opengraph-image as served, which the slashed
+    // source never matches, and /icon, which the unslashed one does.
+    expect(manifest?.routeHandlerPaths).toEqual(["/opengraph-image"]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/icon"]);
+  });
+
+  it("lets afterFiles rewrites skip every metadata path, as the runtime serves them first", async () => {
+    // No Next.js test port applies: vinext's runtime serves metadata routes
+    // before its afterFiles rewrites.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile("app/page.tsx", "export default function Page() { return null; }");
+    writeFile(
+      "app/gallery/opengraph-image.tsx",
+      "export function generateImageMetadata() { return []; }\nexport default function Image() {}",
+    );
+    writeFile(
+      "next.config.mjs",
+      [
+        "export default {",
+        "  rewrites: async () => ({",
+        "    afterFiles: [{ source: '/gallery/:path*', destination: '/' }],",
+        "  }),",
+        "};",
+      ].join("\n"),
+    );
+    const fetchMock = vi.mocked(fetch);
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        return Response.json([
+          { paths: ["/gallery/opengraph-image/small"], routePattern: "/gallery/opengraph-image" },
+        ]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.routeHandlerPaths).toEqual(["/gallery/opengraph-image/small"]);
+    expect(manifest?.excludedWarmPaths ?? []).toEqual([]);
+  });
+
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {
     // No Next.js test port applies: staged Worker version overrides and
     // cloudflare:workers bindings are Cloudflare-specific.
@@ -1086,7 +1481,9 @@ describe("prerender path manifest", () => {
         }),
       )
       .mockResolvedValueOnce(new Response("version still propagating", { status: 500 }))
-      .mockResolvedValueOnce(Response.json([{ slug: "intro" }]));
+      .mockResolvedValueOnce(Response.json([{ slug: "intro" }]))
+      // The metadata route listing, after the version is reachable.
+      .mockImplementation(async () => Response.json([]));
     vi.stubGlobal("fetch", remoteFetch);
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
@@ -1116,7 +1513,7 @@ describe("prerender path manifest", () => {
     });
 
     expect(manifest?.paths).toEqual(["/cached/intro"]);
-    expect(remoteFetch).toHaveBeenCalledTimes(4);
+    expect(remoteFetch).toHaveBeenCalledTimes(5);
     for (const [, init] of remoteFetch.mock.calls) {
       expect(init?.redirect).toBe("manual");
     }
@@ -1125,7 +1522,9 @@ describe("prerender path manifest", () => {
   it("uses the full discovery phase when no retry limit is configured", async () => {
     // No Next.js test port applies: Worker version propagation is Cloudflare-specific.
     let attempts = 0;
-    const remoteFetch = vi.fn<typeof fetch>(async () => {
+    const remoteFetch = vi.fn<typeof fetch>(async (input) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.includes("/__vinext/prerender/metadata-routes")) return Response.json([]);
       attempts++;
       return attempts <= 61
         ? new Response("old Worker", { status: 404 })
@@ -1156,7 +1555,7 @@ describe("prerender path manifest", () => {
     });
 
     expect(manifest?.paths).toEqual(["/cached/intro"]);
-    expect(remoteFetch).toHaveBeenCalledTimes(62);
+    expect(attempts).toBe(62);
   });
 
   it("reports exhausted discovery attempts and the last transient status", async () => {
@@ -2298,7 +2697,15 @@ describe("prerender path manifest", () => {
         "app/[slug]/page.mdx",
         'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
       );
-      vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+      vi.mocked(fetch).mockImplementation(async (input) =>
+        Response.json(
+          (input instanceof Request ? input.url : String(input)).includes(
+            "/__vinext/prerender/metadata-routes",
+          )
+            ? []
+            : [{ slug: "hello" }],
+        ),
+      );
 
       const [
         { emitPrerenderPathManifest },

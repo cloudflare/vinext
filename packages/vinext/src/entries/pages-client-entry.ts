@@ -174,7 +174,12 @@ import { hydrateRoot } from "react-dom/client";
 import Router, {
   wrapWithRouterContext,
   _initializePagesRouterReadyFromNextData,
+  _registerPagesRouteAnnouncer,
 } from "next/router";
+import { PagesRouteAnnouncer } from "vinext/route-announcer";
+
+// Mounted from the client entry only, as Next.js's client/index.tsx does.
+_registerPagesRouteAnnouncer(PagesRouteAnnouncer);
 
 const pageLoaders = {
 ${loaderEntries.join(",\n")}

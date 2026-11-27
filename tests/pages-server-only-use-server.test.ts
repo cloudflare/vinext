@@ -25,6 +25,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { toSlash } from "pathslash";
 import { createBuilder, createLogger, createServer, type Plugin } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
@@ -272,7 +273,7 @@ describe.each([
       writeSessionModule(root, file, source);
 
       // The error names the "use server" module as the importer.
-      const importer = path.join(fs.realpathSync(root), "server", file);
+      const importer = toSlash(path.join(fs.realpathSync.native(root), "server", file));
       await expect(buildFixture(root, await fixturePlugins(useCloudflare))).rejects.toThrow(
         serverOnlyClientImportError(importer),
       );
@@ -286,7 +287,7 @@ describe.each([
       const root = copyFixture(fixtureDir);
       const { guarded } = writeChain(root, { withPage: true });
 
-      const importer = path.join(fs.realpathSync(root), guarded);
+      const importer = toSlash(path.join(fs.realpathSync.native(root), guarded));
       await expect(buildFixture(root, await fixturePlugins(useCloudflare))).rejects.toThrow(
         serverOnlyClientImportError(importer),
       );

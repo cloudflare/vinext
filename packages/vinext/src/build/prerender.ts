@@ -36,6 +36,7 @@ import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
 import {
+  interceptionMarkerPatternParam,
   normalizeStaticPathname,
   normalizeStaticPathsEntry,
   type StaticPathsEntry,
@@ -51,6 +52,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -86,6 +88,7 @@ import {
   markAppPprDynamicFallbackShellHtml,
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
+import { PRERENDER_NOT_FOUND_PATH } from "../server/prerender-not-found.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
@@ -330,9 +333,6 @@ type PrerenderAppOptionsInternal = PrerenderAppOptions & {
 
 // ─── Concurrency helpers ──────────────────────────────────────────────────────
 
-/** Sentinel path used to trigger 404 rendering without a real route match. */
-const NOT_FOUND_SENTINEL_PATH = "/__vinext_nonexistent_for_404__";
-
 const DEFAULT_CONCURRENCY = Math.min(os.availableParallelism(), 8);
 
 const RSC_LEGACY_CHUNK_SCRIPT_PREFIX = "self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];";
@@ -494,6 +494,8 @@ export function buildUrlFromParams(
   const result: string[] = [];
 
   for (const part of parts) {
+    // A marker-prefixed segment, `(.):id`, keeps its marker before the value.
+    const markerParam = interceptionMarkerPatternParam(part);
     if (part.endsWith("+") || part.endsWith("*")) {
       const paramName = part.slice(1, -1);
       const value = params[paramName];
@@ -502,8 +504,8 @@ export function buildUrlFromParams(
       } else if (value) {
         result.push(encodeURIComponent(String(value)));
       }
-    } else if (part.startsWith(":")) {
-      const paramName = part.slice(1);
+    } else if (markerParam || part.startsWith(":")) {
+      const paramName = markerParam?.name ?? part.slice(1);
       const value = params[paramName];
       if (value === undefined || value === null) {
         throw new Error(
@@ -511,7 +513,7 @@ export function buildUrlFromParams(
             `Check that generateStaticParams (or getStaticPaths) returns an object with a "${paramName}" key.`,
         );
       }
-      result.push(encodeURIComponent(String(value)));
+      result.push(`${markerParam?.marker ?? ""}${encodeURIComponent(String(value))}`);
     } else {
       result.push(part);
     }
@@ -674,6 +676,10 @@ type DynamicPatternParam = { name: string; optional: boolean; repeat: boolean };
 function getDynamicPatternParams(pattern: string): DynamicPatternParam[] {
   return pattern
     .split("/")
+    .map((segment) => {
+      const markerParam = interceptionMarkerPatternParam(segment);
+      return markerParam ? `:${markerParam.name}` : segment;
+    })
     .filter((segment) => segment.startsWith(":"))
     .map((segment) => ({
       name: segment.slice(1, segment.endsWith("+") || segment.endsWith("*") ? -1 : undefined),
@@ -932,7 +938,7 @@ export async function prerenderPages({
     // `baseUrl` (the single prerender server).
     let renderPorts: number[] = [prodServer.port];
     let renderRoundRobin = 0;
-    const renderPage = (urlPath: string) => {
+    const renderPage = (urlPath: string, headers: Record<string, string> = {}) => {
       const port = renderPorts[renderRoundRobin++ % renderPorts.length];
       // The manual redirect mode below is needed to export redirects returned
       // by getStaticProps. Avoid confusing the framework's own canonical 308
@@ -945,7 +951,7 @@ export async function prerenderPages({
           ? config.basePath
           : `${config.basePath ?? ""}${routeRequestPath}`;
       return fetch(`http://127.0.0.1:${port}${requestPath}`, {
-        headers: secretHeaders,
+        headers: { ...secretHeaders, ...headers },
         redirect: "manual",
       });
     };
@@ -1348,7 +1354,8 @@ export async function prerenderPages({
       if (!hasCustom404 && !hasErrorPage) break;
       try {
         const notFoundRes = await renderPage(
-          localizePagesPath(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH, locale, config.i18n),
+          localizePagesPath(hasCustom404 ? "/404" : PRERENDER_NOT_FOUND_PATH, locale, config.i18n),
+          hasCustom404 ? {} : { [VINEXT_PRERENDER_NOT_FOUND_HEADER]: "1" },
         );
         // Same rule as the page loop: a conditional rewrite of the 404 path to
         // another file, API, or page must not become the deployment-wide 404.
@@ -2272,16 +2279,18 @@ export async function prerenderApp({
         : [];
 
     // ── Render 404 page ───────────────────────────────────────────────────────
-    // Fetch a known-nonexistent URL to get the App Router's not-found response.
-    // The RSC handler returns 404 with full HTML for the not-found.tsx page (or
-    // the default Next.js 404). Write it to 404.html for static deployment.
+    // Fetch the not-found path, which no route matches while prerendering, to
+    // get the App Router's not-found response. The RSC handler returns 404
+    // with full HTML for the not-found.tsx page (or the default Next.js 404).
+    // Write it to 404.html for static deployment.
     try {
       const notFoundPath =
-        config.trailingSlash && !NOT_FOUND_SENTINEL_PATH.endsWith("/")
-          ? `${NOT_FOUND_SENTINEL_PATH}/`
-          : NOT_FOUND_SENTINEL_PATH;
+        config.trailingSlash && !PRERENDER_NOT_FOUND_PATH.endsWith("/")
+          ? `${PRERENDER_NOT_FOUND_PATH}/`
+          : PRERENDER_NOT_FOUND_PATH;
       const notFoundRequest = new Request(
         `http://localhost${config.basePath ?? ""}${notFoundPath}`,
+        { headers: { [VINEXT_PRERENDER_NOT_FOUND_HEADER]: "1" } },
       );
       const notFoundRes = await runWithHeadersContext(
         headersContextFromRequest(notFoundRequest),

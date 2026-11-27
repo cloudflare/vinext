@@ -21,7 +21,7 @@ import {
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
-  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageCaughtAccessBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   resolveAppPageSpecialErrorStoredHeaders,
@@ -47,7 +47,7 @@ import {
   createAppPageFontData,
   createAppPageRscErrorTracker,
   createAppPageSsrErrorHandler,
-  deferUntilStreamConsumed,
+  deferAppPageRequestContextCleanup,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
@@ -160,6 +160,12 @@ type RenderAppPageLifecycleOptionsBase = {
     routePath: string,
     overrides?: AppRenderErrorContextOverrides,
   ) => AppPageBoundaryOnError;
+  /**
+   * Whether the route's own boundaries catch its page's HTTP access fallback
+   * in the document, as for a route with parallel slots, which keep rendering
+   * beside them (see `resolveAppPageCaughtAccessBoundaries`).
+   */
+  catchesRouteSignals?: boolean;
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
@@ -1516,6 +1522,7 @@ async function renderAppPageLifecycleImpl(
           options.isPrerender === true && options.isSpeculativePrerender === true
         ),
         isServerComponentError: rscErrorTracker.isCapturedError,
+        isStaticGenerationError: rscErrorTracker.isStaticGenerationError,
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
@@ -1525,10 +1532,11 @@ async function renderAppPageLifecycleImpl(
         // Next.js's `self.__next_f` Flight transport, as the boundary's own
         // document does.
         mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
-        resolveCaughtNotFoundBoundaries: (error) =>
-          resolveAppPageCaughtNotFoundBoundaries(
+        resolveCaughtNotFoundBoundaries: (error, countPageRejections) =>
+          resolveAppPageCaughtAccessBoundaries(
             error,
-            rscErrorTracker.getCapturedSpecialErrors(error),
+            rscErrorTracker.getCapturedAccessFallbackErrors(),
+            { catchesRouteSignals: options.catchesRouteSignals, countPageRejections },
           ),
       });
     },
@@ -1674,12 +1682,15 @@ async function renderAppPageLifecycleImpl(
   // Clearing the context synchronously here would race those executions, causing
   // headers()/cookies() to see a null context on warm (module-cached) requests.
   // See: https://github.com/cloudflare/vinext/issues/660
-  const safeHtmlStream = deferUntilStreamConsumed(htmlStream, () => {
-    dynamicUsedBeforeContextCleanup =
-      dynamicUsedBeforeContextCleanup || consumeRenderDynamicUsage();
-    dynamicUsedDuringHtmlRender = dynamicUsedBeforeContextCleanup;
-    options.clearRequestContext();
-  });
+  const safeHtmlStream = deferAppPageRequestContextCleanup(
+    htmlStream,
+    () => options.clearRequestContext(),
+    () => {
+      dynamicUsedBeforeContextCleanup =
+        dynamicUsedBeforeContextCleanup || consumeRenderDynamicUsage();
+      dynamicUsedDuringHtmlRender = dynamicUsedBeforeContextCleanup;
+    },
+  );
 
   const { htmlResponsePolicy, shouldWriteHtmlCache } =
     resolveHtmlCacheWrite(dynamicUsedDuringRender);

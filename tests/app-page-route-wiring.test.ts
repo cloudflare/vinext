@@ -11,11 +11,16 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import { notFound, useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_HEAD_ID_PREFIX,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   APP_STATIC_SIBLINGS_KEY,
   AppElementsWire,
@@ -36,13 +41,19 @@ import {
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import {
   APP_PAGE_NOT_FOUND_BOUNDARY_ID,
-  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageCaughtAccessBoundaries,
 } from "../packages/vinext/src/server/app-page-execution.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import {
+  createMountedSlotToken,
+  normalizeMountedSlotsHeader,
+  parseMountedSlotsHeader,
+  type MountedSlots,
+} from "../packages/vinext/src/server/app-mounted-slots-header.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
 import {
@@ -204,7 +215,10 @@ function collectBfcacheSpine(node: unknown): string[] {
     const typeName = getElementTypeName(element.type);
     if (typeName === "BfcacheChildrenBoundary") {
       spine.push(`list ${String(element.props.stateKey ?? element.props.id)}`);
-    } else if (typeName === "Slot") {
+    } else if (
+      typeName === "Slot" &&
+      !String(element.props.id).startsWith(APP_ROUTE_HEAD_ID_PREFIX)
+    ) {
       spine.push(String(element.props.id));
     }
     return false;
@@ -724,6 +738,22 @@ describe("app page route wiring helpers", () => {
     expect(head).toContain("<title>generated page</title>");
     expect(head).toContain('rel="canonical" href="https://example.com/generated"');
     expect(body).not.toContain("<title>generated page</title>");
+  });
+
+  it("renders the route head as its own entry beside the layout tree", async () => {
+    const elements = await buildGeneratedMetadataRouteElements("Minibot", "Minibot");
+    const headId = `${APP_ROUTE_HEAD_ID_PREFIX}route:/generated`;
+    expect(Object.hasOwn(elements, headId)).toBe(true);
+
+    const html = await renderRouteDocument(elements, "route:/generated");
+    expect(readDocumentSection(html, "head")).toContain("<title>generated page</title>");
+
+    // The route entry only names the head, so a client can keep the head it
+    // holds while the layout tree beside it changes.
+    const { [headId]: _head, ...withoutHead } = elements;
+    const htmlWithoutHead = await renderRouteDocument(withoutHead, "route:/generated");
+    expect(htmlWithoutHead).not.toContain("<title>generated page</title>");
+    expect(htmlWithoutHead).toContain("Page");
   });
 
   it("streams generated metadata for bots outside the configured html-limited rule", async () => {
@@ -1308,7 +1338,7 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      mountedSlotIds: new Set(["slot:sidebar:/"]),
+      mountedSlots: new Map([["slot:sidebar:/", null]]),
       route: {
         error: null,
         errors: [null],
@@ -1354,7 +1384,7 @@ describe("app page route wiring helpers", () => {
         return Promise.resolve(params);
       },
       matchedParams: {},
-      mountedSlotIds: new Set(["slot:sidebar:/"]),
+      mountedSlots: new Map([["slot:sidebar:/", null]]),
       route: {
         error: null,
         errors: [null],
@@ -1433,6 +1463,50 @@ describe("app page route wiring helpers", () => {
       html.indexOf('data-slot-layout="nested"'),
     );
     expect(html.indexOf('data-slot-layout="nested"')).toBeLessThan(html.indexOf("data-slot-page"));
+  });
+
+  // Issue #4810: the RSC payload carries the route's server-component font
+  // rules, for the browser to add after a client navigation. The element
+  // renders nothing on the server, so the document is unchanged.
+  it("carries the route's font rules in the route element", async () => {
+    const routeFonts = {
+      styles: [".__font_local_abc { font-family: 'fontA', sans-serif; }"],
+      preloads: [{ href: "/assets/font-a.woff2", type: "font/woff2" }],
+      links: [],
+    };
+    const buildElements = (fonts: typeof routeFonts | null) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["fonts"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routeFonts: fonts,
+        routePath: "/fonts",
+        rootNotFoundModule: null,
+      });
+
+    const elements = buildElements(routeFonts);
+    expect(findElementByTypeName(elements["route:/fonts"], "RouteFontsInsertion")?.props).toEqual(
+      routeFonts,
+    );
+    expect(await renderRouteEntry(elements, "route:/fonts")).not.toContain("fontA");
+    expect(
+      findElementByTypeName(buildElements(null)["route:/fonts"], "RouteFontsInsertion"),
+    ).toBeNull();
   });
 
   it("keeps route loading boundaries in the rendered tree", () => {
@@ -1952,6 +2026,18 @@ describe("app page route wiring helpers", () => {
         route: {
           error: null,
           errors: [null],
+          ids: {
+            layouts: [AppElementsWire.encodeLayoutId("/")],
+            page: "page:/dashboard",
+            rootBoundary: null,
+            route: "route:/dashboard",
+            routeHandler: null,
+            slots: {
+              panel: AppElementsWire.encodeSlotId("panel", "/"),
+              sidebar: AppElementsWire.encodeSlotId("sidebar", "/"),
+            },
+            templates: [],
+          },
           layoutTreePositions: [0],
           layouts: [{ default: RootLayout }],
           loading: null,
@@ -2567,6 +2653,49 @@ describe("app page route wiring helpers", () => {
     expect(Object.hasOwn(elements, "__vinext_streaming_metadata_body:route:/dashboard")).toBe(true);
   });
 
+  // In development, React's Node Flight server keeps a component's props for as
+  // long as a promise the component created is alive. A head resolver in the
+  // props would keep the head's own promises, and with them the render, alive.
+  it("names the head by an id within a request, not by its resolver", async () => {
+    const resolveHead = (): AppPageRouteHead => ({
+      metadata: Promise.resolve({ title: "Dashboard" }),
+      outlet: Promise.resolve(null),
+      viewport: Promise.resolve({}),
+    });
+    await runWithRequestContext(createRequestContext(), async () => {
+      const elements = buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        metadataPlacement: "body",
+        resolveHead,
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+      });
+      const bodyId = "__vinext_streaming_metadata_body:route:/dashboard";
+      const outletId = "__vinext_streaming_metadata_outlet:route:/dashboard";
+      for (const id of [bodyId, outletId]) {
+        const element = elements[id] as ReactElement<{ head: unknown }>;
+        expect(typeof element.props.head).toBe("string");
+      }
+      expect(await renderRouteEntry(elements, bodyId)).toContain("<title>Dashboard</title>");
+    });
+  });
+
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
@@ -3002,10 +3131,9 @@ describe("app page route wiring helpers", () => {
         (invoker.type as () => unknown)();
       } catch (error) {
         const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
-        return resolveAppPageCaughtNotFoundBoundaries(
-          Object.assign(new Error(digest), { digest }),
-          [error],
-        );
+        return resolveAppPageCaughtAccessBoundaries(Object.assign(new Error(digest), { digest }), [
+          error,
+        ]);
       }
       throw new Error("expected the members layout to throw");
     };
@@ -4779,7 +4907,7 @@ describe("app page route wiring helpers", () => {
     const DefaultPage = () => createElement("p", null, "default-slot");
     const elements = buildAppPageElements({
       isRscRequest: true,
-      mountedSlotIds: new Set(["slot:team:/"]),
+      mountedSlots: new Map([["slot:team:/", null]]),
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
@@ -4819,11 +4947,11 @@ describe("app page route wiring helpers", () => {
     expect(elements["slot:team:/"]).toBeUndefined();
   });
 
-  it("renders slot default.tsx on RSC request when slot is not in mountedSlotIds (first entry)", () => {
+  it("renders slot default.tsx on RSC request when slot is not in mountedSlots (first entry)", () => {
     const DefaultPage = () => createElement("p", null, "default-slot");
     const elements = buildAppPageElements({
       isRscRequest: true,
-      mountedSlotIds: new Set([]),
+      mountedSlots: new Map(),
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
@@ -4861,6 +4989,62 @@ describe("app page route wiring helpers", () => {
     // yet (first navigation into this layout), default.tsx must render so the
     // initial slot content is populated.
     expect(elements["slot:team:/"]).toBeDefined();
+  });
+
+  it("omits a mounted default-only slot only while its owner renders for the same params", () => {
+    const AsideDefault = () => createElement("p", null, "aside-default");
+    const OwnerLayout = ({ children }: { children?: React.ReactNode }) =>
+      createElement("section", null, children);
+    const build = (id: string, mountedSlots: MountedSlots | null) =>
+      buildAppPageElements({
+        isRscRequest: true,
+        mountedSlots,
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { id },
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 1],
+          layouts: [{ default: RootLayout }, { default: OwnerLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments: ["[id]"],
+          slots: {
+            aside: {
+              default: { default: AsideDefault },
+              error: null,
+              layout: null,
+              layoutIndex: 1,
+              loading: null,
+              name: "aside",
+              page: null,
+              routeSegments: [],
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: `/${id}`,
+        rootNotFoundModule: null,
+      });
+    const slotId = "slot:aside:/[id]";
+    const mounted = build("1", null);
+    expect(mounted[slotId]).toBeDefined();
+    const identities = mounted[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] as Record<string, string>;
+    const mountedSlots = parseMountedSlotsHeader(
+      normalizeMountedSlotsHeader(createMountedSlotToken(slotId, identities[slotId])),
+    );
+
+    // Next.js keeps what the slot shows while its layout renders for the same
+    // params, and renders its default afresh for others.
+    expect(build("1", mountedSlots)[slotId]).toBeUndefined();
+    expect(build("2", mountedSlots)[slotId]).toBeDefined();
+    // A token without the shell's identity keeps the slot as before.
+    expect(build("2", new Map([[slotId, null]]))[slotId]).toBeUndefined();
   });
 
   it("renders slot default.tsx without its slot layout on hard navigation", async () => {
@@ -5388,6 +5572,89 @@ describe("app page route wiring helpers", () => {
         ),
       ).toEqual([]);
     }
+  });
+
+  it("ids the boundaries that catch the page's forbidden() and unauthorized()", () => {
+    // A document whose parallel slots keep rendering beside the boundary that
+    // caught the page's signal renders that boundary caught, so the one that
+    // catches the page's own signal carries an id, as the not-found one does.
+    function NfLayout(props: Record<string, unknown>) {
+      return createElement("section", null, props.children as ReactNode);
+    }
+    function SubLayout(props: Record<string, unknown>) {
+      return createElement("div", null, props.children as ReactNode);
+    }
+    function NfNotFound() {
+      return createElement("p", null, "nf not found");
+    }
+    function PageForbidden() {
+      return createElement("p", null, "page forbidden");
+    }
+    function PageUnauthorized() {
+      return createElement("p", null, "page unauthorized");
+    }
+    const nfNotFound: AppPageModule = { default: NfNotFound };
+    const pageForbidden: AppPageModule = { default: PageForbidden };
+    const pageUnauthorized: AppPageModule = { default: PageUnauthorized };
+    const layoutModules: AppPageModule[] = [
+      { default: RootLayout },
+      { default: NfLayout },
+      { default: SubLayout },
+    ];
+    const build = (leaf: string, withSubLayout: boolean) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: withSubLayout ? [null, null, null] : [null, null],
+          forbidden: pageForbidden,
+          forbiddenTreePosition: 2,
+          forbiddens: withSubLayout ? [null, null, null] : [null, null],
+          layoutTreePositions: withSubLayout ? [0, 1, 2] : [0, 1],
+          layouts: withSubLayout ? layoutModules : layoutModules.slice(0, 2),
+          loading: null,
+          notFound: nfNotFound,
+          notFoundTreePosition: 1,
+          notFounds: withSubLayout ? [null, null, null] : [null, null],
+          routeSegments: ["nf", leaf],
+          segmentForbiddens: [pageForbidden],
+          segmentForbiddenTreePositions: [2],
+          segmentNotFounds: [nfNotFound],
+          segmentNotFoundTreePositions: [1],
+          segmentUnauthorizeds: [pageUnauthorized],
+          segmentUnauthorizedTreePositions: [2],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+          unauthorized: pageUnauthorized,
+          unauthorizedTreePosition: 2,
+        },
+        routePath: `/nf/${leaf}`,
+        rootNotFoundModule: null,
+      })[`route:/nf/${leaf}`];
+    const caughtIdOf = (node: unknown, boundaryName: string, fallbackName: string) => {
+      const boundary = findBoundaryWithFallback(node, boundaryName, fallbackName);
+      if (!boundary) throw new Error(`Expected a ${boundaryName} rendering ${fallbackName}`);
+      return boundary.props.caughtId;
+    };
+
+    const denied = build("denied", false);
+    // The page-level forbidden and unauthorized boundaries catch the page's.
+    expect(caughtIdOf(denied, "ForbiddenBoundary", "PageForbidden")).toBe("page:403");
+    expect(caughtIdOf(denied, "UnauthorizedBoundary", "PageUnauthorized")).toBe("page:401");
+    // A layout's signal keeps the fallback document, so no boundary above a
+    // layout carries an id of its own.
+    expect(caughtIdOf(denied, "ForbiddenBoundary", "DefaultForbidden")).toBeUndefined();
+    expect(caughtIdOf(denied, "UnauthorizedBoundary", "DefaultUnauthorized")).toBeUndefined();
+    // The page's notFound() passes up to nf/not-found, which carries the id.
+    const sub = build("sub", true);
+    expect(caughtIdOf(sub, "NotFoundBoundary", "NfNotFound")).toBe(APP_PAGE_NOT_FOUND_BOUNDARY_ID);
+    expect(caughtIdOf(sub, "NotFoundBoundary", "DefaultNotFound")).toBeUndefined();
+    expect(caughtIdOf(sub, "NotFoundBoundary", "HttpAccessFallbackPassthrough")).toBeUndefined();
   });
 
   it("clears the built-in not-found boundary on the visible pathname, not the route", () => {

@@ -1,5 +1,42 @@
 # @vinext/cloudflare
 
+## 1.5.0
+
+### Features
+
+- **Cloudflare:** support custom request headers during --warm-cache deploys (#4787)
+
+### Bug Fixes
+
+- **Build:** guard every output directory that vinext or Vite empties (#4778)
+- **Build:** write the build output under Vite's build.outDir (#4774)
+- **Cloudflare:** warm file-based metadata routes (#4788)
+
+### Contributors
+
+- @james-elicx
+
+## 1.4.0
+
+### Features
+
+- **Response Store:** opt-in purgeBatchWindow to batch edge purges (#4674)
+- **Cloudflare:** record a version message and tag on deploy (#4689)
+
+### Bug Fixes
+
+- **Cloudflare:** skip warming routes that middleware or proxy answers itself (#4703)
+- **Cloudflare:** read v1 Build Output alongside v0 (#4704)
+- **App Router:** return route handler WebSocket upgrade responses unchanged (#4682)
+
+### Performance
+
+- let the Response Store drop duplicate fills of a data cache miss (#4642)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.3.4
 
 ### Bug Fixes

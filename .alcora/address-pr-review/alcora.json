@@ -1,0 +1,1072 @@
+{
+  "schemaVersion": 2,
+  "type": "workflow",
+  "name": "vinext/address-pr-review",
+  "title": "Address PR review",
+  "version": "1.5.0",
+  "description": "Takes a fix's draft pull request to the point where a maintainer only has to review it. Once its checks pass on a head BigBonk wasn't asked about, it asks BigBonk, and asks again when BigBonk says nothing for 15 minutes. Every review from BigBonk, Clanky or a maintainer, and the checks finishing, is a round in the sandbox that wrote the fix: findings are addressed and answered, reviewers are asked again, and once the head has the approvals it needs and the checks pass, the pull request is ready for review and the issue hears of it.",
+  "readme": "README.md",
+  "license": "MIT",
+  "workflow": {
+    "category": "Triage",
+    "icon": "comment",
+    "nodes": [
+      {
+        "id": "review",
+        "kind": "trigger.review",
+        "name": "Review or comment",
+        "at": [0, 0],
+        "config": {
+          "on": "all",
+          "windowSeconds": 30,
+          "oneAtATime": true,
+          "openedBy": []
+        }
+      },
+      {
+        "id": "unassigned",
+        "kind": "logic.if",
+        "name": "Nobody assigned?",
+        "at": [1, 0],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.issue.assignees",
+              "op": "empty",
+              "value": ""
+            }
+          ]
+        }
+      },
+      {
+        "id": "author",
+        "kind": "alcora/github-user",
+        "name": "Who posted it",
+        "at": [2, 0],
+        "config": {
+          "user": "{{trigger.review.author_id}}"
+        }
+      },
+      {
+        "id": "reviewer",
+        "kind": "logic.if",
+        "name": "Reviewer?",
+        "at": [3, 0],
+        "config": {
+          "mode": "any",
+          "conditions": [
+            {
+              "path": "steps.author.outputs.login",
+              "op": "matches",
+              "value": "^(ask-bonk|clanky-the-clanker)\\[bot\\]$"
+            },
+            {
+              "path": "steps.author.outputs.permission",
+              "op": "matches",
+              "value": "^(write|maintain|admin)$"
+            }
+          ]
+        }
+      },
+      {
+        "id": "gh_approved",
+        "kind": "logic.if",
+        "name": "Approved, nothing to address?",
+        "at": [4, 0],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.review.state",
+              "op": "==",
+              "value": "approved"
+            },
+            {
+              "path": "trigger.review.body",
+              "op": "empty",
+              "value": ""
+            },
+            {
+              "path": "trigger.review.comments",
+              "op": "empty",
+              "value": ""
+            }
+          ]
+        }
+      },
+      {
+        "id": "verdict",
+        "kind": "alcora/classify",
+        "name": "What did they say?",
+        "at": [5, 0],
+        "config": {
+          "model": "clef",
+          "question": "choice",
+          "state": "A reply on a pull request by one of its reviewers: an automated reviewer, or a maintainer.\n\n{{trigger.review.body | default:(The reply has no text of its own.)}}\n\n{{trigger.review.comments}}",
+          "instructions": "What does the reviewer's reply say about the pull request?",
+          "options": [
+            {
+              "key": "approved",
+              "description": "It reviewed the change and approves it: it says LGTM, that it approves, or that it found nothing to change. Only a reply that says it looked at the change."
+            },
+            {
+              "key": "findings",
+              "description": "It reviewed the change, or asks about it, and wants something changed or answered: findings, warnings, notes, questions or blocking issues, inline or not."
+            },
+            {
+              "key": "no_review",
+              "description": "It is not a verdict on the change: an error, a refusal, a missing permission or configuration, a failed, timed-out or cancelled run, a request to be asked for a review, a status update, thanks, or chatter."
+            }
+          ]
+        }
+      },
+      {
+        "id": "record",
+        "kind": "pulls.state",
+        "name": "Record approval",
+        "at": [6, 0],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "{{steps.author.outputs.login}}",
+          "state": "keep",
+          "note": ""
+        }
+      },
+      {
+        "id": "approvals",
+        "kind": "pulls.approved",
+        "name": "Check review state",
+        "at": [7, 0],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": []
+        }
+      },
+      {
+        "id": "checks_pass",
+        "kind": "logic.if",
+        "name": "Checks pass?",
+        "at": [8, 0],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.pull_request.checks",
+              "op": "==",
+              "value": "success"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ready",
+        "kind": "github.pull_request",
+        "name": "Ready for review",
+        "at": [9, 0],
+        "config": {
+          "target": "pull_request",
+          "action": "ready"
+        }
+      },
+      {
+        "id": "fix_ready",
+        "kind": "pulls.state",
+        "name": "Fix ready",
+        "at": [10, 0],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "fix_ready",
+          "note": "Its reviews approve its head, and the checks pass."
+        }
+      },
+      {
+        "id": "stack_ready",
+        "kind": "logic.if",
+        "name": "Whole stack ready?",
+        "at": [11, 0],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.fix_ready.outputs.stack_ready",
+              "op": "==",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      {
+        "id": "say_ready",
+        "kind": "issues.comment",
+        "name": "Say a fix is ready",
+        "at": [12, 0],
+        "config": {
+          "target": "issue",
+          "body": "{{#if trigger.issue.confidential}}### A fix is ready for review\n\nA fix is waiting for a maintainer, with the reproduction kept as a regression test. Its reviews approve it and its checks pass.\n\n{{else}}### A fix is ready for review: {{#if steps.fix_ready.outputs.stacked}}{{ steps.fix_ready.outputs.stack }}{{else}}{{ trigger.pull_request.url | ref }}{{/if}}\n\n{{#if steps.fix_ready.outputs.stacked}}A stack of {{ steps.fix_ready.outputs.stack_size }} pull requests fixes this, with the reproduction kept as a regression test. They merge in that order. Every one has the approvals it needs on its head, and its checks pass: they are waiting for a maintainer.{{else}}A pull request fixes this, with the reproduction kept as a regression test. {{ steps.approvals.outputs.approved }} approved its head, and its checks pass: it is waiting for a maintainer.{{/if}}\n\n{{/if}}<sub>Fixed by an AI agent; it may be wrong. · [Triage report]({{trigger.triage.url}}) · [Run #{{run.number}}]({{run.url}})</sub>",
+          "mode": "news",
+          "news": "{{#if steps.fix_ready.outputs.stacked}}{{ steps.fix_ready.outputs.stack }}{{else}}{{ trigger.pull_request.url }}{{/if}}"
+        }
+      },
+      {
+        "id": "label_ready",
+        "kind": "issues.label",
+        "name": "Label it ready",
+        "at": [12, 1],
+        "config": {
+          "target": "issue",
+          "labels": ["fix: ready"],
+          "remove": ["fix: in progress"]
+        }
+      },
+      {
+        "id": "awaiting",
+        "kind": "pulls.state",
+        "name": "Awaiting approval",
+        "at": [8, 1.3],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "in_review",
+          "note": "Waiting for {{ steps.approvals.outputs.missing }} to approve its head."
+        },
+        "condition": {
+          "path": "trigger.pull_request.state",
+          "op": "!=",
+          "value": "stalled"
+        }
+      },
+      {
+        "id": "bonk_timeout",
+        "kind": "logic.if",
+        "name": "BigBonk timed out?",
+        "at": [6, 2.5],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.author.outputs.login",
+              "op": "matches",
+              "value": "^ask-bonk\\[bot\\]$"
+            },
+            {
+              "path": "trigger.review.body",
+              "op": "matches",
+              "value": "timed out"
+            }
+          ]
+        }
+      },
+      {
+        "id": "bonk_asks",
+        "kind": "logic.if",
+        "name": "Asked again fewer than 2 times?",
+        "at": [7, 2.5],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.pull_request.posted.bonk_retry",
+              "op": "<",
+              "value": "2"
+            }
+          ]
+        }
+      },
+      {
+        "id": "bonk_retry",
+        "kind": "github.comment",
+        "name": "Ask BigBonk again",
+        "at": [8, 2.5],
+        "config": {
+          "target": "pull_request",
+          "body": "/bigbonk review for issues\nPlease review exact head `{{ trigger.pull_request.head_sha }}` without modifying or pushing the branch. Report all actionable findings within your 8-minute time limit.",
+          "mode": "new"
+        }
+      },
+      {
+        "id": "bonk_cancelled",
+        "kind": "logic.if",
+        "name": "BigBonk cancelled?",
+        "at": [6, 3.8],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.author.outputs.login",
+              "op": "matches",
+              "value": "^ask-bonk\\[bot\\]$"
+            },
+            {
+              "path": "trigger.review.body",
+              "op": "matches",
+              "value": "was cancell?ed"
+            }
+          ]
+        }
+      },
+      {
+        "id": "bonk_superseded",
+        "kind": "logic.if",
+        "name": "Asked BigBonk since?",
+        "at": [7, 3.8],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.pull_request.last_posted",
+              "op": "matches",
+              "value": "^(first_bonk|ask_bonk_next|ask_bonk_push|bonk_retry)$"
+            }
+          ]
+        }
+      },
+      {
+        "id": "clanky_waits",
+        "kind": "logic.if",
+        "name": "Clanky waits to be asked?",
+        "at": [6, 5.1],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.author.outputs.login",
+              "op": "matches",
+              "value": "^clanky-the-clanker\\[bot\\]$"
+            },
+            {
+              "path": "trigger.review.body",
+              "op": "matches",
+              "value": "not reviewed automatically|commenting .?clanky review"
+            }
+          ]
+        }
+      },
+      {
+        "id": "clanky_asks",
+        "kind": "logic.if",
+        "name": "Asked again fewer than 2 times?",
+        "at": [7, 5.1],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.pull_request.posted.clanky_start",
+              "op": "<",
+              "value": "2"
+            }
+          ]
+        }
+      },
+      {
+        "id": "clanky_start",
+        "kind": "github.comment",
+        "name": "Ask Clanky again",
+        "at": [8, 5.1],
+        "config": {
+          "target": "pull_request",
+          "body": "clanky review",
+          "mode": "new"
+        }
+      },
+      {
+        "id": "from_bot",
+        "kind": "logic.if",
+        "name": "From a bot?",
+        "at": [6, 6.4],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.author.outputs.bot",
+              "op": "==",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      {
+        "id": "was_ready",
+        "kind": "logic.if",
+        "name": "Was it ready?",
+        "at": [5, 6.4],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.pull_request.state",
+              "op": "==",
+              "value": "fix_ready"
+            }
+          ]
+        }
+      },
+      {
+        "id": "reopen",
+        "kind": "pulls.state",
+        "name": "Fixing again",
+        "at": [5, 7.6],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "in_review",
+          "note": "{{#if trigger.checks.commit}}Its checks failed on {{trigger.checks.commit}}{{else}}{{ trigger.review.author }} reviewed it with findings{{/if}}, which are being addressed."
+        }
+      },
+      {
+        "id": "label_reopen",
+        "kind": "issues.label",
+        "name": "Back in progress",
+        "at": [6, 7.6],
+        "config": {
+          "target": "issue",
+          "labels": ["fix: in progress"],
+          "remove": ["fix: ready"]
+        }
+      },
+      {
+        "id": "rounds",
+        "kind": "logic.if",
+        "name": "Under 50 rounds?",
+        "at": [6, 8.8],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.session.rounds",
+              "op": "<",
+              "value": "50"
+            }
+          ]
+        }
+      },
+      {
+        "id": "address",
+        "kind": "sandbox.skill",
+        "name": "Address it",
+        "at": [7, 8.8],
+        "config": {
+          "skill": "alcora/issue-fix",
+          "effort": "high",
+          "start": "continue",
+          "pull": "{{trigger.pull_request.number}}",
+          "github": {
+            "push": true
+          },
+          "questionExpiry": "3d",
+          "guidance": "",
+          "prompt": "{{#if trigger.review.author}}{{trigger.review.author}} reviewed pull request #{{trigger.pull_request.number}} ({{trigger.review.url}}){{#if trigger.review.commit}} at {{trigger.review.commit}}{{/if}}, and its branch is at {{trigger.pull_request.head_sha}} now. Address what still applies, and answer every finding and every inline comment: what you did about it, or why nothing.\n\n{{trigger.review.body | default:(The review has no text of its own.)}}{{#if trigger.review.comments}}\n\nInline comments, each with its id:\n{{trigger.review.comments}}{{/if}}{{/if}}{{#if trigger.checks.commit}}The checks failed on pull request #{{trigger.pull_request.number}} at {{trigger.checks.commit}}: {{trigger.checks.failed}}. Fix what your change broke. Flaky checks can be re-run: when every failure is a flake or the infrastructure's, answer `flaky`, and the workflow re-runs them.\n\n{{trigger.checks.details}}{{/if}}"
+        }
+      },
+      {
+        "id": "store_address",
+        "kind": "artifacts.store",
+        "name": "Keep files",
+        "at": [7, 10.5],
+        "config": {
+          "from": "address",
+          "artifacts": []
+        }
+      },
+      {
+        "id": "rerun",
+        "kind": "github.rerun",
+        "name": "Re-run them",
+        "at": [7, 11.5],
+        "config": {}
+      },
+      {
+        "id": "reply",
+        "kind": "github.reply",
+        "name": "Reply in threads",
+        "at": [8, 8.8],
+        "config": {
+          "replies": "{{ steps.address.outputs.threads }}"
+        }
+      },
+      {
+        "id": "unanswered",
+        "kind": "logic.if",
+        "name": "Anything left unanswered?",
+        "at": [9, 8.8],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.reply.outputs.unanswered",
+              "op": ">",
+              "value": "0"
+            }
+          ]
+        }
+      },
+      {
+        "id": "answer_rest",
+        "kind": "sandbox.skill",
+        "name": "Answer the rest",
+        "at": [9, 10.3],
+        "config": {
+          "skill": "alcora/issue-fix",
+          "effort": "high",
+          "start": "continue",
+          "pull": "{{trigger.pull_request.number}}",
+          "github": {
+            "push": false
+          },
+          "questionExpiry": "3d",
+          "guidance": "",
+          "prompt": "Your answer to {{trigger.review.author}}'s review left some of its inline comments without a reply. These inline comments still have no answer: {{steps.reply.outputs.unanswered_ids}}. Answer each of them in `threads`, by its id: what you did about it, or why nothing. Change and push nothing this round: answer `no_change`, or `needs_human` if one needs a person.\n\nInline comments, each with its id:\n{{trigger.review.comments}}"
+        }
+      },
+      {
+        "id": "reply_rest",
+        "kind": "github.reply",
+        "name": "Reply in threads",
+        "at": [10, 10.3],
+        "config": {
+          "replies": "{{ steps.answer_rest.outputs.threads }}"
+        }
+      },
+      {
+        "id": "still_left",
+        "kind": "logic.if",
+        "name": "Still unanswered?",
+        "at": [11, 10.3],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.reply_rest.outputs.unanswered",
+              "op": ">",
+              "value": "0"
+            }
+          ]
+        }
+      },
+      {
+        "id": "back",
+        "kind": "pulls.state",
+        "name": "Back in review",
+        "at": [12, 8.8],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "in_review",
+          "note": "{{ steps.address.outputs.explanation }}"
+        }
+      },
+      {
+        "id": "fixing_again",
+        "kind": "issues.label",
+        "name": "Still fixing",
+        "at": [14, 13.6],
+        "config": {
+          "target": "issue",
+          "labels": ["fix: in progress"],
+          "remove": ["fix: ready"]
+        }
+      },
+      {
+        "id": "ask_bonk_q",
+        "kind": "logic.if",
+        "name": "BigBonk's review?",
+        "at": [13, 7.8],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.author.outputs.login",
+              "op": "==",
+              "value": "ask-bonk[bot]"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ask_bonk_next",
+        "kind": "github.comment",
+        "name": "Ask BigBonk",
+        "at": [14, 7.8],
+        "config": {
+          "target": "pull_request",
+          "body": "/bigbonk review for issues\nPlease review exact head `{{ steps.address.outputs.pushed_head }}` without modifying or pushing the branch. Report all actionable findings within your 8-minute time limit.{{#if steps.address.outputs.reply}}\n\n{{ steps.address.outputs.reply }}{{/if}}",
+          "mode": "new"
+        }
+      },
+      {
+        "id": "pushed_q",
+        "kind": "logic.if",
+        "name": "Ask BigBonk about the push?",
+        "at": [13, 9.1],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.address.outputs.outcome",
+              "op": "==",
+              "value": "changed"
+            },
+            {
+              "path": "steps.author.outputs.login",
+              "op": "!=",
+              "value": "ask-bonk[bot]"
+            }
+          ]
+        }
+      },
+      {
+        "id": "said_q",
+        "kind": "logic.if",
+        "name": "Anything to answer?",
+        "at": [14, 9.1],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.kind",
+              "op": "!=",
+              "value": "checks"
+            },
+            {
+              "path": "steps.address.outputs.reply",
+              "op": "not_empty",
+              "value": ""
+            }
+          ]
+        }
+      },
+      {
+        "id": "answer_push",
+        "kind": "github.comment",
+        "name": "Answer them",
+        "at": [15, 9.1],
+        "config": {
+          "target": "pull_request",
+          "body": "{{ steps.address.outputs.reply }}",
+          "mode": "new"
+        }
+      },
+      {
+        "id": "ask_bonk_push",
+        "kind": "github.comment",
+        "name": "Ask BigBonk",
+        "at": [15, 9.8],
+        "config": {
+          "target": "pull_request",
+          "body": "/bigbonk review for issues\nPlease review exact head `{{ steps.address.outputs.pushed_head }}` without modifying or pushing the branch. Report all actionable findings within your 8-minute time limit.",
+          "mode": "new"
+        }
+      },
+      {
+        "id": "ask_clanky_q",
+        "kind": "logic.if",
+        "name": "Ask Clanky?",
+        "at": [13, 10.3],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.author.outputs.login",
+              "op": "matches",
+              "value": "^clanky-the-clanker\\[bot\\]$"
+            },
+            {
+              "path": "steps.address.outputs.outcome",
+              "op": "!=",
+              "value": "changed"
+            }
+          ]
+        }
+      },
+      {
+        "id": "ask_clanky",
+        "kind": "github.comment",
+        "name": "Ask Clanky",
+        "at": [14, 10.3],
+        "config": {
+          "target": "pull_request",
+          "body": "clanky review{{#if steps.address.outputs.reply}}\n\n{{ steps.address.outputs.reply }}{{/if}}",
+          "mode": "new"
+        }
+      },
+      {
+        "id": "ask_person_q",
+        "kind": "logic.if",
+        "name": "Ask them again?",
+        "at": [13, 11.6],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "steps.author.outputs.type",
+              "op": "==",
+              "value": "User"
+            }
+          ]
+        }
+      },
+      {
+        "id": "request_review",
+        "kind": "github.request_review",
+        "name": "Request a review",
+        "at": [14, 11.6],
+        "config": {
+          "target": "pull_request",
+          "reviewers": "{{ steps.author.outputs.login }}"
+        }
+      },
+      {
+        "id": "reply_person",
+        "kind": "github.comment",
+        "name": "Answer them",
+        "at": [14, 12.3],
+        "config": {
+          "target": "pull_request",
+          "body": "{{ steps.address.outputs.reply | default:(Answered in the threads of the review.) }}",
+          "mode": "new"
+        },
+        "condition": {
+          "path": "steps.address.outputs.outcome",
+          "op": "!=",
+          "value": "changed"
+        }
+      },
+      {
+        "id": "checks_left",
+        "kind": "logic.if",
+        "name": "Checks still failing?",
+        "at": [13, 12.9],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.kind",
+              "op": "==",
+              "value": "checks"
+            },
+            {
+              "path": "steps.address.outputs.outcome",
+              "op": "!=",
+              "value": "changed"
+            }
+          ]
+        }
+      },
+      {
+        "id": "checks",
+        "kind": "trigger.checks",
+        "name": "Checks finished",
+        "at": [1, 11.3],
+        "config": {
+          "on": "all",
+          "ignore": [],
+          "oneAtATime": true,
+          "openedBy": []
+        }
+      },
+      {
+        "id": "checks_current",
+        "kind": "logic.if",
+        "name": "On the head, nobody assigned?",
+        "at": [2, 11.3],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.checks.current",
+              "op": "==",
+              "value": "true"
+            },
+            {
+              "path": "trigger.issue.assignees",
+              "op": "empty",
+              "value": ""
+            }
+          ]
+        }
+      },
+      {
+        "id": "checks_failed",
+        "kind": "logic.if",
+        "name": "Failed?",
+        "at": [3, 11.3],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.checks.conclusion",
+              "op": "==",
+              "value": "failure"
+            }
+          ]
+        }
+      },
+      {
+        "id": "bonk_unasked",
+        "kind": "logic.if",
+        "name": "BigBonk not asked about the head?",
+        "at": [4, 12.6],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.pull_request.posted.first_bonk",
+              "op": "==",
+              "value": "0"
+            },
+            {
+              "path": "trigger.pull_request.posted.ask_bonk_next",
+              "op": "==",
+              "value": "0"
+            },
+            {
+              "path": "trigger.pull_request.posted.ask_bonk_push",
+              "op": "==",
+              "value": "0"
+            },
+            {
+              "path": "trigger.pull_request.posted.bonk_retry",
+              "op": "==",
+              "value": "0"
+            },
+            {
+              "path": "trigger.pull_request.state",
+              "op": "!=",
+              "value": "stalled"
+            }
+          ]
+        }
+      },
+      {
+        "id": "first_bonk",
+        "kind": "github.comment",
+        "name": "Ask BigBonk",
+        "at": [5, 12.6],
+        "config": {
+          "target": "pull_request",
+          "body": "/bigbonk review for issues\nPlease review exact head `{{ trigger.pull_request.head_sha }}` without modifying or pushing the branch. Report all actionable findings within your 8-minute time limit.",
+          "mode": "new"
+        }
+      },
+      {
+        "id": "bonk_quiet",
+        "kind": "trigger.no_reply",
+        "name": "BigBonk didn't answer",
+        "at": [4, 1.9],
+        "config": {
+          "after": ["first_bonk", "ask_bonk_next", "ask_bonk_push", "bonk_retry"],
+          "from": ["ask-bonk[bot]"],
+          "minutes": 15,
+          "oneAtATime": true,
+          "openedBy": []
+        }
+      },
+      {
+        "id": "bonk_waiting",
+        "kind": "logic.if",
+        "name": "Still unanswered?",
+        "at": [5, 1.9],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.no_reply.waiting",
+              "op": "==",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      {
+        "id": "bonk_in_review",
+        "kind": "logic.if",
+        "name": "Still in review, nobody assigned?",
+        "at": [6, 1.9],
+        "config": {
+          "mode": "all",
+          "conditions": [
+            {
+              "path": "trigger.pull_request.state",
+              "op": "==",
+              "value": "in_review"
+            },
+            {
+              "path": "trigger.issue.assignees",
+              "op": "empty",
+              "value": ""
+            }
+          ]
+        }
+      },
+      {
+        "id": "stall_review",
+        "kind": "pulls.state",
+        "name": "Stalled",
+        "at": [16, 4.4],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "stalled",
+          "note": "{{ steps.author.outputs.login | default:BigBonk }} {{#if steps.from_bot.outputs.branch}}replied without reviewing the head, so it neither approved it nor asked for changes. Its reply on the pull request says why.{{else}}was asked again 2 times since the head last moved, and has not reviewed it.{{/if}}"
+        }
+      },
+      {
+        "id": "stall_rounds",
+        "kind": "pulls.state",
+        "name": "Stalled",
+        "at": [16, 7.6],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "stalled",
+          "note": "It took 50 rounds of review without settling."
+        }
+      },
+      {
+        "id": "stall_unanswered",
+        "kind": "pulls.state",
+        "name": "Stalled",
+        "at": [16, 10.9],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "stalled",
+          "note": "The agent left inline comments {{ steps.reply_rest.outputs.unanswered_ids }} without an answer, twice."
+        }
+      },
+      {
+        "id": "stall_human",
+        "kind": "pulls.state",
+        "name": "Stalled",
+        "at": [16, 12.9],
+        "config": {
+          "pull": "{{trigger.pull_request.number}}",
+          "approvedBy": "",
+          "state": "stalled",
+          "note": "{{ steps.address.outputs.explanation }}{{ steps.answer_rest.outputs.explanation }}{{#if steps.rerun.outputs.spent}} Re-run twice already: {{ steps.rerun.outputs.spent }}.{{/if}}"
+        }
+      },
+      {
+        "id": "done_fixing",
+        "kind": "issues.label",
+        "name": "Done fixing",
+        "at": [17, 7.8],
+        "config": {
+          "target": "issue",
+          "remove": ["fix: in progress", "fix: ready"]
+        }
+      }
+    ],
+    "edges": [
+      ["review", "unassigned"],
+      ["unassigned", "author", "yes"],
+      ["author", "reviewer"],
+      ["reviewer", "gh_approved", "yes"],
+      ["gh_approved", "record", "yes"],
+      ["gh_approved", "verdict", "no"],
+      ["verdict", "record", "approved"],
+      ["record", "approvals"],
+      ["approvals", "checks_pass", "yes"],
+      ["checks_pass", "ready", "yes"],
+      ["ready", "fix_ready"],
+      ["fix_ready", "stack_ready"],
+      ["stack_ready", "say_ready", "yes"],
+      ["stack_ready", "label_ready", "yes"],
+      ["approvals", "awaiting", "no"],
+      ["awaiting", "fixing_again"],
+      ["verdict", "bonk_timeout", "no_review"],
+      ["bonk_timeout", "bonk_asks", "yes"],
+      ["bonk_asks", "bonk_retry", "yes"],
+      ["bonk_asks", "stall_review", "no"],
+      ["bonk_timeout", "bonk_cancelled", "no"],
+      ["bonk_cancelled", "bonk_superseded", "yes"],
+      ["bonk_superseded", "bonk_asks", "no"],
+      ["bonk_cancelled", "clanky_waits", "no"],
+      ["clanky_waits", "clanky_asks", "yes"],
+      ["clanky_asks", "clanky_start", "yes"],
+      ["clanky_asks", "stall_review", "no"],
+      ["clanky_waits", "from_bot", "no"],
+      ["from_bot", "stall_review", "yes"],
+      ["verdict", "was_ready", "findings"],
+      ["was_ready", "reopen", "yes"],
+      ["reopen", "label_reopen"],
+      ["label_reopen", "rounds"],
+      ["was_ready", "rounds", "no"],
+      ["rounds", "address", "yes"],
+      ["rounds", "stall_rounds", "no"],
+      ["address", "store_address"],
+      ["address", "reply", "changed"],
+      ["address", "reply", "no_change"],
+      ["address", "rerun", "flaky"],
+      ["address", "stall_human", "needs_human"],
+      ["rerun", "stall_human", "none"],
+      ["reply", "unanswered"],
+      ["unanswered", "back", "no"],
+      ["unanswered", "answer_rest", "yes"],
+      ["answer_rest", "reply_rest", "changed"],
+      ["answer_rest", "reply_rest", "no_change"],
+      ["answer_rest", "stall_human", "needs_human"],
+      ["reply_rest", "still_left"],
+      ["still_left", "back", "no"],
+      ["still_left", "stall_unanswered", "yes"],
+      ["back", "ask_bonk_q"],
+      ["ask_bonk_q", "ask_bonk_next", "yes"],
+      ["back", "pushed_q"],
+      ["pushed_q", "said_q", "yes"],
+      ["said_q", "answer_push", "yes"],
+      ["answer_push", "ask_bonk_push"],
+      ["said_q", "ask_bonk_push", "no"],
+      ["back", "ask_clanky_q"],
+      ["ask_clanky_q", "ask_clanky", "yes"],
+      ["back", "ask_person_q"],
+      ["ask_person_q", "request_review", "yes"],
+      ["ask_person_q", "reply_person", "yes"],
+      ["back", "checks_left"],
+      ["checks_left", "fixing_again", "no"],
+      ["checks_left", "stall_human", "yes"],
+      ["checks", "checks_current"],
+      ["checks_current", "checks_failed", "yes"],
+      ["checks_failed", "was_ready", "yes"],
+      ["checks_failed", "approvals", "no"],
+      ["checks_failed", "bonk_unasked", "no"],
+      ["bonk_unasked", "first_bonk", "yes"],
+      ["bonk_quiet", "bonk_waiting"],
+      ["bonk_waiting", "bonk_in_review", "yes"],
+      ["bonk_in_review", "bonk_asks", "yes"],
+      ["stall_review", "done_fixing"],
+      ["stall_rounds", "done_fixing"],
+      ["stall_unanswered", "done_fixing"],
+      ["stall_human", "done_fixing"]
+    ],
+    "knobs": [
+      {
+        "key": "guidance",
+        "label": "Guidance",
+        "help": "The project's rules for fixing, from the repository: a folder with a SKILL.md, or a single file, such as .agents/skills/fix/references/rules.md. Every round reads it; give Fix triaged issues the same.",
+        "targets": [
+          ["address", "guidance"],
+          ["answer_rest", "guidance"]
+        ]
+      },
+      {
+        "key": "approvers",
+        "label": "Who has to approve it",
+        "help": "The reviewers who each have to approve the head before the fix is ready, by GitHub login, such as ask-bonk[bot] or clanky-the-clanker[bot]. Empty: one approval from any reviewer is enough.",
+        "targets": [["approvals", "approvedBy"]]
+      },
+      {
+        "key": "window",
+        "label": "Collect a reviewer's posts for (seconds)",
+        "help": "A review run waits this long after a reviewer's first review or comment, and takes in everything they post meanwhile: BigBonk's inline comments and its summary come a few seconds apart.",
+        "targets": [["review", "windowSeconds"]]
+      }
+    ],
+    "dependencies": {
+      "alcora/issue-fix": "^2.5.0",
+      "alcora/github-user": "^1.0.0",
+      "alcora/classify": "^1.1.0"
+    },
+    "replaces": ["alcora/review-fixes"]
+  }
+}

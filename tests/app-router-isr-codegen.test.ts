@@ -37,15 +37,17 @@ describe("generateRscEntry ISR code generation", () => {
     // The generateStaticParams walk reads the main tree and every slot branch,
     // including each slot's owner position and whether it (or children)
     // renders its default.
-    expect(code)
-      .toContain(`hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
-      childrenSlot: route.childrenSlot,
-      layouts: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page: route.page,
-      parallelBranches: segmentConfigBranches,
-      routeSegments: route.routeSegments,
-    }),`);
+    expect(code).toContain(`const walkSegments = __collectAppPageStaticParamsWalkSegments({
+    childrenSlot: route.childrenSlot,
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: segmentConfigBranches,
+    routeSegments: route.routeSegments,
+  });`);
+    expect(code).toContain(
+      "hasGenerateStaticParams: __lastDynamicSegmentHasGenerateStaticParams(walkSegments),",
+    );
     expect(code).toContain("isDefault: !slot.page,");
     expect(code).toContain("ownerTreePosition: slot.ownerTreePosition,");
     // Any segment's generator still sets the route's revalidate default.

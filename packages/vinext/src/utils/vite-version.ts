@@ -128,11 +128,22 @@ export function supportsNativeTypeofWindowFolding(
   return isVersionAtLeast(viteVersion, 8, 1, 4);
 }
 
+/**
+ * Vite 8.4 (from 8.4.0-beta.1, vitejs/vite#23624) refuses a second `vite`,
+ * `vite build`, or `vite preview` for the same project and adds
+ * `--bypass-lock` to opt out. vinext's own dev lock would duplicate that check
+ * and defeat `--bypass-lock`, so it only runs on older Vite versions.
+ */
+export function supportsNativeCommandLock(viteVersion: string): boolean {
+  return isVersionAtLeast(viteVersion, 8, 4, 0, true);
+}
+
 function isVersionAtLeast(
   version: string,
   requiredMajor: number,
   requiredMinor: number,
   requiredPatch: number,
+  includePrerelease = false,
 ): boolean {
   const parsedVersion = parseViteVersion(version);
   if (!parsedVersion) return false;
@@ -140,7 +151,7 @@ function isVersionAtLeast(
   if (major !== requiredMajor) return major > requiredMajor;
   if (minor !== requiredMinor) return minor > requiredMinor;
   if (patch !== requiredPatch) return patch > requiredPatch;
-  return !prerelease;
+  return includePrerelease || !prerelease;
 }
 
 export function assertSupportedViteVersion(): {

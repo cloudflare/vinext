@@ -46,10 +46,10 @@ describe("App Router production build with build.sourcemap", () => {
     // The action owner manifest import is still pointed at the file written
     // beside the RSC entry.
     const rscEntry = fs.readFileSync(path.join(fixtureDir, "dist/server/index.js"), "utf8");
-    expect(rscEntry).toContain('"./__vinext_action_owner_manifest.mjs"');
+    expect(rscEntry).toContain('"./__vinext_action_owner_manifest.js"');
     expect(rscEntry).not.toContain("virtual:vinext-action-owner-manifest");
     expect(
-      fs.existsSync(path.join(fixtureDir, "dist/server/__vinext_action_owner_manifest.mjs")),
+      fs.existsSync(path.join(fixtureDir, "dist/server/__vinext_action_owner_manifest.js")),
     ).toBe(true);
   }, 180_000);
 });

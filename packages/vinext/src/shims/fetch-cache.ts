@@ -51,7 +51,11 @@ import {
   _setRequestScopedCacheLife,
 } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
-import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
+import {
+  getRequestContext,
+  isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 export {
   addCollectedRequestTags,
@@ -1169,7 +1173,12 @@ function dedupeFetch(
   init: RequestInit | undefined,
 ): Promise<Response> {
   const state = _getState();
-  if (!state.isFetchDedupeActive) {
+  const afterContext = isInsideUnifiedScope() ? getRequestContext().afterContext : null;
+  // Once the request's dedupe entries have been released, at response close or
+  // when a fully buffered response is returned (see releaseFetchDedupeEntries),
+  // work that outlives the response, like after() callbacks, fetches without
+  // memoization: an entry kept now would have nothing left to release it.
+  if (!state.isFetchDedupeActive || afterContext?.fetchDedupeMaps === null) {
     return originalFetch(input, init);
   }
 
@@ -1179,6 +1188,9 @@ function dedupeFetch(
   }
 
   const entriesByUrl = state.currentFetchDedupeEntries;
+  if (afterContext) {
+    (afterContext.fetchDedupeMaps ??= new Set()).add(entriesByUrl);
+  }
   let entries = entriesByUrl.get(candidate.url);
   if (!entries) {
     entries = [];
@@ -1188,9 +1200,19 @@ function dedupeFetch(
   for (const entry of entries) {
     if (entry.key !== candidate.key) continue;
 
+    // Count this caller, so a release while it waits keeps the response for it.
+    entry.waiters += 1;
     return entry.promise.then(() => {
+      entry.waiters -= 1;
       if (!entry.response) {
         throw new Error("[vinext] Missing deduped fetch response");
+      }
+      // Released: the last caller that joined before the release takes the
+      // kept branch itself, so none outlives the callers.
+      if (entry.waiters === 0 && afterContext?.fetchDedupeMaps === null) {
+        const response = entry.response;
+        entry.response = null;
+        return response;
       }
       const [responseForCaller, responseForFutureCaller] = cloneDedupeResponse(entry.response);
       entry.response = responseForFutureCaller;
@@ -1203,15 +1225,20 @@ function dedupeFetch(
     key: candidate.key,
     promise,
     response: null,
+    waiters: 0,
   };
   entries.push(entry);
 
   return promise.then(
     (response) => {
-      // entry.response holds an unconsumed tee'd branch for the duration of the
-      // render scope. The dedupe map is owned by the per-render context and is
-      // dropped when runWithFetchDedupe exits, at which point the
-      // FinalizationRegistry cancels any still-unconsumed branch.
+      // The entries were released before this fetch settled: no later caller
+      // can join, so keep a branch only for the callers already waiting.
+      if (afterContext?.fetchDedupeMaps === null && entry.waiters === 0) return response;
+      // entry.response holds an unconsumed tee'd branch until the request's
+      // response closes, when releaseFetchDedupeEntries cancels and drops it.
+      // Waiting for the GC is not enough: on workerd the branch's stream keeps
+      // the request's async context frame, which holds this context through a
+      // strong handle, so the context would never be collected.
       const [responseForCaller, responseForFutureCaller] = cloneDedupeResponse(response);
       entry.response = responseForFutureCaller;
       return responseForCaller;

@@ -18,6 +18,11 @@ import {
   type NormalizedRscRequest,
 } from "../packages/vinext/src/server/app-rsc-request-normalization.js";
 import {
+  createMountedSlotToken,
+  keepsMountedSlot,
+  parseMountedSlotsHeader,
+} from "../packages/vinext/src/server/app-mounted-slots-header.js";
+import {
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
@@ -783,5 +788,68 @@ describe("normalizeMountedSlotsHeader", () => {
     expect(normalizeMountedSlotsHeader("slot:nopath")).toBeNull();
     expect(normalizeMountedSlotsHeader("slot::/")).toBeNull();
     expect(normalizeMountedSlotsHeader("slot:name:notabspath")).toBeNull();
+  });
+
+  it("keeps a slot's shell identity hash with its id", () => {
+    const token = createMountedSlotToken("slot:aside:/[id]", "shell");
+    expect(token).toMatch(/^[0-9a-f]{16}#slot:aside:\/\[id\]$/);
+    expect(normalizeMountedSlotsHeader(`slot:modal:/ ${token}`)).toBe(`${token} slot:modal:/`);
+    // Ordered by slot id, whatever the hashes.
+    const zToken = createMountedSlotToken("slot:z:/", "shell");
+    expect(normalizeMountedSlotsHeader(`${zToken} slot:modal:/`)).toBe(`slot:modal:/ ${zToken}`);
+  });
+
+  it("reads a legacy slot id whose tree path ends like a hash as a whole id", () => {
+    const slotId = "slot:aside:/foo#0123456789abcdef";
+    const slots = parseMountedSlotsHeader(normalizeMountedSlotsHeader(slotId));
+    expect([...(slots ?? [])]).toEqual([[slotId, null]]);
+    expect(keepsMountedSlot(slots, slotId, "shell")).toBe(true);
+    const token = createMountedSlotToken(slotId, "shell");
+    expect([...(parseMountedSlotsHeader(normalizeMountedSlotsHeader(token)) ?? [])]).toEqual([
+      [slotId, token.slice(0, 16)],
+    ]);
+  });
+
+  it("keeps the most slots at their longest with their hashes", () => {
+    const tokens = Array.from({ length: 16 }, (_, index) =>
+      createMountedSlotToken(
+        `slot:s${index.toString(16)}:/${"a".repeat(256 - "slot:s0:/".length)}`,
+        `shell-${index}`,
+      ),
+    );
+    expect(normalizeMountedSlotsHeader(tokens.join(" "))?.split(" ")).toHaveLength(16);
+  });
+
+  it("bounds a token's slot id, not its shell identity hash", () => {
+    const slotId = `slot:aside:/${"a".repeat(256 - "slot:aside:/".length)}`;
+    const token = createMountedSlotToken(slotId, "shell");
+    expect(normalizeMountedSlotsHeader(token)).toBe(token);
+    expect(normalizeMountedSlotsHeader(createMountedSlotToken(`${slotId}a`, "shell"))).toBeNull();
+  });
+});
+
+describe("keepsMountedSlot", () => {
+  const slots = parseMountedSlotsHeader(
+    normalizeMountedSlotsHeader(
+      `slot:modal:/ ${createMountedSlotToken("slot:aside:/[id]", "shell-for-1")}`,
+    ),
+  );
+
+  it("keeps a slot whose shell keeps its identity", () => {
+    expect(keepsMountedSlot(slots, "slot:aside:/[id]", "shell-for-1")).toBe(true);
+  });
+
+  it("renders a slot whose shell's identity changed", () => {
+    expect(keepsMountedSlot(slots, "slot:aside:/[id]", "shell-for-2")).toBe(false);
+  });
+
+  it("keeps a slot when either side lacks the identity", () => {
+    expect(keepsMountedSlot(slots, "slot:modal:/", "shell")).toBe(true);
+    expect(keepsMountedSlot(slots, "slot:aside:/[id]", undefined)).toBe(true);
+  });
+
+  it("renders a slot the client doesn't hold", () => {
+    expect(keepsMountedSlot(slots, "slot:other:/", undefined)).toBe(false);
+    expect(keepsMountedSlot(null, "slot:modal:/", undefined)).toBe(false);
   });
 });

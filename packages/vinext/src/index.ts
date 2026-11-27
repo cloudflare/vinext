@@ -16,6 +16,7 @@ import type {
 import {
   createIdResolver,
   createLogger,
+  defaultExternalConditions,
   esmExternalRequirePlugin,
   isRunnableDevEnvironment,
   transformWithOxc,
@@ -116,6 +117,13 @@ import {
   hasExportedName,
 } from "./build/report.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
+import {
+  collectDevPagesFontOwners,
+  createFontOwnerManifestPlugin,
+  createPagesFontOwnerManifestPlugin,
+} from "./plugins/font-owner-manifest.js";
+import { fontOwnerKey } from "./build/font-owner-manifest.js";
+import { createServerModuleScopePlugin, realDirectoryPath } from "./plugins/server-module-scope.js";
 import {
   createRscScanGlobImportsPlugin,
   isRscScanGlobImportsAffected,
@@ -302,6 +310,7 @@ import {
   RESOLVED_VIRTUAL_GOOGLE_FONTS,
   parseStaticObjectLiteral,
   generateGoogleFontsVirtualModule,
+  createFontOwnerPlugin,
   createGoogleFontsPlugin,
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
@@ -353,6 +362,7 @@ import {
   getBuildBundlerOptions,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
+import { assertOutputDirIsSafe, resolveEnvironmentOutputDirs } from "./build/clean-output.js";
 import {
   collectClientReferenceChunks,
   collectClientReferenceSources,
@@ -461,6 +471,96 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-runtime",
   "react/jsx-dev-runtime",
 ]);
+
+// The builds react-dom's "./server" and "./static" entries resolve to, by
+// condition in the order its exports map (React 19.3.1) tries them, and
+// without a match. The Flight server is paired with the Fizz entry of the same
+// name: where that is React's Node build, so is the Flight server.
+const REACT_DOM_BUILDS = {
+  server: {
+    conditions: [
+      ["workerd", "edge"],
+      ["bun", "bun"],
+      ["deno", "node"],
+      ["worker", "browser"],
+      ["node", "node"],
+      ["edge-light", "edge"],
+      ["browser", "browser"],
+    ],
+    fallback: "node",
+  },
+  static: {
+    conditions: [
+      ["workerd", "edge"],
+      ["deno", "browser"],
+      ["worker", "browser"],
+      ["node", "node"],
+      ["edge-light", "edge"],
+      ["browser", "browser"],
+    ],
+    fallback: "node",
+  },
+} as const;
+
+// plugin-rsc imports the edge build of its vendored Flight server, or of an
+// installed react-server-dom-webpack, and pre-bundles it by these specifiers.
+const REACT_SERVER_DOM_EDGE_ENTRY =
+  /^((?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)\/(server|static))\.edge$/;
+
+/**
+ * The conditions `react-dom/server` or `react-dom/static` resolves with: the
+ * SSR environment's, where Fizz renders, falling back to the environment's
+ * own when there is no SSR environment. Where the SSR environment
+ * externalizes the entry, the server runtime resolves it with its own
+ * conditions: the SSR environment's `externalConditions`, which Vite says the
+ * server should run with. Vite's default names no runtime, so the one
+ * building stands in for it.
+ */
+function fizzConditions(
+  config: Pick<ResolvedConfig, "environments">,
+  environmentConditions: readonly string[],
+  entry: keyof typeof REACT_DOM_BUILDS,
+): readonly string[] {
+  const ssr = config.environments.ssr?.resolve;
+  if (!ssr) return environmentConditions;
+  const external = ssr.external;
+  if (
+    external === true ||
+    (Array.isArray(external) &&
+      (external.includes("react-dom") || external.includes(`react-dom/${entry}`)))
+  ) {
+    const target = ssr.externalConditions;
+    if (
+      target.length !== defaultExternalConditions.length ||
+      target.some((condition, index) => condition !== defaultExternalConditions[index])
+    ) {
+      return target;
+    }
+    if (process.versions.bun) return ["bun", "node"];
+    if (process.versions.deno) return ["deno", "node"];
+    return ["node"];
+  }
+  return ssr.conditions;
+}
+
+/**
+ * The Node build of the Flight server entry `id`, if Fizz's is Node too.
+ * `conditionsOf` gives the conditions react-dom's entry of the same name
+ * resolves with.
+ */
+function reactServerDomNodeEntry(
+  id: string,
+  conditionsOf: (entry: keyof typeof REACT_DOM_BUILDS) => readonly string[],
+): string | undefined {
+  const match = REACT_SERVER_DOM_EDGE_ENTRY.exec(id);
+  if (!match) return undefined;
+  const entry = match[2] as keyof typeof REACT_DOM_BUILDS;
+  const builds = REACT_DOM_BUILDS[entry];
+  const conditions = conditionsOf(entry);
+  const build =
+    builds.conditions.find(([condition]) => conditions.includes(condition))?.[1] ?? builds.fallback;
+  return build === "node" ? `${match[1]}.node` : undefined;
+}
 
 // vinext's cache runtime lazily imports plugin-rsc's React serializer, and the
 // next/image shim imports @unpic/react and ipaddr.js. The Worker scan never
@@ -1611,15 +1711,17 @@ function hasReactDirective(code: string): boolean {
 /**
  * Resolve a project directory through symlinks the way Vite resolves
  * `config.root` (and Next.js its project dir), so route files, `server.config.root`
- * and module ids all share one path. Windows uses the JS realpath, as Vite
- * does, to keep mapped network drives.
+ * and module ids all share one path.
  */
 function resolveProjectDir(dir: string, preserveSymlinks: boolean | undefined): string {
   if (preserveSymlinks) return toSlash(dir);
   try {
-    return toSlash(
-      process.platform === "win32" ? fs.realpathSync(dir) : fs.realpathSync.native(dir),
-    );
+    const realDir = fs.realpathSync.native(dir);
+    // Like Vite, keep a mapped network drive's letter instead of its UNC path.
+    if (process.platform === "win32" && realDir.startsWith("\\\\") && !/^[\\/]{2}/.test(dir)) {
+      return toSlash(fs.realpathSync(dir));
+    }
+    return toSlash(realDir);
   } catch {
     return toSlash(dir);
   }
@@ -1714,21 +1816,22 @@ export type VinextOptions = {
   /**
    * Override the output directory for the RSC server bundle.
    * Absolute paths are used as-is; relative paths are resolved from the
-   * Vite root. Defaults to "dist/server".
+   * Vite root. Defaults to "<build.outDir>/server", "dist/server" unless
+   * Vite's `build.outDir` is set.
    * Intended for tests that need to build multiple fixtures in parallel
    * without clobbering each other's output.
    */
   rscOutDir?: string;
   /**
    * Override the output directory for the SSR bundle.
-   * Defaults to "dist/server/ssr".
+   * Defaults to "<build.outDir>/server/ssr" ("dist/server/ssr").
    */
   ssrOutDir?: string;
   /**
    * Override the output directory for the client bundle.
-   * Defaults to "dist/client". Like rscOutDir and ssrOutDir, it is not
-   * supported by `vinext start` or `output: "standalone"`, which expect the
-   * default dist/ layout.
+   * Defaults to "<build.outDir>/client" ("dist/client"). Like rscOutDir and
+   * ssrOutDir, it is not supported by `vinext start` or `output: "standalone"`,
+   * which expect the default dist/ layout.
    */
   clientOutDir?: string;
   /**
@@ -1840,6 +1943,8 @@ export type VinextOptions = {
 type InternalVinextOptions = VinextOptions & {
   __skipBuildLifecycle?: boolean;
   __pagesClientAssetsModule?: string | null;
+  /** Build output root of the parent build, for the auxiliary Pages build. */
+  __buildOutDir?: string;
 };
 
 type InternalUserConfig = UserConfig & {
@@ -1852,8 +1957,11 @@ type NitroSetupContext = {
   options: NitroPublicFilesOptions & {
     buildDir?: string;
     exportConditions?: string[];
+    ignore?: string[];
+    publicAssets?: { dir: string; baseURL?: string; fallthrough?: boolean; maxAge?: number }[];
     traceDeps?: string[];
   };
+  hooks: { callHook(name: string, ...args: unknown[]): Promise<unknown> };
 };
 
 function createServerEnvironmentFileNameResolver(
@@ -1896,6 +2004,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
   let nitroBuildDir: string | undefined;
+  let nitroOptions: NitroSetupContext["options"] | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let canonicalMiddlewarePath: string | null = null;
@@ -1952,6 +2061,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let buildEmptyOutDir: boolean | undefined;
+  // Root of the build layout: Vite's `build.outDir`, "dist" by default. The
+  // default RSC, SSR and client output directories and the server metadata
+  // (BUILD_ID, vinext-server.json, prerender output) live below it.
+  let buildOutDir = internalOptions.__buildOutDir ?? "dist";
+  let hasUserBuildOutDir = internalOptions.__buildOutDir !== undefined;
   let buildLifecycleEnabled = false;
   let hasPlainPagesBuildEnvironments = false;
   let originalPlainPagesEnvironments: UserConfig["environments"] | undefined;
@@ -1967,7 +2081,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // readable native import.meta.filename and retain environment-relative
       // chunk names as the compatibility fallback.
       const outputRoot =
-        config.environments.rsc?.build.outDir ?? options.rscOutDir ?? "dist/server";
+        config.environments.rsc?.build.outDir ??
+        options.rscOutDir ??
+        path.join(buildOutDir, "server");
       return createServerEnvironmentFileNameResolver(config, outputRoot);
     },
   });
@@ -1981,10 +2097,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     ModuleDependencyStore<DevPagesModuleDependency>
   >();
   // Workers must keep this module inside their deployable output directory.
-  const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
-    !selectedMultiStageOutput && !hasAppDir && !hasCloudflarePlugin && environmentName === "ssr"
-      ? path.dirname(outputDir)
-      : outputDir;
+  // An App Router ssr output nested inside the rsc output (the default
+  // dist/server/ssr, and Cloudflare's child ssr environment) ships with it,
+  // so both import the rsc copy instead of carrying a second one. Node
+  // resolves the import from the ssr bundle's real path, so the nesting must
+  // hold through symlinks too.
+  const resolvePagesClientAssetsOutputDir = (
+    environmentName: string,
+    outputDir: string,
+    rscOutputDir: string | undefined,
+  ): string => {
+    if (environmentName !== "ssr") return outputDir;
+    if (hasAppDir) {
+      return rscOutputDir &&
+        isPathInside(rscOutputDir, outputDir) &&
+        realDirectoryPath(outputDir) ===
+          path.join(realDirectoryPath(rscOutputDir), path.relative(rscOutputDir, outputDir))
+        ? rscOutputDir
+        : outputDir;
+    }
+    return selectedMultiStageOutput || hasCloudflarePlugin ? outputDir : path.dirname(outputDir);
+  };
+  const resolveRscOutputDir = (config: ResolvedConfig): string | undefined => {
+    const outDir = config.environments.rsc?.build.outDir;
+    return outDir ? path.resolve(config.root, outDir) : undefined;
+  };
   let pagesClientAssetsModule: string | null = internalOptions.__pagesClientAssetsModule ?? null;
   let clientBuildFiles: string[] = [];
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
@@ -2016,6 +2153,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let clientReferenceModules: ReadonlyMap<string, readonly string[]> | null = null;
   let clientReferenceAlwaysRenderedFiles: string[] = [];
   let clientReferenceRoutelessFiles: string[] = [];
+  // App routes whose fonts the route font manifest scopes, in dev and build,
+  // and the keys of the modules that load fonts.
+  let fontOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let fontOwnerGlobalNotFoundFiles: string[] = [];
+  const fontOwnerKeys = new Set<string>();
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -2095,7 +2237,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      { nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader, prerenderSecret },
+      {
+        devFontOwners: isServeCommand,
+        nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
+        prerenderSecret,
+      },
     );
   }
 
@@ -2123,6 +2269,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       prerenderSecret,
+      isServeCommand,
     );
   }
 
@@ -2602,6 +2749,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           prerender: undefined,
           __skipBuildLifecycle: true,
           __pagesClientAssetsModule: pagesClientAssetsModule,
+          __buildOutDir: buildOutDir,
         } as InternalVinextOptions),
       emptyOutDir: buildEmptyOutDir,
       hasAppDir,
@@ -2611,11 +2759,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       prerenderConcurrency: prerenderConfig?.concurrency,
       prerenderSecret,
       previewBuildCredentials,
+      protectedDirs: { app: appDir, pages: pagesDir },
       revalidateSecret: revalidateSecret!,
       root,
       routeRootConfig: {
         appDir: options.appDir,
         disableAppRouter: options.disableAppRouter,
+        outDir: buildOutDir,
         rscOutDir: options.rscOutDir,
         ssrOutDir: options.ssrOutDir,
       },
@@ -2627,6 +2777,83 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const plugins: PluginOption[] = [
     buildLifecyclePlugins[0],
+    {
+      // The main config hook runs early (enforce: "pre") and derives the
+      // default output directories from the `build.outDir` it sees then. A
+      // later plugin may still set `build.outDir`, so move the defaults to
+      // the final output root once every other config hook has run.
+      name: "vinext:build-outdir",
+      // `vite preview` resolves the config again and serves the
+      // environments' outDirs, so they have to match the build's.
+      apply: (_config, env) => env.command === "build" || env.isPreview === true,
+      enforce: "post",
+      config: {
+        order: "post",
+        handler(config, env) {
+          if (internalOptions.__buildOutDir !== undefined) return;
+          const environments: Record<string, { build: { outDir: string } }> = {};
+          const finalOutDir = toSlash(config.build?.outDir ?? "dist");
+          if (finalOutDir !== buildOutDir) {
+            // Output directories set explicitly through vinext's options win.
+            const explicitOutDirs: Record<string, string | undefined> = {
+              client: options.clientOutDir,
+              rsc: options.rscOutDir,
+              ssr: hasAppDir ? options.ssrOutDir : undefined,
+            };
+            for (const [name, environment] of Object.entries(config.environments ?? {})) {
+              const outDir = environment?.build?.outDir;
+              if (outDir === undefined || explicitOutDirs[name] !== undefined) continue;
+              const subdir = ["client", "server", "server/ssr"].find(
+                (candidate) => toSlash(outDir) === path.join(buildOutDir, candidate),
+              );
+              if (subdir !== undefined) {
+                environments[name] = { build: { outDir: path.join(finalOutDir, subdir) } };
+              }
+            }
+            buildOutDir = finalOutDir;
+          }
+          if (env.command === "build") {
+            const effectiveOutDir = (name: string) =>
+              environments[name]?.build.outDir ?? config.environments?.[name]?.build?.outDir;
+            // The client build runs last and empties its outDir, whether vinext,
+            // @vitejs/plugin-rsc, a platform plugin or the user chose it.
+            assertClientOutDirIsSeparate(root, {
+              clientOutDir: effectiveOutDir("client"),
+              rscOutDir: effectiveOutDir("rsc"),
+              ssrOutDir: effectiveOutDir("ssr"),
+              outDir: buildOutDir,
+            });
+          }
+          return Object.keys(environments).length > 0 ? { environments } : undefined;
+        },
+      },
+      configResolved(config) {
+        if (config.command !== "build") return;
+        // Vite empties each environment's output directories and the build
+        // cleanup empties build.outDir, so none of them may hold the project
+        // or its sources. Check the resolved values, after every config and
+        // configEnvironment hook. With `build.outDir: "."` the derived
+        // server/ and client/ would be the app's own directories. They're
+        // checked with `build.write: false` too, since vinext's own hooks
+        // still write to them.
+        const safety = {
+          root,
+          protectedDirs: { app: appDir, pages: pagesDir, public: config.publicDir },
+        };
+        assertOutputDirIsSafe("build.outDir", buildOutDir, safety);
+        for (const [name, environment] of Object.entries(config.environments)) {
+          // vinext's own hooks write to build.outDir even when every bundler
+          // output has its own dir.
+          const outputDirs = new Set([
+            path.resolve(root, environment.build.outDir),
+            ...resolveEnvironmentOutputDirs(root, environment.build),
+          ]);
+          for (const outputDir of outputDirs) {
+            assertOutputDirIsSafe(`${name} output directory`, outputDir, safety);
+          }
+        }
+      },
+    },
     {
       // ── Dev request origin check ─────────────────────────────────────
       // Vite registers pre plugins' middlewares first, so listing this pre
@@ -2876,7 +3103,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           path.resolve(toSlash(process.cwd()), config.root ?? "."),
           config.resolve?.preserveSymlinks,
         );
-        if (env.command === "build") assertClientOutDirIsSeparate(root, options);
+        if (internalOptions.__buildOutDir === undefined) {
+          hasUserBuildOutDir = config.build?.outDir !== undefined;
+          buildOutDir = toSlash(config.build?.outDir ?? "dist");
+        }
         const devCliLifecycleEnabled =
           env.command === "serve" &&
           env.isPreview !== true &&
@@ -3488,6 +3718,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "instrumentation-client",
             ),
             "vinext/dev-error-overlay": path.resolve(__dirname, "client", "dev-error-overlay"),
+            "vinext/route-announcer": path.resolve(__dirname, "client", "route-announcer"),
             "vinext/html": path.resolve(__dirname, "server", "html"),
             ...(clientInjectModule === null
               ? {
@@ -3645,6 +3876,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           !hasAppDir && !hasCloudflarePlugin && !isSSR && !hasBuildInput && !config.build?.lib;
         const hasClientBuildEnvironment =
           hasAppDir || hasCloudflarePlugin || hasNitroPlugin || shouldInjectPlainPagesEnvironments;
+        // @vitejs/plugin-rsc defaults the client output to a fixed
+        // "dist/client", so a `build.outDir` has to be carried over here. A
+        // client outDir another plugin or the user set stays as it is.
+        const clientOutDirConfig = options.clientOutDir
+          ? { outDir: options.clientOutDir }
+          : hasUserBuildOutDir && config.environments?.client?.build?.outDir === undefined
+            ? { outDir: path.join(buildOutDir, "client") }
+            : {};
         const clientAssetsDir = resolveAssetsDir(nextConfig.assetPrefix ?? "");
         // Next emits CSS url() deps as files, not inlined data URLs. A user's
         // explicit `build.assetsInlineLimit` always wins.
@@ -4408,7 +4647,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: options.rscOutDir ?? "dist/server",
+                outDir: options.rscOutDir ?? path.join(buildOutDir, "server"),
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_RSC_ENTRY },
                   // Split React (and the RSC flight runtime) into a dedicated
@@ -4491,7 +4730,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: options.ssrOutDir ?? "dist/server/ssr",
+                outDir: options.ssrOutDir ?? path.join(buildOutDir, "server", "ssr"),
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
                 }),
@@ -4547,7 +4786,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // that should be preloaded when a dynamic boundary renders.
                 // Cloudflare builds also use it to inject lazy chunk metadata
                 // into the Worker entry.
-                ...(options.clientOutDir ? { outDir: options.clientOutDir } : {}),
+                ...clientOutDirConfig,
                 manifest: true,
                 ...(hasPagesDir ? { ssrManifest: true } : {}),
                 // Client-scoped so RSC/SSR keep their normal asset handling
@@ -4575,7 +4814,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                ...(options.clientOutDir ? { outDir: options.clientOutDir } : {}),
+                ...clientOutDirConfig,
                 manifest: true,
                 ssrManifest: true,
                 assetsInlineLimit: clientAssetsInlineLimit,
@@ -4605,7 +4844,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: options.clientOutDir ?? "dist/client",
+                outDir: options.clientOutDir ?? path.join(buildOutDir, "client"),
                 manifest: true,
                 ssrManifest: true,
                 assetsInlineLimit: clientAssetsInlineLimit,
@@ -4640,7 +4879,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
-                outDir: "dist/server",
+                outDir: path.join(buildOutDir, "server"),
                 ...withBuildBundlerOptions({
                   // Nitro dispatches the SSR service as a WinterCG fetch handler;
                   // the Node server instead consumes the generated context bag.
@@ -5435,6 +5674,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 appDirectoryNotFoundPath(routes, appNotFoundPath),
               ].filter((path): path is string => path !== null);
               clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
+              fontOwnerRoutes = routes;
+              // With or without app/global-not-found: a route-miss 404 with
+              // `globalNotFound` enabled renders it, or the default, alone.
+              fontOwnerGlobalNotFoundFiles = [
+                ...(globalNotFoundPath ? [globalNotFoundPath] : []),
+                ...(globalErrorPath ? [globalErrorPath] : []),
+              ];
               clientReferenceAlwaysRenderedFiles = [
                 ...(globalErrorPath ? [globalErrorPath] : []),
                 ...rootBoundaryFiles(routes),
@@ -5487,6 +5733,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
                 actionOwners: this.environment.config.command === "build" ? undefined : null,
+                devFontOwners: this.environment.config.command !== "build",
                 i18n: nextConfig?.i18n,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,
@@ -5588,8 +5835,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               classifyDynamicRoutes
                 ? {
                     route: (route) => isAppPageRouteRenderedDynamically(route, readMdxEsm),
-                    intercept: (intercept, layoutPaths) =>
-                      isAppInterceptRenderedDynamically(intercept, layoutPaths, readMdxEsm),
+                    intercept: (intercept, layoutPaths, slotDefaultPaths) =>
+                      isAppInterceptRenderedDynamically(
+                        intercept,
+                        layoutPaths,
+                        readMdxEsm,
+                        slotDefaultPaths,
+                      ),
                   }
                 : undefined,
             );
@@ -5638,6 +5890,71 @@ export const loadServerActionClient = ${
       },
     },
     {
+      // On Node, `react-dom/server` resolves to React's Node Fizz build, which
+      // schedules its work with setImmediate. plugin-rsc imports the edge build
+      // of the Flight server by path, skipping React's exports map, and that
+      // build schedules with setTimeout. Fizz could then retry a boundary
+      // before the Flight server wrote the rest of it, and a client component
+      // that builds itself from its children rendered only part of them
+      // (#4770). Next.js pairs the two builds on both runtimes. Resolve the
+      // Flight server to its Node build wherever react-dom's map picks the
+      // Node build of the matching Fizz entry, in the SSR environment. Only
+      // in the RSC environment, where plugin-rsc imports it: an edge import
+      // in any other environment keeps the build it asks for. Only in builds:
+      // in dev, vinext:app-ssr-edge-fizz pairs the edge builds instead.
+      name: "vinext:react-server-dom-node",
+      apply: "build",
+      enforce: "pre",
+      resolveId: {
+        filter: { id: REACT_SERVER_DOM_EDGE_ENTRY },
+        handler(id, importer, options) {
+          if (hasCloudflarePlugin || this.environment?.name !== "rsc") return;
+          const environment = this.environment;
+          const nodeEntry = reactServerDomNodeEntry(id, (entry) =>
+            fizzConditions(
+              environment.getTopLevelConfig(),
+              environment.config.resolve.conditions,
+              entry,
+            ),
+          );
+          if (!nodeEntry) return;
+          return this.resolve(nodeEntry, importer, {
+            ...options,
+            skipSelf: true,
+          });
+        },
+      },
+    },
+    {
+      // React's Node development build of the Flight server enables an
+      // async_hooks hook when it is evaluated, and every promise and file
+      // read of Vite's compile in the same process then goes through it. So
+      // in dev plugin-rsc's edge Flight server stays, and the App Router's
+      // SSR entry renders with React's edge Fizz build, which schedules its
+      // work with setTimeout as that Flight server does (#4770). Cloudflare
+      // already resolves both to their edge builds.
+      name: "vinext:app-ssr-edge-fizz",
+      apply: "serve",
+      transform: {
+        filter: {
+          id: /\/server\/app-ssr-entry\.[cm]?[jt]s(?:\?|$)/,
+          code: /["']react-dom\/(?:server|static)["']/,
+        },
+        handler(code) {
+          if (hasCloudflarePlugin || this.environment?.name !== "ssr") return null;
+          const output = new MagicString(code);
+          for (const match of code.matchAll(/(["'])react-dom\/(server|static)\1/g)) {
+            output.overwrite(
+              match.index,
+              match.index + match[0].length,
+              `${match[1]}react-dom/${match[2]}.edge${match[1]}`,
+            );
+          }
+          return { code: output.toString(), map: output.generateMap({ hires: "boundary" }) };
+        },
+      },
+    },
+    {
       name: "vinext:cloudflare-framework-tracing",
       transform: {
         filter: { id: /(?:app|pages)-router-entry\.[cm]?[jt]s(?:\?|$)/ },
@@ -5676,6 +5993,7 @@ export const loadServerActionClient = ${
           const sidecarDir = resolvePagesClientAssetsOutputDir(
             this.environment.name,
             environmentOutDir,
+            resolveRscOutputDir(this.environment.getTopLevelConfig()),
           );
           pagesClientAssetsExternalTargets.set(
             this.environment.name,
@@ -5709,7 +6027,11 @@ export const loadServerActionClient = ${
         const buildRoot = environment.config.root ?? process.cwd();
         const outputDir = path.resolve(buildRoot, output.dir ?? environment.config.build.outDir);
         pagesClientAssetsOutputDirs.add(
-          resolvePagesClientAssetsOutputDir(environment.name, outputDir),
+          resolvePagesClientAssetsOutputDir(
+            environment.name,
+            outputDir,
+            resolveRscOutputDir(environment.getTopLevelConfig()),
+          ),
         );
       },
     },
@@ -5911,6 +6233,15 @@ export const loadServerActionClient = ${
         };
       },
     },
+    // The Cloudflare and Nitro plugins own their server entry names, except
+    // the App Router's child `ssr` environment under Cloudflare: plugin-rsc
+    // imports it from the Worker as a fixed `ssr/index.js`.
+    createServerModuleScopePlugin({
+      ownsFileNames: (name) =>
+        !hasNitroPlugin &&
+        (hasCloudflarePlugin ? hasAppDir && name === "ssr" : name === "rsc" || name === "ssr"),
+      getModuleOutputDirs: () => pagesClientAssetsOutputDirs,
+    }),
     {
       // Minify server-side build environments (rsc/ssr and the Cloudflare
       // worker env) by default. Vite only minifies the `client` environment
@@ -7774,6 +8105,18 @@ export const loadServerActionClient = ${
                           )
                         : undefined,
                       classifyDevPageRoute,
+                      (files) => {
+                        const environment = server.environments["ssr"];
+                        if (!environment) return Promise.resolve(null);
+                        // No module has loaded a font, so none is any page's:
+                        // skip the walk on each request.
+                        if (fontOwnerKeys.size === 0) return Promise.resolve([]);
+                        return collectDevPagesFontOwners(environment, files, {
+                          canonicalizeModuleId: canonicalize,
+                          isOwner: (id) => fontOwnerKeys.has(fontOwnerKey(root, id)),
+                          ownerKey: (id) => fontOwnerKey(root, id),
+                        });
+                      },
                     ),
                   };
                 }
@@ -8433,7 +8776,7 @@ export const loadServerActionClient = ${
           if (this.environment?.name !== "client") return;
           const clientOutDir = outputOptions.dir
             ? path.resolve(root, outputOptions.dir)
-            : path.resolve(root, options.clientOutDir ?? "dist/client");
+            : path.resolve(root, options.clientOutDir ?? path.join(buildOutDir, "client"));
           const assetsDir = resolveAssetsDir(nextConfig.assetPrefix);
           const activeImagePaths = new Set(
             Array.from(staticImageImportsByModule.values()).flatMap((imports) => [...imports]),
@@ -8455,6 +8798,32 @@ export const loadServerActionClient = ${
         },
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
+    // Font owner marks for route-scoped font styles — see src/plugins/fonts.ts.
+    // Runs before the font plugins, which rewrite the next/font imports.
+    createFontOwnerPlugin({
+      shimsDir: _shimsDir,
+      onOwner(key) {
+        fontOwnerKeys.add(key);
+      },
+    }),
+    // The Pages Router's per-page font owners — see src/plugins/font-owner-manifest.ts
+    createPagesFontOwnerManifestPlugin({
+      canonicalizeModuleId: canonicalize,
+      async getRoutes() {
+        if (!hasPagesDir) return { appFile: null, pages: [] };
+        const pages = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+        return {
+          appFile: findFileWithExts(pagesDir, "_app", fileMatcher),
+          pages: [
+            ...pages.map((route) => ({ pattern: route.pattern, filePath: route.filePath })),
+            // The error page renders as a page of its own, like Next.js' `/_error`
+            // entry, with only `_app`'s fonts when the app has no custom one.
+            { pattern: "/_error", filePath: findFileWithExts(pagesDir, "_error", fileMatcher) },
+          ],
+        };
+      },
+      ownerKeys: fontOwnerKeys,
+    }),
     // Google Fonts import rewrite + self-hosting — see src/plugins/fonts.ts
     createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir),
     // Local font path resolution — see src/plugins/fonts.ts
@@ -8510,7 +8879,8 @@ export const loadServerActionClient = ${
     // createBuilder().buildApp() pipeline used for App Router production builds,
     // so the file was silently never written for pure App Router apps. writeBundle
     // fires for every emitted bundle, so the guard captures the first one. The path is always
-    // dist/server/BUILD_ID — derived from root, not from the per-environment
+    // <build.outDir>/server/BUILD_ID (dist/server/BUILD_ID by default) —
+    // derived from the build output root, not from the per-environment
     // options.dir — so it works for all router types.
     (() => {
       let buildIdWritten = false;
@@ -8524,7 +8894,7 @@ export const loadServerActionClient = ${
           handler() {
             if (buildIdWritten || !isServerEnvironment(this.environment)) return;
             buildIdWritten = true;
-            const outDir = path.join(root, "dist", "server");
+            const outDir = path.resolve(root, buildOutDir, "server");
             fs.mkdirSync(outDir, { recursive: true });
             fs.writeFileSync(path.join(outDir, "BUILD_ID"), nextConfig!.buildId);
             if (rscBuildIdentity) {
@@ -8588,7 +8958,7 @@ export const loadServerActionClient = ${
           // platform-independent server directory. An adapter may emit either
           // router's executable graph elsewhere, so retain an adjacent copy
           // and also publish the canonical copy.
-          const canonicalServerDir = path.join(root, "dist", "server");
+          const canonicalServerDir = path.resolve(root, buildOutDir, "server");
           if (selectedMultiStageOutput) {
             if (readPrerenderSecret(canonicalServerDir) === prerenderSecret) {
               for (const runtimeOutputDir of readServerRuntimeOutputDirs(
@@ -8632,6 +9002,15 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-setup",
       configResolved(config) {
         nitroPublicDir = config.publicDir;
+        // Nitro publishes Vite's `build.outDir` as static files, and vinext
+        // keeps its server metadata (the prerender secret in
+        // vinext-server.json) and the hybrid Pages server bundle in
+        // <outDir>/server. Nitro's ignore patterns also apply to its public
+        // assets.
+        if (nitroOptions && !nitroOptions.dev) {
+          nitroOptions.ignore ??= [];
+          nitroOptions.ignore.push(`${path.resolve(root, buildOutDir, "server")}/**`);
+        }
       },
       // Nitro points the client build at its static output, so Vite's build
       // metadata (`.vite/`) lands there, and vinext reads it during the build.
@@ -8651,6 +9030,38 @@ export const loadServerActionClient = ${
       },
       nitro: {
         setup: (nitro: NitroSetupContext) => {
+          nitroOptions = nitro.options;
+          // Nitro publishes Vite's build.outDir as static files, and its dev
+          // server serves them without its ignore patterns, so it would serve
+          // the last production build's <build.outDir>/server, including the
+          // prerender secret in vinext-server.json. Vite serves the client in
+          // dev, so drop that entry before Nitro creates its dev server. A
+          // build ignores its <dir>/server, which is the build.outDir Nitro
+          // saw and may differ from the final one. Nitro adds the entry as the
+          // last public asset and then calls build:before, so take it as that
+          // call starts, before any other module's hooks (including
+          // beforeEach callbacks) can add assets.
+          const callHook = nitro.hooks.callHook.bind(nitro.hooks);
+          nitro.hooks.callHook = (name, ...args) => {
+            if (name === "build:before") {
+              nitro.hooks.callHook = callHook;
+              const viteOutput = nitro.options.publicAssets?.at(-1);
+              if (
+                viteOutput?.baseURL === "/" &&
+                viteOutput.fallthrough === true &&
+                viteOutput.maxAge === 0
+              ) {
+                if (nitro.options.dev) {
+                  nitro.options.publicAssets!.pop();
+                } else {
+                  // Nitro reads a relative dir from the working directory.
+                  nitro.options.ignore ??= [];
+                  nitro.options.ignore.push(`${path.resolve(viteOutput.dir, "server")}/**`);
+                }
+              }
+            }
+            return callHook(name, ...args);
+          };
           nitroBuildDir = nitro.options.buildDir
             ? path.resolve(root, nitro.options.buildDir)
             : undefined;
@@ -8955,7 +9366,7 @@ export const loadServerActionClient = ${
           const manifest = collectInlineCssManifest(clientDir, nextConfig.assetPrefix);
           const rscOutDir = path.resolve(
             buildRoot,
-            options.rscOutDir ?? path.join("dist", "server"),
+            options.rscOutDir ?? path.join(buildOutDir, "server"),
           );
           for (const entryFile of ["index.js", "index.mjs"]) {
             if (injectInlineCssManifestGlobal(path.join(rscOutDir, entryFile), manifest)) break;
@@ -8974,10 +9385,16 @@ export const loadServerActionClient = ${
         if (hasAppDir || hasCloudflarePlugin || hasNitroPlugin) return;
         if (nextConfig?.output === "export") return;
         const { createPagesPreviewHandler } = await import("./server/prod-server.js");
-        const { environments, preview, root } = server.config;
+        const { build, environments, preview, root } = server.config;
         const handler = await createPagesPreviewHandler({
-          clientDir: path.resolve(root, environments.client?.build.outDir ?? "dist/client"),
-          serverDir: path.resolve(root, environments.ssr?.build.outDir ?? "dist/server"),
+          clientDir: path.resolve(
+            root,
+            environments.client?.build.outDir ?? path.join(build.outDir, "client"),
+          ),
+          serverDir: path.resolve(
+            root,
+            environments.ssr?.build.outDir ?? path.join(build.outDir, "server"),
+          ),
           host: typeof preview.host === "string" ? preview.host : "localhost",
           port: preview.port ?? 4173,
         });
@@ -9235,6 +9652,20 @@ export const loadServerActionClient = ${
           clientReferenceAlwaysRenderedFiles = [];
           clientReferenceRoutelessFiles = [];
         },
+      }),
+    );
+    plugins.push(
+      createFontOwnerManifestPlugin({
+        canonicalizeModuleId: canonicalize,
+        async getManager(config) {
+          const rscPluginModule = await rscPluginModulePromise;
+          return rscPluginModule?.getPluginApi(config)?.manager;
+        },
+        getRoutes: () => fontOwnerRoutes,
+        getAlwaysRenderedFiles: () => clientReferenceAlwaysRenderedFiles,
+        getRoutelessFiles: () => clientReferenceRoutelessFiles,
+        getGlobalNotFoundFiles: () => fontOwnerGlobalNotFoundFiles,
+        ownerKeys: fontOwnerKeys,
       }),
     );
     plugins.push(createScanBuildCssPlugin());

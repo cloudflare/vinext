@@ -6,9 +6,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
+import { packageBin } from "./package-bin.js";
 
 const CLI_PATH = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
-const VP_PATH = path.resolve(import.meta.dirname, "../node_modules/.bin/vp");
+const VP_CLI_PATH = packageBin(path.resolve(import.meta.dirname, ".."), "vite-plus", "vp");
 const VITE_CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.resolve("vite"))), "cli.js");
 const VINEXT_ENTRY_URL = pathToFileURL(
   path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
@@ -22,7 +23,11 @@ function write(root: string, file: string, contents: string): void {
 }
 
 function createHybridProject(configFile = "vite.config.ts"): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-command-contract-"));
+  // Vite keys virtual entries in the manifest relative to the cwd, not the
+  // resolved root, so build from the root's real spelling (no 8.3 short names).
+  const root = fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-command-contract-")),
+  );
   temporaryProjects.push(root);
   fs.symlinkSync(
     path.resolve(import.meta.dirname, "../node_modules"),
@@ -433,7 +438,7 @@ export default { plugins: [vinext()] };
   it("builds only the known client and server environments for plain Pages projects", () => {
     const root = createPagesProject();
 
-    execFileSync(VP_PATH, ["build"], { cwd: root, stdio: "pipe" });
+    execFileSync(process.execPath, [VP_CLI_PATH, "build"], { cwd: root, stdio: "pipe" });
 
     expect(fs.existsSync(path.join(root, "dist/client/.vite/manifest.json"))).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
@@ -469,7 +474,11 @@ export default { plugins: [vinext()] };
       "declare const __FOLLOWING_PLUGIN__: string; export default function Page() { return <p>{__FOLLOWING_PLUGIN__}</p>; }\n",
     );
 
-    execFileSync(VP_PATH, ["build"], { cwd: root, stdio: "pipe", timeout: 120_000 });
+    execFileSync(process.execPath, [VP_CLI_PATH, "build"], {
+      cwd: root,
+      stdio: "pipe",
+      timeout: 120_000,
+    });
 
     expect(
       fs.readFileSync(path.join(root, "dist/server/prerendered-routes/index.html"), "utf-8"),
@@ -574,7 +583,7 @@ export default { plugins: [vinext()] };
     );
     write(root, "dist/keep.txt", "keep");
 
-    const output = execFileSync(VP_PATH, ["build"], {
+    const output = execFileSync(process.execPath, [VP_CLI_PATH, "build"], {
       cwd: root,
       encoding: "utf-8",
       stdio: "pipe",

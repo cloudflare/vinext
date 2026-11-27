@@ -387,6 +387,20 @@ function isStaticMatcherConditions(value: unknown): value is Array<Record<string
 }
 
 /**
+ * Extracts the value of `export const <name> = true` or `= false`.
+ * Handles TypeScript annotations/assertions.
+ * Returns null if the export is absent or not a boolean literal.
+ */
+export function extractExportConstBoolean(code: string, name: string): boolean | null {
+  const initializer = findExportedConstInitializer(code, name);
+  if (initializer === null) return null;
+  const expression = unwrapStaticExpression(initializer);
+  return expression.type === "Literal" && typeof expression.value === "boolean"
+    ? expression.value
+    : null;
+}
+
+/**
  * Extracts the numeric value of `export const <name> = <number|false>`.
  * Supports integers, decimals, negative values, `Infinity`, and `false`.
  * `false` is returned as `Infinity` because `export const revalidate = false`

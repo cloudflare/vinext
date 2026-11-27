@@ -3,6 +3,7 @@ import { findPackageJSON } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { symlinkDir } from "./symlink-dir.js";
 
 export async function createNextIntlFixture({
   convention = "middleware",
@@ -31,7 +32,7 @@ export async function createNextIntlFixture({
       await fs.mkdir(localModules);
       for (const name of await fs.readdir(nodeModules)) {
         if (name.startsWith(".")) continue;
-        await fs.symlink(path.join(nodeModules, name), path.join(localModules, name), "junction");
+        symlinkDir(path.join(nodeModules, name), path.join(localModules, name));
       }
       const nextIntlPackage = await fs.realpath(
         findPackageJSON("next-intl", pathToFileURL(path.join(fixture, "package.json")))!,
@@ -54,11 +55,7 @@ export async function createNextIntlFixture({
         );
       }
     } else {
-      try {
-        await fs.symlink(nodeModules, localModules, "dir");
-      } catch {
-        await fs.symlink(nodeModules, localModules, "junction");
-      }
+      symlinkDir(nodeModules, localModules);
     }
     const middlewarePath = path.join(root, "middleware.ts");
     await fs.writeFile(

@@ -391,6 +391,17 @@ export function createOptimisticRouteTemplate(options: {
 
   const metadata = AppElementsWire.readMetadata(options.elements);
   if (metadata.interception !== null || metadata.interceptionContext !== null) return null;
+  // A payload rendered by another route than the one the URL matches came
+  // through a rewrite (middleware, or a config rewrite), so it says nothing
+  // about the URL's route. Like Next.js's discoverKnownRoutePart, learn
+  // nothing from it. The rendered route is the one the server names, as its
+  // match depends on the raw spelling of static segments and on recorded
+  // prerenders. The URL's match here reads an encoded static segment as the
+  // literal one, so a dynamic sibling's payload for another spelling of a
+  // static page (`/%61dmin` beside `/admin`) is learned for neither route.
+  if (metadata.routeGraphId !== match.route.id) {
+    return null;
+  }
 
   const routeElement = options.elements[metadata.routeId];
   // Full-prefetch learning is intentionally heuristic: legacy full prefetches

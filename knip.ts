@@ -80,6 +80,7 @@ export default {
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
         "src/client/react-instance-bootstrap.ts",
+        "src/client/route-announcer.ts",
         "src/server/app-middleware.ts",
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",
@@ -109,6 +110,7 @@ export default {
         // so knip cannot trace the import statically.
         "src/server/prerender-work-unit-setup.ts",
         "src/server/app-page-element-builder.ts",
+        "src/server/app-page-request.ts",
         "src/server/app-hook-warning-suppression.ts",
         "src/server/app-post-middleware-context.ts",
         "src/server/app-route-handler-middleware-context.ts",

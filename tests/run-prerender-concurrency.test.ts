@@ -135,8 +135,10 @@ describe("runPrerender concurrency", () => {
 
       expect(prerenderAppMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          rscBundlePath: path.join(root, "dist", "server", "entries", "application-entry.js"),
-          serverDir: path.join(root, "dist", "server"),
+          rscBundlePath: toSlash(
+            path.join(root, "dist", "server", "entries", "application-entry.js"),
+          ),
+          serverDir: toSlash(path.join(root, "dist", "server")),
           config: expect.objectContaining({ buildId: "canonical-build" }),
         }),
       );
@@ -174,10 +176,10 @@ describe("runPrerender concurrency", () => {
 
       expect(prerenderAppMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          rscBundlePath: applicationEntry,
-          serverDir,
-          buildOutDir: path.join(root, "dist"),
-          outDir: path.join(root, "dist", "server", "prerendered-routes"),
+          rscBundlePath: toSlash(applicationEntry),
+          serverDir: toSlash(serverDir),
+          buildOutDir: toSlash(path.join(root, "dist")),
+          outDir: toSlash(path.join(root, "dist", "server", "prerendered-routes")),
           config: expect.objectContaining({ buildId: "custom-build" }),
         }),
       );
@@ -254,15 +256,15 @@ describe("runPrerender concurrency", () => {
 
       expect(prerenderAppMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          rscBundlePath: applicationEntry,
-          serverDir,
-          buildOutDir: path.join(root, "dist"),
-          outDir: path.join(root, "dist", "client"),
+          rscBundlePath: toSlash(applicationEntry),
+          serverDir: toSlash(serverDir),
+          buildOutDir: toSlash(path.join(root, "dist")),
+          outDir: toSlash(path.join(root, "dist", "client")),
         }),
       );
       expect(writePrerenderIndexMock).toHaveBeenCalledWith(
         expect.any(Array),
-        path.join(root, "dist", "server"),
+        toSlash(path.join(root, "dist", "server")),
         expect.objectContaining({ buildId: "custom-build" }),
       );
     } finally {

@@ -3,6 +3,7 @@ import { toSlash } from "pathslash";
 import type { Plugin, ResolvedConfig, ServerOptions, UserConfig, ViteDevServer } from "vite";
 import { formatAlreadyRunningError, tryAcquireLockfile } from "./server/dev-lockfile.js";
 import { isViteCliInvocation } from "./utils/vite-cli-invocation.js";
+import { supportsNativeCommandLock } from "./utils/vite-version.js";
 
 type ActiveDevServerLock = {
   lockfile: Extract<ReturnType<typeof tryAcquireLockfile>, { ok: true }>["lockfile"];
@@ -81,7 +82,9 @@ export function createDevServerLifecyclePlugin(
           if (options.port !== undefined) server.config.server.port = options.port;
           if (options.hostname !== undefined) server.config.server.host = options.hostname;
         }
-        configureDevServerLifecycle(server);
+        // Vite's own lock belongs to the executing CLI, which can differ from
+        // the Vite package the project resolves (e.g. `npm exec vite@...`).
+        configureDevServerLifecycle(server, !supportsNativeCommandLock(this.meta.viteVersion));
       },
     },
   };
@@ -92,7 +95,7 @@ export function normalizeDevServerHostname(host: string | boolean | undefined): 
   return host === true ? "0.0.0.0" : "localhost";
 }
 
-function configureDevServerLifecycle(server: ViteDevServer): void {
+function configureDevServerLifecycle(server: ViteDevServer, devLock: boolean): void {
   const root = normalizeDevLifecycleRoot(server.config.root);
   let activeLock: ActiveDevServerLock | undefined;
   const releaseLock = () => {
@@ -157,7 +160,7 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
   };
   const listenServer = server.listen.bind(server);
   server.listen = async (port?: number, isRestart?: boolean) => {
-    if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1") {
+    if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1" || !devLock) {
       return listenServer(port, isRestart);
     }
     const configuredPort = port ?? server.config.server.port;

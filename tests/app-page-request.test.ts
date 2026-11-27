@@ -10,6 +10,7 @@ import {
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageGenerateStaticParamsSources,
   validateAppPageDynamicParams,
+  checkAppPageRouteDynamicParams,
   validateAppPageRouteDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
 import {
@@ -39,6 +40,7 @@ describe("app page request helpers", () => {
             runStaticParamsCheckDetached(() =>
               validateAppPageRouteDynamicParams({
                 dynamicParamsConfig: false,
+                hasGenerateStaticParams: true,
                 async generateStaticParams() {
                   await (await fetch(url, { cache: "force-cache" })).text();
                   return [{ slug: "known" }];
@@ -46,6 +48,8 @@ describe("app page request helpers", () => {
                 isDynamicRoute: true,
                 isProduction: true,
                 params: { slug: "unknown" },
+                pathname: "/posts/unknown",
+                routePattern: "/posts/:slug",
               }),
             ),
         );
@@ -73,6 +77,7 @@ describe("app page request helpers", () => {
           runStaticParamsCheckDetached(() =>
             validateAppPageRouteDynamicParams({
               dynamicParamsConfig: false,
+              hasGenerateStaticParams: true,
               fetchCache: "force-no-store",
               async generateStaticParams() {
                 await (await fetch(url, { cache: "force-cache" })).text();
@@ -81,6 +86,8 @@ describe("app page request helpers", () => {
               isDynamicRoute: true,
               isProduction: true,
               params: { slug: "unknown" },
+              pathname: "/posts/unknown",
+              routePattern: "/posts/:slug",
             }),
           ),
         );
@@ -91,6 +98,350 @@ describe("app page request helpers", () => {
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
+  });
+
+  // Next.js prerenders a route whose last dynamic segment has no generator
+  // only when every generated row has every param. vinext reads only the rows
+  // the request's parent params generate, so a miss runs no generator for the
+  // other parents.
+  it("decides a miss from the rows the request's parent params generate", async () => {
+    const ids = vi.fn(async ({ params }: { params: Record<string, unknown> }) =>
+      params.slug === "acme" ? [{ id: "1" }] : [],
+    );
+    const check = (params: { id: string; slug: string }) =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                chained: true,
+                generateStaticParams: async () => [{ slug: "acme" }, { slug: "other" }],
+                parentParamNames: [],
+              },
+              { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
+            ],
+            hasGenerateStaticParams: false,
+            isDynamicRoute: true,
+            isProduction: true,
+            params,
+            pathname: `/club/${params.slug}/pics/${params.id}`,
+            routePattern: "/club/:slug/pics/:id",
+            routeSegments: ["club", "[slug]", "(group)", "pics", "[id]"],
+          }),
+        ),
+      );
+
+    // `acme`'s rows all have `id`, so its miss is a 404 without running the
+    // generator for `other`, whose row lacks `id`.
+    expect((await check({ id: "2", slug: "acme" }))?.status).toBe(404);
+    expect(ids).toHaveBeenCalledTimes(1);
+    expect(ids).toHaveBeenLastCalledWith({ params: { slug: "acme" } });
+    // `other` keeps a row without `id`, so its params render.
+    expect(await check({ id: "2", slug: "other" })).toBeNull();
+  });
+
+  // A route vinext stores only when Next.js prerenders it: every parent's rows
+  // have every param. A match confirms that by running the other parents'
+  // generators once, reusing the request's results.
+  it("confirms every parent's rows have every param for a match", async () => {
+    const ids = vi.fn(async ({ params }: { params: Record<string, unknown> }) =>
+      params.slug === "acme" ? [{ id: "1" }] : params.slug === "beta" ? [{ id: "3" }] : [],
+    );
+    const check = (
+      params: { id: string; slug: string },
+      slugs: readonly Record<string, string>[],
+      confirmEveryParamGenerated = true,
+    ) =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          checkAppPageRouteDynamicParams({
+            confirmEveryParamGenerated,
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                chained: true,
+                generateStaticParams: async () => slugs,
+                parentParamNames: [],
+              },
+              { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
+            ],
+            hasGenerateStaticParams: false,
+            isDynamicRoute: true,
+            isProduction: true,
+            params,
+            pathname: `/club/${params.slug}/pics/${params.id}`,
+            routePattern: "/club/:slug/pics/:id",
+            routeSegments: ["club", "[slug]", "(group)", "pics", "[id]"],
+          }),
+        ),
+      );
+
+    const complete = await check({ id: "1", slug: "acme" }, [{ slug: "acme" }, { slug: "beta" }]);
+    expect(complete).toEqual({ response: null, generatesEveryParam: true });
+    expect(ids.mock.calls.map(([{ params }]) => params.slug)).toEqual(["acme", "beta"]);
+
+    // `other` generates a row without `id`, so Next.js prerenders nothing.
+    ids.mockClear();
+    const mixed = await check({ id: "1", slug: "acme" }, [{ slug: "acme" }, { slug: "other" }]);
+    expect(mixed).toEqual({ response: null, generatesEveryParam: false });
+
+    // A miss is a 404 from the request's rows alone.
+    ids.mockClear();
+    const miss = await check({ id: "2", slug: "acme" }, [{ slug: "acme" }, { slug: "beta" }]);
+    expect(miss.response?.status).toBe(404);
+    expect(miss.generatesEveryParam).toBe(false);
+    expect(ids).toHaveBeenCalledTimes(1);
+
+    // Without the option, a match runs only the request's generators.
+    ids.mockClear();
+    const unconfirmed = await check(
+      { id: "1", slug: "acme" },
+      [{ slug: "acme" }, { slug: "beta" }],
+      false,
+    );
+    expect(unconfirmed).toEqual({ response: null, generatesEveryParam: false });
+    expect(ids).toHaveBeenCalledTimes(1);
+
+    // Another parent's generator failing leaves the match to render uncached.
+    ids.mockClear();
+    ids.mockImplementation(async ({ params }) => {
+      if (params.slug === "beta") throw new Error("beta failed");
+      return [{ id: "1" }];
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failed = await check({ id: "1", slug: "acme" }, [{ slug: "acme" }, { slug: "beta" }]);
+      expect(failed).toEqual({ response: null, generatesEveryParam: false });
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  // Next.js runs every slot's generators in one chain, where a later slot's
+  // generator can leave a row without a param that vinext's separate chains
+  // never see, so vinext doesn't store such a route.
+  it("never confirms a route whose parallel route slots export generators", async () => {
+    const check = (params: { a: string; b: string }) =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          checkAppPageRouteDynamicParams({
+            confirmEveryParamGenerated: true,
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                generateStaticParams: async () => [{ a: "x" }, { a: "y" }],
+                independentChain: 0,
+                parentParamNames: [],
+              },
+              {
+                generateStaticParams: async ({ params: parent }) =>
+                  parent.a === "x" ? [{ b: "1" }] : [],
+                independentChain: 1,
+                parentParamNames: ["a"],
+              },
+            ],
+            hasGenerateStaticParams: false,
+            isDynamicRoute: true,
+            isProduction: true,
+            params,
+            pathname: `/${params.a}/${params.b}`,
+            routePattern: "/:a/:b",
+            routeSegments: ["[a]", "[b]"],
+          }),
+        ),
+      );
+
+    expect(await check({ a: "x", b: "1" })).toEqual({
+      response: null,
+      generatesEveryParam: false,
+    });
+    expect((await check({ a: "x", b: "2" })).response?.status).toBe(404);
+  });
+
+  it("decides a miss under a parent no generator gives from every parent's rows", async () => {
+    const check = (slugs: string[], otherIds: Record<string, string>[]) => {
+      const ids = vi.fn(async ({ params }: { params: Record<string, unknown> }) =>
+        params.slug === "acme" ? [{ id: "1" }] : otherIds,
+      );
+      const response = runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                chained: true,
+                generateStaticParams: async () => slugs.map((slug) => ({ slug })),
+                parentParamNames: [],
+              },
+              { chained: true, generateStaticParams: ids, parentParamNames: ["slug"] },
+            ],
+            hasGenerateStaticParams: false,
+            isDynamicRoute: true,
+            isProduction: true,
+            params: { id: "1", slug: "zzz" },
+            pathname: "/club/zzz/pics/1",
+            routePattern: "/club/:slug/pics/:id",
+            routeSegments: ["club", "[slug]", "(group)", "pics", "[id]"],
+          }),
+        ),
+      );
+      return { ids, response };
+    };
+
+    // `other` keeps a row without `id`, so the route renders any params,
+    // whichever parent comes first.
+    for (const slugs of [
+      ["acme", "other"],
+      ["other", "acme"],
+    ]) {
+      const { ids, response } = check(slugs, []);
+      expect(await response).toBeNull();
+      expect(ids).toHaveBeenCalledTimes(2);
+    }
+    expect((await check(["acme", "other"], [{ id: "2" }]).response)?.status).toBe(404);
+  });
+
+  it("calls only the request's generators when a generated row lacks a param", async () => {
+    const regions = vi.fn(async () => [{ region: "EU" }, { region: "US" }]);
+    const langs = vi.fn(async () => [{ lang: "en" }]);
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      runStaticParamsCheckDetached(() =>
+        validateAppPageRouteDynamicParams({
+          dynamicParamsConfig: false,
+          generateStaticParams: [
+            { chained: true, generateStaticParams: regions, parentParamNames: [] },
+            { chained: true, generateStaticParams: langs, parentParamNames: ["region"] },
+          ],
+          hasGenerateStaticParams: false,
+          isDynamicRoute: true,
+          isProduction: true,
+          params: { lang: "fr", region: "EU", slug: "post" },
+          pathname: "/EU/fr/post",
+          routePattern: "/:region/:lang/:slug",
+          routeSegments: ["[region]", "[lang]", "[slug]"],
+        }),
+      ),
+    );
+
+    // The rows lack `slug`, so the route renders any params, and `langs`
+    // runs for `EU` alone.
+    expect(response).toBeNull();
+    expect(regions).toHaveBeenCalledTimes(1);
+    expect(langs).toHaveBeenCalledTimes(1);
+  });
+
+  // Next.js merges every slot's rows into one chain before it checks them.
+  it("checks the rows of two slots' generators together", async () => {
+    const check = (params: { a: string; b: string }) =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                generateStaticParams: async () => [{ a: "x" }],
+                independentChain: 0,
+                parentParamNames: [],
+              },
+              {
+                generateStaticParams: async () => [{ b: "1" }],
+                independentChain: 1,
+                parentParamNames: [],
+              },
+            ],
+            hasGenerateStaticParams: false,
+            isDynamicRoute: true,
+            isProduction: true,
+            params,
+            pathname: `/${params.a}/${params.b}`,
+            routePattern: "/:a/:b",
+            routeSegments: ["[a]", "[b]"],
+          }),
+        ),
+      );
+
+    expect(await check({ a: "x", b: "1" })).toBeNull();
+    expect((await check({ a: "x", b: "2" }))?.status).toBe(404);
+    expect((await check({ a: "y", b: "1" }))?.status).toBe(404);
+  });
+
+  it("matches a slot's generated path beside a slot that generates none", async () => {
+    const check = (params: { a: string; b: string }) =>
+      runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            generateStaticParams: [
+              {
+                generateStaticParams: async () => [{ a: "x", b: "1" }],
+                independentChain: 0,
+                parentParamNames: [],
+              },
+              { generateStaticParams: async () => [], independentChain: 1, parentParamNames: [] },
+            ],
+            hasGenerateStaticParams: false,
+            isDynamicRoute: true,
+            isProduction: true,
+            params,
+            pathname: `/${params.a}/${params.b}`,
+            routePattern: "/:a/:b",
+            routeSegments: ["[a]", "[b]"],
+          }),
+        ),
+      );
+
+    expect(await check({ a: "x", b: "1" })).toBeNull();
+    expect((await check({ a: "x", b: "2" }))?.status).toBe(404);
+  });
+
+  it("keeps an export's written paths for a revalidate = 0 route", async () => {
+    vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        runStaticParamsCheckDetached(() =>
+          validateAppPageRouteDynamicParams({
+            dynamicParamsConfig: false,
+            generateStaticParams: async () => [{ id: "1" }],
+            hasGenerateStaticParams: true,
+            isDynamicRoute: true,
+            isProduction: true,
+            params: { id: "2" },
+            pathname: "/posts/2",
+            revalidateSeconds: 0,
+            routePattern: "/posts/:id",
+            routeSegments: ["posts", "[id]"],
+          }),
+        ),
+      );
+      expect(response?.status).toBe(404);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  // A route runs its parallel chains after its children's, out of Next's
+  // breadth-first order, so it keeps its tree-wide fetchCache; a breadth-first
+  // chain, as an interception's, gives each source its segment's.
+  it("gives sources their segment's fetchCache only for a breadth-first chain", () => {
+    const generateStaticParams = async () => [];
+    const options = {
+      layouts: [{ fetchCache: "force-cache", generateStaticParams }],
+      page: { fetchCache: "force-no-store", generateStaticParams },
+      parallelBranches: [{ page: { fetchCache: "only-cache", generateStaticParams } }],
+      routeSegments: ["[slug]"],
+    };
+
+    expect(
+      resolveAppPageGenerateStaticParamsSources(options).map((source) => source.fetchCache),
+    ).toEqual([undefined, undefined, undefined]);
+    expect(
+      resolveAppPageGenerateStaticParamsSources({
+        ...options,
+        fetchCachePerSource: true,
+      }).map((source) => source.fetchCache),
+    ).toEqual(["force-cache", "force-no-store", "only-cache"]);
   });
 
   it("tags generateStaticParams' fetches with the route's implicit tags, as Next.js does", async () => {
@@ -106,6 +457,7 @@ describe("app page request helpers", () => {
         runStaticParamsCheckDetached(() =>
           validateAppPageRouteDynamicParams({
             dynamicParamsConfig: false,
+            hasGenerateStaticParams: true,
             async generateStaticParams() {
               await (await fetch(url, { cache: "force-cache" })).text();
               return [{ slug: "known" }];
@@ -113,6 +465,8 @@ describe("app page request helpers", () => {
             isDynamicRoute: true,
             isProduction: true,
             params: { slug: "unknown" },
+            pathname: "/tagged-posts/unknown",
+            routePattern: "/tagged-posts/:slug",
             routeSegments: ["tagged-posts", "[slug]"],
           }),
         ),
@@ -872,6 +1226,8 @@ describe("app page request helpers", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        // The source route renders only the intercepting tree.
+        rendersInterceptionSource: true,
       },
       new URLSearchParams("from=feed"),
     );
@@ -930,6 +1286,7 @@ describe("app page request helpers", () => {
       interceptPage: { default: "modal-page" },
       interceptParams: { id: "123" },
       interceptSlotKey: "modal@app/feed/@modal",
+      rendersInterceptionSource: true,
     });
   });
 
@@ -1012,7 +1369,10 @@ describe("resolveAppPageInterceptionRerenderTarget intercept loading", () => {
     // sourceParams keeps only the params declared by the source route.
     // /feed has no dynamic params, so the slice is empty.
     expect(result.params).toEqual({});
-    expect(result.interceptOpts).toEqual(toInterceptOpts(intercept));
+    expect(result.interceptOpts).toEqual({
+      ...toInterceptOpts(intercept),
+      rendersInterceptionSource: true,
+    });
   });
 
   it("deduplicates concurrent intercept page and layout loads", async () => {
@@ -1216,12 +1576,78 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { id: "123" },
       params: { id: "123" },
       route: currentRoute,
     });
     expect(findIntercept).toHaveBeenCalledTimes(1);
+  });
+
+  // `/photos/1` to `/photos/2` beside `@modal/(.)[id]`: Next.js keeps the
+  // `/photos/1` page beneath the modal, while the client reads the target's
+  // params.
+  it("renders a current-route interception beneath the source's params", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/2",
+      currentParams: { id: "2" },
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "2" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceMatchedParams: { id: "1" },
+        sourceRouteIndex: 0,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "2" },
+        interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
+      },
+      navigationParams: { id: "2" },
+      params: { id: "1" },
+      route: currentRoute,
+    });
+  });
+
+  it("renders a current-route interception whole when its source names no route", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
+      cleanPathname: "/photos/2",
+      currentParams: { id: "2" },
+      currentRoute,
+      findIntercept: () => ({
+        matchedParams: { id: "2" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceMatchedParams: {},
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: false,
+      }),
+      getRouteParamNames: (route) => route.params,
+      getSourceRoute: () => currentRoute,
+      isRscRequest: true,
+      toInterceptOpts,
+    });
+
+    expect(result).toEqual({
+      interceptOpts: {
+        interceptPage: { default: "modal-page" },
+        interceptParams: { id: "2" },
+        interceptSlotKey: "modal@app/feed/@modal",
+      },
+      navigationParams: { id: "2" },
+      params: { id: "2" },
+      route: currentRoute,
+    });
   });
 
   it("preserves current-route intercept opts when action rerender stays on the direct route", async () => {
@@ -1246,6 +1672,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { id: "123" },
       params: { id: "123" },
@@ -1280,6 +1707,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
         interceptPage: { default: "modal-page" },
         interceptParams: { locale: "en", id: "123" },
         interceptSlotKey: "modal@app/feed/@modal",
+        rendersInterceptionSource: true,
       },
       navigationParams: { locale: "en", tab: "recent", id: "123" },
       params: { locale: "en", tab: "recent" },

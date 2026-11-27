@@ -30,13 +30,14 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { parseFlag } from "./lib/cli-args.mjs";
 import { discoverIntegrationFiles } from "./lib/integration-files.mjs";
 import { buildManifest } from "./lib/integration-shard-plan.mjs";
 import { aggregateBlobDir } from "./lib/vitest-blob-timings.mjs";
 
-const MANIFEST_PATH = new URL("ci-integration-timings.json", import.meta.url).pathname;
+const MANIFEST_PATH = fileURLToPath(new URL("ci-integration-timings.json", import.meta.url));
 const REPO_RUN_URL = "https://github.com/cloudflare/vinext/actions/runs";
 
 function die(...msg) {

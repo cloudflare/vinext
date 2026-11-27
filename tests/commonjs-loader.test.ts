@@ -95,7 +95,7 @@ module.exports = {
       same: boolean;
     };
     expect(result.first.cached).toBe(true);
-    expect(result.first.parent).toBe(fs.realpathSync(path.join(dir, "entry.js")));
+    expect(result.first.parent).toBe(fs.realpathSync.native(path.join(dir, "entry.js")));
     expect(result.same).toBe(true);
     expect((globalThis as Record<string, unknown>)[counterKey]).toBe(1);
     delete (globalThis as Record<string, unknown>)[counterKey];
