@@ -1630,6 +1630,7 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   return ordered;
 }
 
+/** Whether a slot sub-page lives inside one of the slot's own nested slots (`@children` is transparent). */
 function isNestedSlotSubPage({ relativePath }: SlotSubPageEntry): boolean {
   return relativePath
     .split(path.sep)
@@ -2344,11 +2345,15 @@ function discoverInheritedParallelSlots(
     const slotLayoutIdx = Math.max(lvlLayoutIdx, 0);
     const segmentsBelow = segments.slice(segmentIndex);
     const isActiveUrlLevel = dir === routeDir || segmentsBelow.every(isInvisibleSegment);
+    // An ancestor slot with only nested pages (no page, default or
+    // interception at its root) is still part of a descendant route when one
+    // of those pages mirrors it, e.g. @slot/specific/page.tsx for /specific.
+    // It's dropped below when nothing mirrors the route.
     const slotsAtLevel = discoverParallelSlots(
       dir,
       appDir,
       matcher,
-      includeNestedOnlySlots && isActiveUrlLevel,
+      isActiveUrlLevel ? includeNestedOnlySlots : true,
     );
 
     for (const slot of slotsAtLevel) {
@@ -2365,6 +2370,9 @@ function discoverInheritedParallelSlots(
         // pattern-compatible matches (e.g. slot's [name] for route's [id]) so
         // the runtime can extract slot-specific params via slotPatternParts.
         const mirror = findMirroredSlotPage(slot.ownerDir, segmentsBelow, matcher);
+        const isNestedOnlySlot =
+          !slot.hasPage && !slot.defaultPath && slot.interceptingRoutes.length === 0;
+        if (isNestedOnlySlot && !mirror) continue;
         let slotPatternParts: string[] | undefined;
         let slotParamNames: string[] | undefined;
         if (mirror) {
@@ -2461,7 +2469,11 @@ function findMirroredSlotPage(
     score: number;
   };
   let best: Candidate | null = null;
-  for (const { relativePath, pagePath } of findSlotSubPages(slotDir, matcher)) {
+  for (const entry of findSlotSubPages(slotDir, matcher)) {
+    // A page inside one of the slot's own nested slots fills that nested
+    // slot (e.g. @outer/@inner/specific), never the slot itself.
+    if (isNestedSlotSubPage(entry)) continue;
+    const { relativePath, pagePath } = entry;
     const slotSegments = relativePath.split(path.sep);
     const slotUrl = convertSegmentsToRouteParts(slotSegments);
     if (!slotUrl) continue;
@@ -2496,17 +2508,23 @@ function findMirroredSlotPage(
  *   This also means a literal slot sub-page never matches a catch-all route
  *   (e.g. slot `about/page.tsx` is not bound to a route `[...slug]`) — the
  *   catch-all might or might not resolve to "about" at request time.
+ * - Likewise, a route catch-all needs a slot catch-all that covers every URL
+ *   it matches: `:name` covers one segment, not `[...slug]`'s `/a/b`, and
+ *   `:name+` doesn't cover the empty match of `[[...slug]]`.
  */
 function patternsCompatible(slotParts: readonly string[], routeParts: readonly string[]): boolean {
   let i = 0;
   let j = 0;
   while (i < slotParts.length) {
     const sp = slotParts[i];
-    if (sp.endsWith("+")) return j < routeParts.length;
-    if (sp.endsWith("*")) return true;
+    if (isCatchAllPart(sp, "+")) {
+      return j < routeParts.length && !isCatchAllPart(routeParts[j], "*");
+    }
+    if (isCatchAllPart(sp, "*")) return true;
     if (j >= routeParts.length) return false;
     const rp = routeParts[j];
     if (sp.startsWith(":")) {
+      if (isCatchAllPart(rp, "+") || isCatchAllPart(rp, "*")) return false;
       i++;
       j++;
       continue;
@@ -2519,6 +2537,11 @@ function patternsCompatible(slotParts: readonly string[], routeParts: readonly s
   return j === routeParts.length;
 }
 
+/** Whether a pattern part is a catch-all (`+`) or optional catch-all (`*`) param, not a literal like `specific+`. */
+function isCatchAllPart(part: string, modifier: "+" | "*"): boolean {
+  return part.startsWith(":") && part.endsWith(modifier);
+}
+
 /**
  * Score a slot pattern by specificity so the most-specific match wins:
  *   literal > single dynamic > catch-all > optional catch-all.
@@ -2529,8 +2552,8 @@ function patternsCompatible(slotParts: readonly string[], routeParts: readonly s
 function scoreSlotPattern(urlSegments: readonly string[]): number {
   let score = 0;
   for (const seg of urlSegments) {
-    if (seg.endsWith("*")) score += 1;
-    else if (seg.endsWith("+")) score += 2;
+    if (isCatchAllPart(seg, "*")) score += 1;
+    else if (isCatchAllPart(seg, "+")) score += 2;
     else if (seg.startsWith(":")) score += 3;
     else score += 4;
   }

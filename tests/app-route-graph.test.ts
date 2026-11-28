@@ -700,6 +700,68 @@ describe("App Router route graph builder", () => {
       );
       expect(team?.routeSegments).toEqual(["[id]", "(__SLOT__)"]);
     });
+
+    // Ported from Next.js:
+    // test/e2e/app-dir/parallel-routes-pruned-matchers ("keeps a complete specific matcher")
+    // https://github.com/vercel/next.js/tree/v16.4.6/test/e2e/app-dir/parallel-routes-pruned-matchers/app/optional-children-catchall
+    it("gives a child route an ancestor slot that only has nested pages", async () => {
+      // @slot has no page.tsx or default.tsx of its own, only specific/page.tsx.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const specific = findRoute(graph.routes, "/nested-only-slot/specific");
+      expect(specific.pagePath).toBe(canonical(appDir, "nested-only-slot/specific/page.tsx"));
+      expect(specific.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "nested-only-slot/@slot/specific/page.tsx"),
+      );
+      expect(findRoute(graph.routes, "/nested-parallel/specific").parallelSlots).toEqual([
+        expect.objectContaining({
+          name: "outer",
+          pagePath: canonical(appDir, "nested-parallel/@outer/specific/page.tsx"),
+        }),
+      ]);
+
+      // Nothing in @slot mirrors /nested-only-slot/other.
+      expect(findRoute(graph.routes, "/nested-only-slot/other").parallelSlots).toEqual([]);
+    });
+
+    it("mirrors a route catch-all only with a slot page that covers every URL it matches", async () => {
+      // @slot/[id] matches one segment, so it can't fill the slot for
+      // [...children], which also matches /a/b; @slot/[...slot] can.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const catchAll = findRoute(graph.routes, "/nested-only-catchall/:children+");
+      expect(catchAll.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "nested-only-catchall/@slot/[...slot]/page.tsx"),
+      );
+
+      // @slot/[id]/[...slot] needs a segment after /a, so it can't fill the
+      // slot for a/[[...slug]], which also matches /nested-only-optional/a.
+      const optional = findRoute(graph.routes, "/nested-only-optional/a/:slug*");
+      expect(optional.parallelSlots).toEqual([]);
+    });
+
+    it("treats a literal folder ending in + as one static segment when mirroring", async () => {
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const literal = findRoute(graph.routes, "/nested-only-literal/specific+");
+      expect(literal.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "nested-only-literal/@slot/[id]/page.tsx"),
+      );
+
+      // A literal folder ending in + also outranks a dynamic one when scored.
+      const scored = findRoute(graph.routes, "/nested-only-literal-dynamic/a/specific+");
+      expect(scored.parallelSlots.find((slot) => slot.name === "slot")?.pagePath).toBe(
+        canonical(appDir, "nested-only-literal-dynamic/@slot/[id]/specific+/page.tsx"),
+      );
+    });
+
+    it("doesn't mirror an ancestor slot with a page that fills its nested slot", async () => {
+      // @outer/@inner/specific/page.tsx fills @inner, not @outer, and @outer
+      // has no page of its own for /nested-only-inner/specific.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      expect(findRoute(graph.routes, "/nested-only-inner/specific").parallelSlots).toEqual([]);
+    });
   });
 
   // Regression for https://github.com/cloudflare/vinext/issues/1535
