@@ -9,7 +9,7 @@
  * codemod when upgrading from Next.js 12.
  */
 import React from "react";
-import Image from "./image.js";
+import { LegacyBaseImage as Image } from "./image.js";
 import type {
   ImageLoader,
   ImageLoaderProps,
@@ -56,7 +56,16 @@ function LegacyImage(props: ImageProps): React.ReactElement {
     : onLoad;
 
   if (layout === "fill") {
-    return <Image alt={alt ?? ""} fill style={modernStyle} onLoad={handleLoad} {...rest} />;
+    return (
+      <Image
+        alt={alt ?? ""}
+        fill
+        style={modernStyle}
+        onLoad={handleLoad}
+        {...rest}
+        legacyLayout={layout}
+      />
+    );
   }
 
   if (layout === "responsive") {
@@ -73,7 +82,15 @@ function LegacyImage(props: ImageProps): React.ReactElement {
   const h = typeof height === "string" ? parseInt(height, 10) : height;
 
   return (
-    <Image alt={alt ?? ""} width={w} height={h} style={modernStyle} onLoad={handleLoad} {...rest} />
+    <Image
+      alt={alt ?? ""}
+      width={w}
+      height={h}
+      style={modernStyle}
+      onLoad={handleLoad}
+      {...rest}
+      legacyLayout={layout}
+    />
   );
 }
 

@@ -12,12 +12,18 @@
  */
 import type React from "react";
 import type {
+  ImageLoader,
   ImageProps,
   ImgProps,
   StaticImport,
 } from "@vinext/types/next/upstream/dist/shared/lib/get-img-props";
 import { getDeploymentId } from "../utils/deployment-id.js";
 import { hasRemoteMatch, isPrivateIp, type RemotePattern } from "./image-config.js";
+// Aliased to `images.loaderFile` when one is configured (see image-loader.ts).
+// A namespace import, like Next.js's image-external-get-image-props.ts, so a
+// loader file without a default export reaches the runtime error below instead
+// of failing the bundler's static export check.
+import * as loaderFileModule from "private-next-image-loader";
 
 /**
  * Image config injected at build time via Vite define.
@@ -80,6 +86,67 @@ export const __dangerouslyAllowSVG = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLO
  */
 const __dangerouslyAllowLocalIP = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP === "true";
 export const __globallyUnoptimized = process.env.__VINEXT_IMAGE_UNOPTIMIZED === "true";
+const __imageLoaderIsCustom = process.env.__VINEXT_IMAGE_LOADER === "custom";
+const __hasImageLoaderFile = process.env.__VINEXT_IMAGE_LOADER_FILE === "true";
+const __imageLoaderFileDefault: unknown = Reflect.get(loaderFileModule, "default");
+
+/**
+ * The loader that builds an image's URLs when it is not the default loader:
+ * the `loader` prop, else the default export of `images.loaderFile` (unless
+ * `ignoreLoaderFile`, for next/legacy/image). Returns undefined for the
+ * default loader.
+ *
+ * Throws the errors Next.js's getImgProps (shared/lib/get-img-props.ts) throws
+ * for a loader file without a default export, and for `images.loader: "custom"`
+ * with neither a loader file nor a `loader` prop.
+ */
+export function resolveCustomImageLoader(
+  loaderProp: ImageLoader | undefined,
+  src: string,
+  ignoreLoaderFile = false,
+): ImageLoader | undefined {
+  const useLoaderFile = __hasImageLoaderFile && !ignoreLoaderFile;
+  if (useLoaderFile && typeof __imageLoaderFileDefault === "undefined") {
+    throw new Error(
+      "images.loaderFile detected but the file is missing default export.\nRead more: https://nextjs.org/docs/messages/invalid-images-config",
+    );
+  }
+  const loader =
+    loaderProp ?? (useLoaderFile ? (__imageLoaderFileDefault as ImageLoader) : undefined);
+  if (!loader && __imageLoaderIsCustom) {
+    // next/legacy/image's "custom" loader throws only once it builds a URL
+    // (client/legacy/image.tsx), so its unoptimized images still render.
+    if (ignoreLoaderFile) {
+      return ({ src: imageSrc }) => {
+        throw missingLoaderError(imageSrc);
+      };
+    }
+    throw missingLoaderError(src);
+  }
+  return loader;
+}
+
+function missingLoaderError(src: string): Error {
+  return new Error(
+    `Image with src "${src}" is missing "loader" prop.` +
+      "\nRead more: https://nextjs.org/docs/messages/next-image-missing-loader",
+  );
+}
+
+/**
+ * Builds one image URL. `quality` is the parsed `quality` prop, undefined when
+ * it is not set.
+ */
+export type ImageUrlBuilder = (src: string, width: number, quality: number | undefined) => string;
+
+/**
+ * Adapt a custom loader to an ImageUrlBuilder. Like Next.js, a custom loader
+ * gets the parsed `quality` prop as is (undefined when unset), not the
+ * default loader's 75.
+ */
+export function customLoaderUrlBuilder(loader: ImageLoader): ImageUrlBuilder {
+  return (src, width, quality) => loader({ src, width, quality });
+}
 
 /**
  * Validate that a remote URL is allowed by the configured remote patterns.
@@ -308,8 +375,8 @@ function findClosestQuality(quality: number): number {
  * the Images binding to resize/transcode on the fly. In dev, the Vite dev
  * server handles it as a passthrough (serves the original file).
  */
-export function imageOptimizationUrl(src: string, width: number, quality: number = 75): string {
-  const q = findClosestQuality(quality);
+export function imageOptimizationUrl(src: string, width: number, quality?: number): string {
+  const q = findClosestQuality(quality ?? 75);
   const source = extractLocalDeploymentId(src);
   const deploymentQuery =
     source.src.startsWith("/") && source.deploymentId ? `&dpl=${source.deploymentId}` : "";
@@ -337,10 +404,16 @@ function getImageWidths(width: number): number[] {
 export function generateImageAttributes(
   src: string,
   width: number | undefined,
-  quality: number = 75,
+  quality?: number,
   sizes?: string,
+  buildUrl: ImageUrlBuilder = imageOptimizationUrl,
+  // next/legacy/image's `layout`. Its getWidths (client/legacy/image.tsx) lets
+  // `sizes` pick widths only for fill and responsive layouts, and offers every
+  // device width to a responsive image.
+  legacyLayout?: string,
 ): { src: string; srcSet: string } {
-  if (sizes) {
+  const legacyFullWidth = legacyLayout === "fill" || legacyLayout === "responsive";
+  if (sizes && (legacyLayout === undefined || legacyFullWidth)) {
     const viewportWidthPattern = /(^|\s)(1?\d?\d)vw/g;
     const viewportPercentages = Array.from(sizes.matchAll(viewportWidthPattern), (match) =>
       Number.parseInt(match[2], 10),
@@ -351,36 +424,30 @@ export function generateImageAttributes(
         : 0;
     const candidates = ALL_IMAGE_WIDTHS.filter((candidateWidth) => candidateWidth >= minimumWidth);
     return {
-      src: imageOptimizationUrl(src, candidates[candidates.length - 1], quality),
+      src: buildUrl(src, candidates[candidates.length - 1], quality),
       srcSet: candidates
-        .map(
-          (candidateWidth) =>
-            `${imageOptimizationUrl(src, candidateWidth, quality)} ${candidateWidth}w`,
-        )
+        .map((candidateWidth) => `${buildUrl(src, candidateWidth, quality)} ${candidateWidth}w`)
         .join(", "),
     };
   }
 
-  // Next.js getWidths(): an image with no width (`fill`) offers every
-  // images.deviceSizes entry as a `w` descriptor, and `src` is the largest.
-  if (width === undefined) {
+  // Next.js getWidths(): an image with no width (`fill`), or a legacy fill or
+  // responsive image, offers every images.deviceSizes entry as a `w`
+  // descriptor, and `src` is the largest.
+  if (width === undefined || legacyFullWidth) {
     return {
-      src: imageOptimizationUrl(src, RESPONSIVE_WIDTHS[RESPONSIVE_WIDTHS.length - 1], quality),
+      src: buildUrl(src, RESPONSIVE_WIDTHS[RESPONSIVE_WIDTHS.length - 1], quality),
       srcSet: RESPONSIVE_WIDTHS.map(
-        (candidateWidth) =>
-          `${imageOptimizationUrl(src, candidateWidth, quality)} ${candidateWidth}w`,
+        (candidateWidth) => `${buildUrl(src, candidateWidth, quality)} ${candidateWidth}w`,
       ).join(", "),
     };
   }
 
   const widths = getImageWidths(width);
   return {
-    src: imageOptimizationUrl(src, widths[widths.length - 1], quality),
+    src: buildUrl(src, widths[widths.length - 1], quality),
     srcSet: widths
-      .map(
-        (candidateWidth, index) =>
-          `${imageOptimizationUrl(src, candidateWidth, quality)} ${index + 1}x`,
-      )
+      .map((candidateWidth, index) => `${buildUrl(src, candidateWidth, quality)} ${index + 1}x`)
       .join(", "),
   };
 }
@@ -422,6 +489,7 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
     height: imgHeight,
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL: blurDataURLProp });
+  const customLoader = resolveCustomImageLoader(loader, src);
   const shouldPreload = _preload === true || priority === true;
   const isInlineSrc = isDataOrBlobUrl(src);
 
@@ -457,46 +525,53 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
     return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };
   }
 
-  // Validate remote URLs against configured patterns
-  let blockedInProd = false;
-  if (isRemoteUrl(src)) {
-    const validation = validateRemoteUrl(src);
-    if (!validation.allowed) {
-      if (__isDev) {
-        console.warn(`[next/image] ${validation.reason}`);
-      } else {
-        console.error(`[next/image] ${validation.reason}`);
-        blockedInProd = true;
+  let optimizedSrc: string;
+  let srcSet: string | undefined;
+  if (customLoader) {
+    // A custom loader builds every URL, as in Next.js's generateImgAttrs: it
+    // gets each srcSet width and the `quality` prop as written. As there, the
+    // default loader's remote-pattern and SVG checks do not apply to it.
+    ({ src: optimizedSrc, srcSet } = generateImageAttributes(
+      src,
+      fill ? undefined : imgWidth,
+      parseImageQuality(_quality),
+      sizes,
+      customLoaderUrlBuilder(customLoader),
+    ));
+  } else {
+    // Validate remote URLs against configured patterns
+    let blockedInProd = false;
+    if (isRemoteUrl(src)) {
+      const validation = validateRemoteUrl(src);
+      if (!validation.allowed) {
+        if (__isDev) {
+          console.warn(`[next/image] ${validation.reason}`);
+        } else {
+          console.error(`[next/image] ${validation.reason}`);
+          blockedInProd = true;
+        }
       }
     }
+
+    const imgQuality = parseImageQuality(_quality) ?? 75;
+    const resolvedSrc = blockedInProd ? "" : src;
+
+    // For local images (not remote), route through optimization endpoint.
+    // SVG sources auto-skip unless dangerouslyAllowSVG is enabled.
+    const isSvg = isSvgUrl(resolvedSrc);
+    const skipOpt = (isSvg && !__dangerouslyAllowSVG) || blockedInProd || isRemoteUrl(resolvedSrc);
+    const optimizedAttributes =
+      (fill || imgWidth) && !skipOpt
+        ? generateImageAttributes(resolvedSrc, fill ? undefined : imgWidth, imgQuality, sizes)
+        : null;
+    optimizedSrc = skipOpt
+      ? resolvedSrc
+      : optimizedAttributes
+        ? optimizedAttributes.src
+        : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
+    // Each srcSet width points to /_next/image
+    srcSet = optimizedAttributes?.srcSet;
   }
-
-  // Resolve src through custom loader if provided
-  const imgQuality = parseImageQuality(_quality) ?? 75;
-  const resolvedSrc = blockedInProd
-    ? ""
-    : loader
-      ? loader({ src, width: imgWidth ?? 0, quality: imgQuality })
-      : src;
-
-  // For local images (no loader, not remote), route through optimization endpoint.
-  // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
-  // SVG sources auto-skip unless dangerouslyAllowSVG is enabled.
-  const isSvg = isSvgUrl(resolvedSrc);
-  const skipOpt =
-    (isSvg && !__dangerouslyAllowSVG) || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
-  const optimizedAttributes =
-    (fill || imgWidth) && !skipOpt
-      ? generateImageAttributes(resolvedSrc, fill ? undefined : imgWidth, imgQuality, sizes)
-      : null;
-  const optimizedSrc = skipOpt
-    ? resolvedSrc
-    : optimizedAttributes
-      ? optimizedAttributes.src
-      : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
-
-  // Build srcSet for local images — each width points to /_next/image
-  const srcSet = optimizedAttributes?.srcSet;
 
   // Blur placeholder styles — sanitize to prevent CSS injection
   const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
@@ -510,18 +585,21 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
         }
       : undefined;
 
+  // As in Next.js's generateImgAttrs, `src` follows `sizes` and `srcSet`, so
+  // spreading these props onto an <img> sets it last (Safari fetches `src` as
+  // soon as it is set).
   const imageProps: ImgProps = {
-    src: optimizedSrc,
     alt,
     width: fill ? undefined : imgWidth,
     height: fill ? undefined : imgHeight,
     loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
     fetchPriority: priority ? ("high" as const) : undefined,
     decoding: "async" as const,
-    srcSet,
-    sizes: sizes ?? (fill ? "100vw" : undefined),
     className,
     style: getImageStyle(fill, style, blurStyle, { objectFit, objectPosition }),
+    sizes: sizes ?? (fill ? "100vw" : undefined),
+    srcSet,
+    src: optimizedSrc,
     ...rest,
   };
   return { props: Object.assign(imageProps, { "data-nimg": fill ? "fill" : "1" }) };

@@ -14,6 +14,8 @@ const FLIGHT_CODEC_SETUP = path.resolve(import.meta.dirname, "tests/_setup/fligh
 // no prior build required). Shared by both test projects below.
 const WORKSPACE_SRC_ALIAS = {
   "vinext/shims": SHIMS_SRC,
+  // vinext aliases it to images.loaderFile, else to this empty module.
+  "private-next-image-loader": path.join(SHIMS_SRC, "image-loader.ts"),
   "vinext/internal": VINEXT_SRC,
   "@vinext/cloudflare/internal": CLOUDFLARE_SRC,
   "@vinext/cloudflare/cache": path.resolve(import.meta.dirname, "packages/cloudflare/src/cache"),
@@ -247,6 +249,7 @@ export default defineConfig({
             "tests/invalid-static-asset-404.test.ts",
             "tests/middleware-matcher-auth.test.ts",
             "tests/next-image-alias.test.ts",
+            "tests/image-loader-file.test.ts",
             "tests/next-intl-cloudflare.test.ts",
             "tests/node-modules-css.test.ts",
             "tests/node-request-cancellation.test.ts",
@@ -354,6 +357,7 @@ export default defineConfig({
             "tests/kv-cache-handler.test.ts",
             "tests/middleware-matcher-auth.test.ts",
             "tests/next-image-alias.test.ts",
+            "tests/image-loader-file.test.ts",
             "tests/next-intl-cloudflare.test.ts",
             "tests/node-modules-css.test.ts",
             "tests/node-request-cancellation.test.ts",

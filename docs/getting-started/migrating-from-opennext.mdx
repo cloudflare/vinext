@@ -99,7 +99,7 @@ Your `app/` and `pages/` routes, components, `next/*` imports, and `next.config`
   }}
 />
 
-The scanner reports unsupported `next.config` options, imports, and conventions, such as `cacheHandler`, and notes that `images.loader` and `images.loaderFile` are ignored. It doesn't look for OpenNext APIs, so search your code for `@opennextjs/cloudflare` imports as well; [step 4](#4-replace-getcloudflarecontext) covers what replaces them.
+The scanner reports unsupported `next.config` options, imports, and conventions, such as `cacheHandler`. It doesn't look for OpenNext APIs, so search your code for `@opennextjs/cloudflare` imports as well; [step 4](#4-replace-getcloudflarecontext) covers what replaces them.
 
 ## 2. Initialize vinext
 
@@ -278,7 +278,7 @@ Differences to plan for:
 To keep optimizing `next/image` with Cloudflare Images, choose `--image-optimization=cloudflare-images` at init. It adds `imagesOptimizer()` from `@vinext/cloudflare/images/images-optimizer` to `vite.config.ts` and an `IMAGES: bindings.images()` binding to `cloudflare.config.ts`, replacing the `images` binding in `wrangler.jsonc`. Without an optimizer, `/_next/image` serves the original file, and the deploy command prints a reminder.
 
 - **Remote images:** Next.js, and OpenNext with an `IMAGES` binding, optimize remote images through `/_next/image`. vinext's `/_next/image` serves only local images. A remote `src` allowed by `images.remotePatterns` or `images.domains` loads from its own URL; for an image with `width` and `height`, [unpic](https://unpic.pics) adds resizing parameters when it recognizes the image CDN. In production, when either is configured, a remote `src` that neither allows renders nothing. A remote `src` whose host is a private or loopback IP address, such as `10.0.0.5`, also renders nothing in production, even when allowed, unless you set `images.dangerouslyAllowLocalIP: true`.
-- **Custom loaders:** `images.loader` and `images.loaderFile` in `next.config` are ignored, so a `/cdn-cgi/image` loader file like the one in the OpenNext docs has no effect. Pass the loader to each image with the `loader` prop instead. A loader is a function, so in the App Router put `next/image` and its `loader` in a `"use client"` wrapper component and use that in place of `Image`, as Next.js requires. Unlike Next.js, vinext calls the loader only once, at the image's `width`, and renders no `srcSet`, so there are no responsive or high-density variants. Where you need them, render a plain `<img>` with a `srcSet` built from your loader.
+- **Custom loaders:** `images.loaderFile` and the `loader` prop work as in Next.js, so a `/cdn-cgi/image` loader file like the one in the OpenNext docs builds every `src` and `srcSet` URL. `next/legacy/image` does not support `images.loader` values other than `"default"` and `"custom"`, such as `"imgix"`.
 - **`images.unoptimized: true`** renders a plain `<img>` with the original URL, as in Next.js.
 
 ## 8. Build and deploy

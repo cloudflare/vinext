@@ -474,6 +474,15 @@ declare global {
        */
       __VINEXT_IMAGE_QUALITIES?: string;
 
+      /** `next.config.js` → `images.loader` (`"default"` when unset). */
+      __VINEXT_IMAGE_LOADER?: string;
+
+      /**
+       * `"true"` or `"false"` — whether `next.config.js` sets
+       * `images.loaderFile` (aliased to `private-next-image-loader`).
+       */
+      __VINEXT_IMAGE_LOADER_FILE?: string;
+
       /**
        * `"true"` or `"false"` — whether SVG sources are allowed through the
        * image optimizer (`next.config.js` → `images.dangerouslyAllowSVG`).
