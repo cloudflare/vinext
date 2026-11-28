@@ -352,6 +352,14 @@ const nextConfig: NextConfig = {
         },
       ],
       afterFiles: [
+        {
+          source: "/rewrite-destination-after/app/:slug",
+          destination: "/rewrite-destination-app/:slug",
+        },
+        {
+          source: "/rewrite-destination-after/pages/:slug",
+          destination: "/rewrite-destination-pages/:slug",
+        },
         externalHeadersRewrite("after-files"),
         // Used by E2E: app-router-encoded-basepath-i18n (see beforeFiles).
         {
@@ -435,6 +443,14 @@ const nextConfig: NextConfig = {
         },
       ],
       fallback: [
+        {
+          source: "/rewrite-destination-fallback/app/:slug",
+          destination: "/rewrite-destination-app/:slug",
+        },
+        {
+          source: "/rewrite-destination-fallback/pages/:slug",
+          destination: "/rewrite-destination-pages/:slug",
+        },
         externalHeadersRewrite("fallback"),
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/fallback-upload", destination: "/api/methods" },

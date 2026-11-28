@@ -31,6 +31,7 @@ import {
   startGzipUpstream,
   testCacheDir,
 } from "./helpers.js";
+import { rewriteDestinationCases } from "./rewrite-destination-parity.js";
 
 const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
@@ -2182,6 +2183,15 @@ describe("App Router Production server (startProdServer)", () => {
     expect(link).not.toContain("</llms.txt>");
     expect(link).not.toContain("</superseded>");
   });
+
+  it.each(rewriteDestinationCases)(
+    "retains the correct filesystem route for a rewrite from $source",
+    async ({ source, marker }) => {
+      const response = await fetch(`${baseUrl}${source}`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain(marker);
+    },
+  );
 
   it("routes unmatched API paths through fallback rewrites to App route handlers", async () => {
     const res = await fetch(
