@@ -31,6 +31,7 @@ import {
 } from "./app-page-execution.js";
 import { createAppPageRscRenderStatusResolver } from "./app-page-rsc-render-status.js";
 import {
+  applyAppPageShellSpecialErrorStatus,
   createAppPageStaticGenerationStatusCapture,
   type AppPageStaticGenerationStatus,
 } from "./app-page-static-generation-status.js";
@@ -1195,7 +1196,11 @@ async function renderAppPageLifecycleImpl(
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
-  let shellSpecialError: AppPageSpecialError | null = null;
+  // Both are assigned in renderSpecialErrorResponse(), so they're declared
+  // wide rather than narrowed to null. The second is the special error whose
+  // status a static render whose shell rejected takes.
+  let shellSpecialError = null as AppPageSpecialError | null;
+  let shellStatusSpecialError = null as AppPageSpecialError | null;
   // The HTTP errors the document's render reports, which set the status of a
   // static render, as Next.js's static generation does. A PPR fallback shell's
   // aborted render is not one.
@@ -1567,6 +1572,12 @@ async function renderAppPageLifecycleImpl(
           capturedRscDataRef.value,
           peekRenderDynamicUsage,
         );
+        // As in Next.js's static generation, an HTTP error the document
+        // reported before the shell's can set the status instead. A render
+        // that turned dynamic isn't a static one.
+        if (options.pprFallbackShellSignal === undefined && !peekRenderDynamicUsage()) {
+          shellStatusSpecialError = staticGenerationStatus.resolveShellSpecialError(specialError);
+        }
       }
       if (mayPrerender) {
         prerenderedSpecialError = {
@@ -1602,6 +1613,23 @@ async function renderAppPageLifecycleImpl(
   });
   options.onRenderComplete?.(htmlRender.renderComplete);
   if (htmlRender.response) {
+    let shellResponse = htmlRender.response;
+    // The shell error's own document takes the winning error's status, and
+    // is stored with it.
+    if (
+      shellSpecialError &&
+      shellStatusSpecialError &&
+      shellResponse.status === shellSpecialError.statusCode
+    ) {
+      shellResponse = applyAppPageShellSpecialErrorStatus(
+        shellResponse,
+        shellSpecialError,
+        shellStatusSpecialError,
+        options.basePath,
+        options.middlewareContext.headers,
+      );
+      shellSpecialError = shellStatusSpecialError;
+    }
     // A special error that escaped the shell sets the status of the render,
     // which Next.js stores like any other: 404/403/401, or 307/308 with its
     // `location`, beside the page's RSC payload carrying the digest.
@@ -1611,16 +1639,16 @@ async function renderAppPageLifecycleImpl(
       options.isPrerender !== true &&
       resolveEarlyResponseCacheControl(options) === null
     ) {
-      return finalizeShellSpecialErrorResponse(htmlRender.response, shellSpecialError);
+      return finalizeShellSpecialErrorResponse(shellResponse, shellSpecialError);
     }
     if (shellSpecialError && prerenderedSpecialError) {
       return finalizePrerenderedShellSpecialErrorResponse(
-        htmlRender.response,
+        shellResponse,
         shellSpecialError,
         prerenderedSpecialError,
       );
     }
-    const response = applyIneligibleRouteCachePolicy(htmlRender.response, options);
+    const response = applyIneligibleRouteCachePolicy(shellResponse, options);
     if (shellSpecialError) markPrerenderedDynamicShellSpecialError(response, shellSpecialError);
     return response;
   }

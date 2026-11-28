@@ -3013,6 +3013,152 @@ describe("ISR storage of a page's special error", () => {
     },
   );
 
+  // As in Next.js's static generation, the shell's special error isn't the
+  // only one that decides the status: a redirect wins over an access fallback,
+  // and within each the first error the document reported wins. The response
+  // is still the shell error's own document.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  const unauthorizedError = Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;401"), {
+    digest: "NEXT_HTTP_ERROR_FALLBACK;401",
+  });
+  const secondRedirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+    digest: "NEXT_REDIRECT;replace;/second;308;",
+  });
+  function shellRejectingAfterCaughtSsrHandler(caught: unknown, shellError: unknown) {
+    return async () => ({
+      async handleSsr(
+        _rscStream: ReadableStream<Uint8Array>,
+        _navContext: unknown,
+        _fontData: unknown,
+        options?: {
+          sideStream?: ReadableStream<Uint8Array>;
+          capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+          onSsrError?: (error: unknown) => unknown;
+        },
+      ): Promise<ReadableStream<Uint8Array>> {
+        if (options?.capturedRscDataRef && options.sideStream) {
+          options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+        }
+        // A Suspense boundary caught the first error, then the second
+        // rejected the shell. React reports both.
+        options?.onSsrError?.(caught);
+        options?.onSsrError?.(shellError);
+        throw shellError;
+      },
+    });
+  }
+  const renderSpecialErrorDocument = async (specialError: {
+    kind: string;
+    statusCode: number;
+  }): Promise<Response> =>
+    specialError.kind === "redirect"
+      ? new Response(null, { headers: { Location: "/second" }, status: specialError.statusCode })
+      : new Response(`page:${specialError.statusCode}`, { status: specialError.statusCode });
+  const shellPrecedenceCases = [
+    {
+      name: "notFound() before unauthorized()",
+      caught: notFoundError,
+      shellError: unauthorizedError,
+      status: 404,
+      headers: undefined,
+      body: "page:401",
+    },
+    {
+      name: "redirect() before notFound()",
+      caught: redirectError,
+      shellError: notFoundError,
+      status: 307,
+      headers: { location: "/target" },
+      body: "page:404",
+    },
+    {
+      name: "redirect() before permanentRedirect()",
+      caught: redirectError,
+      shellError: secondRedirectError,
+      status: 307,
+      headers: { location: "/target" },
+      body: "",
+    },
+    {
+      name: "notFound() before permanentRedirect()",
+      caught: notFoundError,
+      shellError: secondRedirectError,
+      status: 308,
+      headers: { location: "/second" },
+      body: "",
+    },
+  ];
+
+  it.each(shellPrecedenceCases)(
+    "stores the winning status of a caught $name rejecting the shell",
+    async ({ caught, shellError, status, headers, body }) => {
+      const common = createCommonOptions();
+
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        loadSsrHandler: shellRejectingAfterCaughtSsrHandler(caught, shellError),
+        renderPageSpecialError: renderSpecialErrorDocument,
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+        revalidateSeconds: 60,
+      });
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get("location")).toBe(headers?.location ?? null);
+      await expect(response.text()).resolves.toBe(body);
+      await Promise.all(common.waitUntilPromises);
+
+      const policy = { cacheControl: { revalidate: 60 }, tags: ["_N_T_/posts/post"] };
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "html:/posts/post": { headers, html: body, policy, status },
+        "rsc:/posts/post": { headers, html: "", policy, rsc: "page-flight-with-digest", status },
+      });
+    },
+  );
+
+  it.each(shellPrecedenceCases)(
+    "prerenders the winning status of a caught $name rejecting the shell",
+    async ({ caught, shellError, status, headers, body }) => {
+      const common = createCommonOptions();
+
+      const { markers, response } = await recordPrerenderSpecialErrors(() =>
+        renderAppPageLifecycle({
+          ...common.options,
+          isPrerender: true,
+          isProduction: true,
+          loadSsrHandler: shellRejectingAfterCaughtSsrHandler(caught, shellError),
+          renderPageSpecialError: renderSpecialErrorDocument,
+          renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+          revalidateSeconds: 60,
+        }),
+      );
+
+      expect(response.status).toBe(status);
+      expect(markers).toEqual([{ headers: headers ?? {}, status }]);
+      expect(response.headers.get("location")).toBe(headers?.location ?? null);
+      await expect(response.text()).resolves.toBe(body);
+    },
+  );
+
+  // A render that isn't a static one, as in dev, sends the shell error's own
+  // status, as Next.js's request-time render does.
+  it("sends the shell's special error's status from a dev render", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: false,
+      loadSsrHandler: shellRejectingAfterCaughtSsrHandler(notFoundError, unauthorizedError),
+      renderPageSpecialError: renderSpecialErrorDocument,
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.text()).resolves.toBe("page:401");
+  });
+
   // A static prerender renders its document whole, so a special error that
   // a Suspense boundary caught sets its status, as in Next.js's build. A
   // speculative prerender waits for its document too, unless it turns dynamic.

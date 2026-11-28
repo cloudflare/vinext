@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createAppPageStaticGenerationStatusCapture } from "../packages/vinext/src/server/app-page-static-generation-status.js";
+import { resolveAppPageSpecialError } from "../packages/vinext/src/server/app-page-execution.js";
+import {
+  applyAppPageShellSpecialErrorStatus,
+  createAppPageStaticGenerationStatusCapture,
+} from "../packages/vinext/src/server/app-page-static-generation-status.js";
 
 function digestError(digest: string): Error & { digest: string } {
   return Object.assign(new Error(digest), { digest });
@@ -82,5 +86,89 @@ describe("createAppPageStaticGenerationStatusCapture", () => {
     const capture = createAppPageStaticGenerationStatusCapture("/docs");
     capture.capture(errorFor("redirect", "/target"));
     expect(capture.get()).toEqual({ status: 307, headers: { location: "/docs/target" } });
+  });
+
+  // The second error rejects the shell, as the root boundary case does.
+  describe("with the second error rejecting the shell", () => {
+    function resolveShellStatus(first: keyof typeof ERRORS, second: keyof typeof ERRORS) {
+      const capture = createAppPageStaticGenerationStatusCapture(undefined);
+      capture.capture(errorFor(first, "/first"));
+      const shellError = resolveAppPageSpecialError(errorFor(second, "/second"))!;
+      const winner = capture.resolveShellSpecialError(shellError);
+      return {
+        status: winner.statusCode,
+        location: winner.kind === "redirect" ? winner.location : null,
+      };
+    }
+
+    it.each([
+      ["not-found", "unauthorized", 404],
+      ["unauthorized", "forbidden", 401],
+      ["forbidden", "not-found", 403],
+    ] as const)("keeps the first access fallback: %s before %s", (first, second, status) => {
+      expect(resolveShellStatus(first, second)).toEqual({ status, location: null });
+    });
+
+    it("takes a redirect over an earlier access fallback", () => {
+      expect(resolveShellStatus("not-found", "permanent-redirect")).toEqual({
+        status: 308,
+        location: "/second",
+      });
+    });
+
+    it("keeps an earlier redirect over a later access fallback or redirect", () => {
+      expect(resolveShellStatus("redirect", "forbidden")).toEqual({
+        status: 307,
+        location: "/first",
+      });
+      expect(resolveShellStatus("redirect", "permanent-redirect")).toEqual({
+        status: 307,
+        location: "/first",
+      });
+    });
+
+    it("is the shell error when the document reported no other", () => {
+      const capture = createAppPageStaticGenerationStatusCapture(undefined);
+      const shellError = resolveAppPageSpecialError(errorFor("forbidden", "/second"))!;
+      expect(capture.resolveShellSpecialError(shellError)).toBe(shellError);
+    });
+  });
+});
+
+describe("applyAppPageShellSpecialErrorStatus", () => {
+  const notFound = resolveAppPageSpecialError(errorFor("not-found", "/second"))!;
+  const redirect = resolveAppPageSpecialError(errorFor("redirect", "/first"))!;
+
+  it("sends the shell error's document with the winning status and location", async () => {
+    const response = applyAppPageShellSpecialErrorStatus(
+      new Response("not found", { headers: { "content-type": "text/html" }, status: 404 }),
+      notFound,
+      redirect,
+      "/docs",
+      null,
+    );
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/docs/first");
+    expect(response.headers.get("content-type")).toBe("text/html");
+    await expect(response.text()).resolves.toBe("not found");
+  });
+
+  it("leaves a response that isn't the shell error's own document alone", () => {
+    const response = new Response("boom", { status: 500 });
+    expect(applyAppPageShellSpecialErrorStatus(response, notFound, redirect, undefined, null)).toBe(
+      response,
+    );
+  });
+
+  it("keeps middleware's own Location", () => {
+    const response = applyAppPageShellSpecialErrorStatus(
+      new Response(null, { headers: { location: "/middleware-location" }, status: 308 }),
+      resolveAppPageSpecialError(errorFor("permanent-redirect", "/second"))!,
+      redirect,
+      undefined,
+      new Headers({ location: "/middleware-location" }),
+    );
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/middleware-location");
   });
 });
