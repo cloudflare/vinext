@@ -40,7 +40,13 @@ type BrowserRouteManifestSlotBinding = Pick<
 
 export type BrowserRouteManifestInterception = Pick<
   RouteManifestInterception,
-  "id" | "sourcePatternParts" | "targetPatternParts" | "slotId" | "ownerLayoutId" | "targetRouteId"
+  | "id"
+  | "sourcePagePath"
+  | "sourcePatternParts"
+  | "targetPatternParts"
+  | "slotId"
+  | "ownerLayoutId"
+  | "targetRouteId"
 >;
 
 type BrowserRouteManifestRootBoundary = Pick<RouteManifestRootBoundary, "id" | "treePath">;
@@ -258,6 +264,9 @@ export function toBrowserRouteManifestWire(routeManifest: RouteManifest): Browse
     })),
     interceptions: Array.from(graph.interceptions.values(), (interception) => ({
       id: interception.id,
+      ...(interception.sourcePagePath === undefined
+        ? {}
+        : { sourcePagePath: interception.sourcePagePath }),
       sourcePatternParts: interception.sourcePatternParts,
       targetPatternParts: interception.targetPatternParts,
       slotId: interception.slotId,

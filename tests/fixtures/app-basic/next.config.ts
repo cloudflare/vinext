@@ -32,6 +32,10 @@ const nextConfig: NextConfig = {
   // don't assert the method's absence against this fixture.
   experimental: {
     gestureTransition: true,
+    // Used by E2E: app-router/instrumentation-client-transition-events.spec.ts —
+    // onRouterTransitionStart receives a start event instead of null, so the
+    // fixture does NOT represent the default (null event) config.
+    instrumentationClientRouterTransitionEvents: true,
     // Used by E2E: optimize-imports-client-barrel.spec.ts — a "use client"
     // barrel whose imports SSR rewrites to the modules that define them.
     optimizePackageImports: ["fake-client-barrel"],

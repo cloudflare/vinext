@@ -2436,6 +2436,20 @@ describe("resolveNextConfig gestureTransition", () => {
   });
 });
 
+describe("resolveNextConfig instrumentationClientRouterTransitionEvents", () => {
+  it("defaults experimental.instrumentationClientRouterTransitionEvents to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.instrumentationClientRouterTransitionEvents).toBe(false);
+  });
+
+  it("reads experimental.instrumentationClientRouterTransitionEvents from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { instrumentationClientRouterTransitionEvents: true },
+    });
+    expect(resolved.instrumentationClientRouterTransitionEvents).toBe(true);
+  });
+});
+
 describe("resolveNextConfig cachedNavigations", () => {
   it("defaults experimental.cachedNavigations to false", async () => {
     const resolved = await resolveNextConfig({ cacheComponents: true });
@@ -2843,6 +2857,7 @@ describe("detectNextIntlConfig", () => {
       cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
+      instrumentationClientRouterTransitionEvents: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },

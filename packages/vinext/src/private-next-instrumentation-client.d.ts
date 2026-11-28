@@ -4,6 +4,11 @@ declare module "private-next-instrumentation-client" {
   export function onRouterTransitionStart(
     href: string,
     navigationType: "push" | "replace" | "traverse",
-    event: null,
+    event: {
+      id: string;
+      timestamp: number;
+      fromRoutes: string[];
+      prefetchIntent: "full" | "auto" | "none" | null;
+    } | null,
   ): void;
 }

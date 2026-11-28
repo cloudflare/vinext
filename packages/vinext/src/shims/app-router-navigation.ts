@@ -30,7 +30,10 @@ import {
   loadNavigationRuntimeRouteManifest,
   type NavigationRuntimeVisibleCommitMode,
 } from "../client/navigation-runtime.js";
-import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
+import {
+  notifyAppRouterTransitionStart,
+  type RouterTransitionPrefetchIntent,
+} from "../client/instrumentation-client-state.js";
 import {
   clearAppNavigationFailureTarget,
   stageAppNavigationFailureTarget,
@@ -2226,6 +2229,7 @@ export async function navigateClientSide(
   scroll: boolean,
   programmaticTransition = false,
   visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+  prefetchIntent: RouterTransitionPrefetchIntent | null = null,
 ): Promise<void> {
   notifyAppNavigationStart(href);
 
@@ -2234,7 +2238,7 @@ export async function navigateClientSide(
   if (isExternalUrl(href)) {
     const localPath = toSameOriginAppPath(href, __basePath);
     if (localPath == null) {
-      notifyAppRouterTransitionStart(href, mode);
+      notifyAppRouterTransitionStart(href, mode, prefetchIntent);
 
       const externalNavigate = getNavigationRuntime()?.functions.navigateExternal;
       if (externalNavigate) {
@@ -2266,7 +2270,7 @@ export async function navigateClientSide(
       __basePath,
       __trailingSlash,
     );
-    notifyAppRouterTransitionStart(fullHref, mode);
+    notifyAppRouterTransitionStart(fullHref, mode, prefetchIntent);
     if (mode === "push") {
       saveScrollPosition();
     }
@@ -2291,7 +2295,7 @@ export async function navigateClientSide(
   stageAppNavigationFailureTarget(fullHref);
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.
-  notifyAppRouterTransitionStart(fullHref, mode);
+  notifyAppRouterTransitionStart(fullHref, mode, prefetchIntent);
 
   // Save scroll position before navigating (for back/forward restoration)
   if (mode === "push") {

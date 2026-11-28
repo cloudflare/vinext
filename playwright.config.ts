@@ -128,6 +128,7 @@ const projectServers = {
       "app-router/tsconfig-exact-path.spec.ts",
       "app-router/nextjs-compat/segment-cache-dynamic-params.spec.ts",
       "app-router/instrumentation-client-inject.spec.ts",
+      "app-router/instrumentation-client-transition-events.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {
