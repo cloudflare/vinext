@@ -9,7 +9,8 @@
  *   4. Add vinext scripts to package.json
  *   5. Generate vite.config.ts and platform files, plus a Tailwind PostCSS
  *      config when Tailwind is only set up as a Turbopack loader
- *   6. Update .gitignore to include /dist/ and .vinext/
+ *   6. Update .gitignore to include /dist/ and .vinext/, and add them to the
+ *      ignores of a create-next-app ESLint config
  *   7. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
  *   8. Print summary
  *
@@ -34,12 +35,14 @@ import {
   cssModulesConfigSource,
   compactResourceName,
   findConfigKeepingWorkerName,
+  parseViteConfig,
   setupCloudflarePlatform,
   updateViteConfigForCssModules,
   usesCommonJsViteConfig,
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
+import type { ESTree } from "vite";
 import { getPluginReactUpgradeDeps } from "./utils/plugin-react-version.js";
 import { findPackageVersion, getReactUpgradeDeps } from "./utils/react-version.js";
 
@@ -665,6 +668,132 @@ export function updateGitignore(
   return true;
 }
 
+const ESLINT_CONFIG_FILES = [
+  "eslint.config.js",
+  "eslint.config.mjs",
+  "eslint.config.cjs",
+  "eslint.config.ts",
+  "eslint.config.mts",
+  "eslint.config.cts",
+];
+
+function eslintIgnoreEntries(platform: InitPlatform, legacyWrangler: boolean): string[] {
+  return [
+    "dist/**",
+    ".vinext/**",
+    ...(platform === "cloudflare" ? [legacyWrangler ? ".wrangler/**" : ".cloudflare/**"] : []),
+  ];
+}
+
+type EslintAstNode = ESTree.Node & { start: number; end: number };
+
+/** Global ignore lists: `globalIgnores([...])` and objects whose only key is `ignores`. */
+function findEslintIgnoreLists(node: unknown, lists: EslintAstNode[] = []): EslintAstNode[] {
+  if (!node || typeof node !== "object") return lists;
+  const current = node as ESTree.Node;
+  if (
+    current.type === "CallExpression" &&
+    current.callee.type === "Identifier" &&
+    current.callee.name === "globalIgnores" &&
+    current.arguments[0]?.type === "ArrayExpression"
+  ) {
+    lists.push(current.arguments[0] as EslintAstNode);
+  }
+  if (current.type === "ObjectExpression" && current.properties.length === 1) {
+    const [property] = current.properties;
+    if (
+      property.type === "Property" &&
+      !property.computed &&
+      property.key.type === "Identifier" &&
+      property.key.name === "ignores" &&
+      property.value.type === "ArrayExpression"
+    ) {
+      lists.push(property.value as EslintAstNode);
+    }
+  }
+  for (const child of Object.values(node)) findEslintIgnoreLists(child, lists);
+  return lists;
+}
+
+function stringValue(node: unknown): string | undefined {
+  const literal = node as ESTree.Node | null;
+  return literal?.type === "Literal" && typeof literal.value === "string"
+    ? literal.value
+    : undefined;
+}
+
+/**
+ * Add `entries` to the global ignore list that create-next-app copies from
+ * eslint-config-next's defaults (`".next/**"`, `"out/**"`, ...). Returns the
+ * updated source, or undefined when the config has no such list.
+ */
+export function addEslintIgnores(
+  source: string,
+  entries: string[],
+  fileName = "eslint.config.mjs",
+): string | undefined {
+  let program: ESTree.Program;
+  try {
+    program = parseViteConfig(fileName, source);
+  } catch {
+    return undefined;
+  }
+  const lists = findEslintIgnoreLists(program.body);
+  const ignored = new Set(
+    lists.flatMap((list) => (list as ESTree.ArrayExpression).elements.map(stringValue)),
+  );
+  const missing = entries.filter((entry) => !ignored.has(entry));
+  if (missing.length === 0) return source;
+  for (const list of lists) {
+    const elements = (list as ESTree.ArrayExpression).elements as Array<EslintAstNode | null>;
+    const defaults = elements.find((element) => stringValue(element) === ".next/**");
+    const last = elements.at(-1);
+    if (!defaults || !last) continue;
+    // Only a list with one entry per line and a trailing comma, as create-next-app writes it.
+    const closing = list.end - 1;
+    const closingLineStart = source.lastIndexOf("\n", closing) + 1;
+    const indent = source.slice(source.lastIndexOf("\n", defaults.start) + 1, defaults.start);
+    if (
+      source.slice(last.end, closingLineStart).trim() !== "," ||
+      source.slice(closingLineStart, closing).trim() !== "" ||
+      indent.trim() !== ""
+    ) {
+      return undefined;
+    }
+    const quote = source[defaults.start];
+    const newline = source.includes("\r\n") ? "\r\n" : "\n";
+    const lines = missing.map((entry) => `${indent}${quote}${entry}${quote},${newline}`).join("");
+    return (
+      source.slice(0, closingLineStart) +
+      `${indent}// vinext build output:${newline}${lines}` +
+      source.slice(closingLineStart)
+    );
+  }
+  return undefined;
+}
+
+/**
+ * ESLint's flat config neither reads .gitignore nor skips dot-directories, and
+ * eslint-config-next ignores only Next.js output, so `eslint .` would lint the
+ * output directories init adds to .gitignore. Add them to the ESLint config.
+ */
+export function updateEslintIgnores(
+  root: string,
+  platform: InitPlatform = "node",
+  legacyWrangler = false,
+): { file: string; entries: string[]; updated: boolean } | undefined {
+  const file = ESLINT_CONFIG_FILES.find((name) => fs.existsSync(path.join(root, name)));
+  if (!file) return undefined;
+  const configPath = path.join(root, file);
+  const source = fs.readFileSync(configPath, "utf-8");
+  const entries = eslintIgnoreEntries(platform, legacyWrangler);
+  const updated = addEslintIgnores(source, entries, file);
+  if (updated === undefined) return { file, entries, updated: false };
+  if (updated === source) return undefined;
+  fs.writeFileSync(configPath, updated, "utf-8");
+  return { file, entries, updated: true };
+}
+
 /**
  * Read `output` from the Next.js config as `vinext build` does: an inline
  * `vinext({ nextConfig })` in the Vite config wins over next.config, and both
@@ -987,6 +1116,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // ── Step 5: Update .gitignore ──────────────────────────────────────────
 
   const updatedGitignore = updateGitignore(root, platform, options.cloudflare?.legacyWrangler);
+  const eslintIgnores = updateEslintIgnores(
+    root,
+    platform,
+    options.cloudflare?.legacyWrangler ?? false,
+  );
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
@@ -1184,6 +1318,15 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (updatedGitignore) {
     console.log(
       `    ${terminalStyle.green("\u2713")} Added vinext output directories to .gitignore`,
+    );
+  }
+  if (eslintIgnores?.updated) {
+    console.log(
+      `    ${terminalStyle.green("\u2713")} Added ${eslintIgnores.entries.map((entry) => JSON.stringify(entry)).join(", ")} to the ignores in ${eslintIgnores.file}`,
+    );
+  } else if (eslintIgnores) {
+    console.log(
+      `    ${terminalStyle.yellow("!")} ESLint does not read .gitignore by default; make sure the ignores in ${eslintIgnores.file} include ${eslintIgnores.entries.map((entry) => JSON.stringify(entry)).join(", ")}`,
     );
   }
   if (hasCssModules) {
