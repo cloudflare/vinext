@@ -45,6 +45,18 @@ const nextConfig: NextConfig = {
   // temporary outDir don't need node_modules next to the output.
   transpilePackages: ["fake-css-module-lib", "fake-tsconfig-exact-lib"],
 
+  // Used by E2E: app-router/instrumentation-client-inject.spec.ts — a
+  // CommonJS module that installs its hook after load, and an ESM module whose
+  // hook can be made to throw. Ported from Next.js'
+  // test/e2e/instrumentation-client-hook/inject fixture.
+  instrumentationClientInject: [
+    "./instrumentation-client-inject-late-hook.cjs",
+    // The same late hook from a CommonJS package, which dev serves through
+    // the deps optimizer.
+    "fake-instrumentation-inject",
+    "./instrumentation-client-inject-throws.js",
+  ],
+
   // Used by E2E: app-router-prod/image-local-patterns.spec.ts — every local
   // path without a query string (the Next.js default), plus one query string
   // the default rejects, so the spec observes the configured list. The SVG

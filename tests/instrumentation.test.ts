@@ -11,7 +11,11 @@ import {
   findInstrumentationFile,
 } from "../packages/vinext/src/server/instrumentation.js";
 import { toSlash } from "pathslash";
-import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
+import {
+  generateInstrumentationClientInjectModule,
+  isPackageInjectSpecifier,
+} from "../packages/vinext/src/client/instrumentation-client-inject.js";
+import { INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE } from "../packages/vinext/src/client/instrumentation-client-state.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import {
   createInstrumentationClientTransformPlugin,
@@ -816,7 +820,7 @@ describe("instrumentationClientInject plugin pipeline", () => {
         expect(code.indexOf("import * as __vinj_2 from")).toBeGreaterThan(
           code.lastIndexOf("inject-b.js"),
         );
-        expect(code).toContain("export function onRouterTransitionStart(url, type)");
+        expect(code).toContain("export function onRouterTransitionStart(url, type, event)");
 
         const entryPath = path.join(tmpDir, ".vinext-composed-instrumentation-client.mjs");
         fs.writeFileSync(entryPath, code);
@@ -877,9 +881,8 @@ describe("generateInstrumentationClientInjectModule", () => {
   it("generates a single import for one inject entry", () => {
     const code = generateInstrumentationClientInjectModule(["./inject-a.js"], null);
     expect(code).toContain('import * as __vinj_0 from "./inject-a.js"');
-    expect(code).toContain("export function onRouterTransitionStart(url, type)");
-    expect(code).toContain('typeof __vinj_0.onRouterTransitionStart === "function"');
-    expect(code).toContain("\n    __vinj_0.onRouterTransitionStart(url, type);\n");
+    expect(code).toContain("export function onRouterTransitionStart(url, type, event)");
+    expect(code).toContain("Reflect.apply(hook, hooks, [url, type, event]);");
   });
 
   it("generates imports in config order with user file last", () => {
@@ -890,6 +893,7 @@ describe("generateInstrumentationClientInjectModule", () => {
     expect(code).toContain('import * as __vinj_0 from "./inject-a.js"');
     expect(code).toContain('import * as __vinj_1 from "some-npm-pkg"');
     expect(code).toContain('import * as __vinj_2 from "/project/instrumentation-client.ts"');
+    expect(code).toContain("const __vinext_inject_modules = [__vinj_0, __vinj_1];");
   });
 
   it("falls back to empty-module when user file is absent", () => {
@@ -898,22 +902,242 @@ describe("generateInstrumentationClientInjectModule", () => {
     expect(code).toContain("empty-module");
   });
 
-  it("composes hook calls for every module in array order", () => {
-    const code = generateInstrumentationClientInjectModule(
-      ["./inject-a.js", "./inject-b.js"],
-      "/project/instrumentation-client.ts",
-    );
-    expect(code).toContain('typeof __vinj_0.onRouterTransitionStart === "function"');
-    expect(code).toContain("__vinj_0.onRouterTransitionStart(url, type)");
-    expect(code).toContain('typeof __vinj_1.onRouterTransitionStart === "function"');
-    expect(code).toContain("__vinj_1.onRouterTransitionStart(url, type)");
-    expect(code).toContain('typeof __vinj_2.onRouterTransitionStart === "function"');
-    expect(code).toContain("__vinj_2.onRouterTransitionStart(url, type)");
+  it("treats only package names as pre-bundlable injects", () => {
+    for (const spec of ["fake-instrumentation-inject", "@sentry/nextjs", "pkg/client.js"]) {
+      expect(isPackageInjectSpecifier(spec)).toBe(true);
+    }
+    for (const spec of [
+      "./inject.js",
+      "../inject.js",
+      "/abs/inject.js",
+      "@/inject",
+      "~/inject",
+      "#inject",
+    ]) {
+      expect(isPackageInjectSpecifier(spec)).toBe(false);
+    }
   });
 
   it("escapes special characters in specifier paths", () => {
     const code = generateInstrumentationClientInjectModule(['./path/with"quote.js'], null);
     expect(code).toContain('from "./path/with\\"quote.js"');
+  });
+
+  // Ported from Next.js: test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  // ("surfaces onRouterTransitionStart from every injected module").
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  // Next.js require()s each inject, which returns a CommonJS module's live
+  // module.exports. A namespace import of CommonJS (Rolldown and Vite dev
+  // interop) snapshots it and exposes the live object as `default`.
+  it("reads a hook a CommonJS inject installs after load from its live exports", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-late-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "cjs-interop.mjs"),
+        `const exports = {};
+export default exports;
+globalThis.__vinextInstallLateHook = () => {
+  exports.onRouterTransitionStart = (url) => globalThis.__vinextInjectCalls.push("late " + url);
+};
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "esm.mjs"),
+        `export function onRouterTransitionStart(url) { globalThis.__vinextInjectCalls.push("esm " + url); }
+export default { onRouterTransitionStart() { globalThis.__vinextInjectCalls.push("default"); } };
+`,
+      );
+      fs.writeFileSync(path.join(tmpDir, "side-effect.mjs"), "// module.exports = {}\n");
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      fs.writeFileSync(
+        entryPath,
+        generateInstrumentationClientInjectModule(
+          ["./cjs-interop.mjs", "./esm.mjs", "./side-effect.mjs"],
+          null,
+          path.join(tmpDir, "side-effect.mjs"),
+        ),
+      );
+      const calls: string[] = [];
+      const globals = globalThis as {
+        __vinextInjectCalls?: string[];
+        __vinextInstallLateHook?: () => void;
+      };
+      globals.__vinextInjectCalls = calls;
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        onRouterTransitionStart: (url: string, type: string, event: null) => void;
+      };
+
+      mod.onRouterTransitionStart("/a", "push", null);
+      globals.__vinextInstallLateHook?.();
+      mod.onRouterTransitionStart("/b", "push", null);
+
+      expect(calls).toEqual(["esm /a", "late /b", "esm /b"]);
+    } finally {
+      delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Next.js reads each module's hook inside callHooks' per-module try
+  // (client/components/router-transition.ts).
+  it("isolates a CommonJS inject whose hook export is a throwing getter", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-getter-"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "esm.mjs"),
+        `export function onRouterTransitionStart(url) { globalThis.__vinextInjectCalls.push("esm " + url); }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "user.mjs"),
+        `export function onRouterTransitionStart(url) { globalThis.__vinextInjectCalls.push("user " + url); }\n`,
+      );
+      const code = generateInstrumentationClientInjectModule(
+        ["./getter.cjs", "./esm.mjs"],
+        "./user.mjs",
+      );
+      // Rolldown's CommonJS interop namespace exposes module.exports through
+      // live getters, which an ES module namespace cannot express.
+      const getterImport = 'import * as __vinj_0 from "./getter.cjs";';
+      expect(code).toContain(getterImport);
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      fs.writeFileSync(
+        entryPath,
+        code.replace(
+          getterImport,
+          'const __vinj_0 = { get onRouterTransitionStart() { throw new Error("getter failed"); } };',
+        ),
+      );
+      const calls: string[] = [];
+      (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls = calls;
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        onRouterTransitionStart: (url: string, type: string, event: null) => void;
+      };
+
+      mod.onRouterTransitionStart("/a", "push", null);
+
+      expect(calls).toEqual(["esm /a", "user /a"]);
+      expect(consoleError).toHaveBeenCalledWith(
+        INSTRUMENTATION_CLIENT_HOOK_FAILED_MESSAGE,
+        expect.objectContaining({ message: "getter failed" }),
+      );
+    } finally {
+      consoleError.mockRestore();
+      delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a CommonJS inject's hook once per transition", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-getter-once-"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const code = generateInstrumentationClientInjectModule(["./getter.cjs"], null);
+      const getterImport = 'import * as __vinj_0 from "./getter.cjs";';
+      expect(code).toContain(getterImport);
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      // A stateful live getter: the hook on the first read, a throw after.
+      fs.writeFileSync(
+        entryPath,
+        code.replace(
+          getterImport,
+          `let reads = 0;
+const __vinj_0 = {
+  get onRouterTransitionStart() {
+    if (reads++ > 0) throw new Error("read twice");
+    return (url) => globalThis.__vinextInjectCalls.push("hook " + url);
+  },
+};`,
+        ),
+      );
+      const calls: string[] = [];
+      (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls = calls;
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        onRouterTransitionStart: (url: string, type: string, event: null) => void;
+      };
+
+      mod.onRouterTransitionStart("/a", "push", null);
+
+      expect(calls).toEqual(["hook /a"]);
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+      delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+  it("doesn't read a present CommonJS hook export again through default", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-getter-undefined-"));
+    try {
+      const code = generateInstrumentationClientInjectModule(["./getter.cjs"], null);
+      const getterImport = 'import * as __vinj_0 from "./getter.cjs";';
+      expect(code).toContain(getterImport);
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      // Both the namespace and default read the same live module.exports
+      // property: undefined on the first read, a hook after.
+      fs.writeFileSync(
+        entryPath,
+        code.replace(
+          getterImport,
+          `let reads = 0;
+const moduleExports = {
+  get onRouterTransitionStart() {
+    globalThis.__vinextInjectCalls.push("read");
+    return reads++ > 0 ? (url) => globalThis.__vinextInjectCalls.push("hook " + url) : undefined;
+  },
+};
+const __vinj_0 = {
+  get onRouterTransitionStart() {
+    return moduleExports.onRouterTransitionStart;
+  },
+  default: moduleExports,
+};`,
+        ),
+      );
+      const calls: string[] = [];
+      (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls = calls;
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        onRouterTransitionStart: (url: string, type: string, event: null) => void;
+      };
+
+      mod.onRouterTransitionStart("/a", "push", null);
+
+      expect(calls).toEqual(["read"]);
+    } finally {
+      delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("calls a hook that overrides its own call property", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inject-own-call-"));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, "own-call.mjs"),
+        `export function onRouterTransitionStart(url) {
+  globalThis.__vinextInjectCalls.push(this === undefined ? "no receiver" : "hook " + url);
+}
+onRouterTransitionStart.call = () => globalThis.__vinextInjectCalls.push("own call");
+`,
+      );
+      const entryPath = path.join(tmpDir, "entry.mjs");
+      fs.writeFileSync(
+        entryPath,
+        generateInstrumentationClientInjectModule(["./own-call.mjs"], null),
+      );
+      const calls: string[] = [];
+      (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls = calls;
+      const mod = (await import(pathToFileURL(entryPath).href)) as {
+        onRouterTransitionStart: (url: string, type: string, event: null) => void;
+      };
+
+      mod.onRouterTransitionStart("/a", "push", null);
+
+      expect(calls).toEqual(["hook /a"]);
+    } finally {
+      delete (globalThis as { __vinextInjectCalls?: string[] }).__vinextInjectCalls;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -936,6 +1160,28 @@ describe("client instrumentation hook state", () => {
     registering.setClientInstrumentationHooks({ onRouterTransitionStart });
     notifying.notifyAppRouterTransitionStart("/about", "push");
 
-    expect(onRouterTransitionStart).toHaveBeenCalledWith("/about", "push");
+    expect(onRouterTransitionStart).toHaveBeenCalledWith("/about", "push", null);
+  });
+
+  // Next.js logs a throwing hook instead of failing the navigation
+  // (client/components/router-transition.ts callHooks).
+  it("logs a throwing hook instead of rethrowing", async () => {
+    const state = await import(statePath);
+    const error = new Error("hook failed");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      state.setClientInstrumentationHooks({
+        onRouterTransitionStart: () => {
+          throw error;
+        },
+      });
+      expect(() => state.notifyAppRouterTransitionStart("/about", "push")).not.toThrow();
+      expect(consoleError).toHaveBeenCalledWith(
+        "An instrumentation-client router transition hook failed",
+        error,
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

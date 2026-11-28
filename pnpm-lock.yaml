@@ -1461,6 +1461,9 @@ importers:
       fake-css-module-lib:
         specifier: file:./__test_packages__/fake-css-module-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib
+      fake-instrumentation-inject:
+        specifier: file:./__test_packages__/fake-instrumentation-inject
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-instrumentation-inject
       fake-tsconfig-exact-lib:
         specifier: file:./__test_packages__/fake-tsconfig-exact-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib
@@ -8570,6 +8573,9 @@ packages:
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-module-lib, type: directory}
+
+  fake-instrumentation-inject@file:tests/fixtures/app-basic/__test_packages__/fake-instrumentation-inject:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-instrumentation-inject, type: directory}
 
   fake-tsconfig-exact-lib@file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib, type: directory}
@@ -16934,6 +16940,8 @@ snapshots:
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib: {}
+
+  fake-instrumentation-inject@file:tests/fixtures/app-basic/__test_packages__/fake-instrumentation-inject: {}
 
   fake-tsconfig-exact-lib@file:tests/fixtures/app-basic/__test_packages__/fake-tsconfig-exact-lib: {}
 
