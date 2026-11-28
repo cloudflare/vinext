@@ -534,6 +534,63 @@ test.describe("Dev error overlay", () => {
     test.beforeEach(restoreHmrToggleFiles);
     test.afterEach(restoreHmrToggleFiles);
 
+    test("applies the latest server-component HMR update received before bootstrap", async ({
+      page,
+    }) => {
+      // Adapted from Next.js's early HMR regression:
+      // https://github.com/vercel/next.js/blob/canary/test/development/app-dir/hmr-refresh-before-hydration/hmr-refresh-before-hydration.test.ts
+      const target = "/dev-overlay-hmr-toggle";
+      const overlayModule = /\/dev-error-overlay\.[jt]s(?:\?|$)/;
+      let releaseOverlay!: () => void;
+      const overlayReleased = new Promise<void>((resolve) => {
+        releaseOverlay = resolve;
+      });
+      let updates = 0;
+      let refreshRequests = 0;
+      let documentRequests = 0;
+
+      page.on("websocket", (socket) => {
+        socket.on("framereceived", ({ payload }) => {
+          if (payload.toString().includes('"event":"rsc:update"')) updates++;
+        });
+      });
+      page.on("request", (request) => {
+        if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+          documentRequests++;
+        }
+        if (isAppRouterRscRequestForPath(request, target)) refreshRequests++;
+      });
+      await page.route(overlayModule, async (route) => {
+        await overlayReleased;
+        await route.continue();
+      });
+
+      try {
+        const overlayRequested = page.waitForRequest(overlayModule);
+        await page.goto(`${BASE}${target}`, { waitUntil: "commit" });
+        await overlayRequested;
+        await expect(page.getByTestId("server-hmr-toggle")).toHaveText("server hmr clean");
+
+        for (const value of ["first early update", "latest early update"]) {
+          const previous = updates;
+          await writeFile(
+            SERVER_HMR_TOGGLE_FILE,
+            SERVER_HMR_TOGGLE_CLEAN.replace("server hmr clean", value),
+          );
+          await expect.poll(() => updates).toBeGreaterThan(previous);
+        }
+
+        expect(refreshRequests).toBe(0);
+        releaseOverlay();
+
+        await expect(page.getByTestId("server-hmr-toggle")).toHaveText("latest early update");
+        expect(refreshRequests).toBe(1);
+        expect(documentRequests).toBe(1);
+      } finally {
+        releaseOverlay();
+      }
+    });
+
     test("server component HMR updates the overlay when a throw is toggled", async ({ page }) => {
       // Mirrors Next.js redbox recovery coverage:
       // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/error-on-next-codemod-comment/error-on-next-codemod-comment.test.ts
