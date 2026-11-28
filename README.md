@@ -636,7 +636,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `next/og`           | ✅  | OG image generation via `@vercel/og` (Satori + resvg)                                                                                  |
 | `next/cache`        | ✅  | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`, `"use cache"` with `cacheLife()` and `cacheTag()`       |
 | `next/form`         | ✅  | GET form interception + POST server action delegation                                                                                  |
-| `next/legacy/image` | ✅  | Translates legacy props to modern Image                                                                                                |
+| `next/legacy/image` | ✅  | Port of the Next.js legacy Image: `layout` wrappers, blur placeholder, `lazyRoot` lazy loading                                         |
 | `next/error`        | ✅  | Default error page component                                                                                                           |
 | `next/config`       | ✅  | `getConfig` / `setConfig`                                                                                                              |
 | `next/document`     | ✅  | `Html`, `Head`, `Main`, `NextScript`                                                                                                   |

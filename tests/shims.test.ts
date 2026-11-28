@@ -31431,7 +31431,7 @@ describe("next/navigation enhancements", () => {
 });
 
 describe("next/legacy/image shim", () => {
-  it("renders LegacyImage with layout=fill as modern Image with fill prop", async () => {
+  it("renders LegacyImage with layout=fill absolutely positioned over its parent", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const LegacyImage = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
@@ -31451,7 +31451,7 @@ describe("next/legacy/image shim", () => {
     expect(html).toContain("position:absolute");
   });
 
-  it("renders LegacyImage with layout=intrinsic using width/height", async () => {
+  it("renders LegacyImage with layout=intrinsic sized by its width/height", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const LegacyImage = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
@@ -31465,8 +31465,8 @@ describe("next/legacy/image shim", () => {
         height: 480,
       }),
     );
-    expect(html).toContain('width="640"');
-    expect(html).toContain('height="480"');
+    // Next.js sizes an intrinsic image with an SVG of its dimensions.
+    expect(html).toContain("width=%27640%27%20height=%27480%27");
   });
 
   it("renders LegacyImage with string width/height (converts to number)", async () => {
@@ -31482,8 +31482,7 @@ describe("next/legacy/image shim", () => {
         height: "150",
       }),
     );
-    expect(html).toContain('width="200"');
-    expect(html).toContain('height="150"');
+    expect(html).toContain("width=%27200%27%20height=%27150%27");
   });
 });
 
