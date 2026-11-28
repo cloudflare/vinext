@@ -101,3 +101,9 @@ export class ImageResponse extends Response {
 }
 
 export type { ImageResponseOptions } from "@vercel/og";
+
+// `next/og` is CommonJS in Next.js, so a default import receives its
+// `module.exports`: the entry's public API (packages/next/src/server/og/image-response.ts).
+export default {
+  ImageResponse,
+};

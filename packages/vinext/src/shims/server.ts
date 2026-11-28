@@ -18,6 +18,7 @@ import { encodeMiddlewareRequestHeaders } from "../utils/middleware-request-head
 import { validateCookieAttributeValue, validateCookieName } from "./internal/cookie-serialize.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import { userAgent, userAgentFromString } from "./user-agent.js";
 import {
   bindRequestContextSnapshot,
   getRequestContext,
@@ -1504,3 +1505,16 @@ export const URLPattern: typeof globalThis.URLPattern =
         "Install the `urlpattern-polyfill` package or upgrade to Node 20+.",
     );
   });
+
+// `next/server` is CommonJS in Next.js, so a default import receives its
+// `module.exports`: the entry's public API (packages/next/server.js).
+export default {
+  NextRequest,
+  NextResponse,
+  ImageResponse,
+  userAgentFromString,
+  userAgent,
+  URLPattern,
+  after,
+  connection,
+};

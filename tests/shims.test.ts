@@ -19738,13 +19738,117 @@ describe("app router scroll document-top fallback", () => {
   });
 });
 
+describe("default exports of next/* shims with CommonJS entries in Next.js", () => {
+  // Next.js' entries assign `module.exports` (packages/next/{cache,headers,
+  // navigation,server,...}.js), so a default import receives the entry's
+  // public API as ordinary data properties.
+  const publicApis: Array<[string, () => Promise<Record<string, unknown>>, string[]]> = [
+    [
+      "next/cache",
+      () => import("../packages/vinext/src/shims/cache.js"),
+      [
+        "unstable_cache",
+        "updateTag",
+        "revalidateTag",
+        "revalidatePath",
+        "refresh",
+        "unstable_noStore",
+        "io",
+        "cacheLife",
+        "cacheTag",
+        "unstable_cacheLife",
+        "unstable_cacheTag",
+      ],
+    ],
+    [
+      "next/compat/router",
+      () => import("../packages/vinext/src/shims/compat-router.js"),
+      ["useRouter"],
+    ],
+    [
+      "next/headers",
+      () => import("../packages/vinext/src/shims/headers.js"),
+      ["cookies", "headers", "draftMode"],
+    ],
+    [
+      "next/navigation",
+      () => import("../packages/vinext/src/shims/navigation.js"),
+      [
+        "useSearchParams",
+        "usePathname",
+        "ServerInsertedHTMLContext",
+        "useServerInsertedHTML",
+        "useRouter",
+        "useParams",
+        "useSelectedLayoutSegments",
+        "useSelectedLayoutSegment",
+        "unstable_isUnrecognizedActionError",
+        "ReadonlyURLSearchParams",
+        "notFound",
+        "forbidden",
+        "unauthorized",
+        "redirect",
+        "permanentRedirect",
+        "RedirectType",
+        "unstable_rethrow",
+      ],
+    ],
+    ["next/offline", () => import("../packages/vinext/src/shims/offline.js"), ["useOffline"]],
+    ["next/og", () => import("../packages/vinext/src/shims/og.js"), ["ImageResponse"]],
+    [
+      "next/server",
+      () => import("../packages/vinext/src/shims/server.js"),
+      [
+        "NextRequest",
+        "NextResponse",
+        "ImageResponse",
+        "userAgentFromString",
+        "userAgent",
+        "URLPattern",
+        "after",
+        "connection",
+      ],
+    ],
+    [
+      "next/web-vitals",
+      () => import("../packages/vinext/src/shims/web-vitals.js"),
+      ["useReportWebVitals"],
+    ],
+  ];
+
+  it.each(publicApis)("%s default holds exactly the entry's public API", async (_, load, keys) => {
+    const mod = await load();
+    const defaultExport = mod.default as Record<string, unknown>;
+    expect(Object.keys(defaultExport).sort()).toEqual([...keys].sort());
+    for (const key of keys) {
+      expect(defaultExport[key]).toBe(mod[key]);
+      expect(Object.getOwnPropertyDescriptor(defaultExport, key)).toMatchObject({
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    }
+  });
+
+  it("next/constants default holds every named constant", async () => {
+    const mod = await import("../packages/vinext/src/shims/constants.js");
+    const named = Object.keys(mod).filter((key) => key !== "default");
+    expect(Object.keys(mod.default).sort()).toEqual(named.sort());
+    for (const key of named) {
+      expect((mod.default as Record<string, unknown>)[key]).toBe(mod[key as keyof typeof mod]);
+    }
+  });
+});
+
 describe("next/compat/router shim", () => {
   it("exports useRouter as a function", async () => {
     const mod = await import("../packages/vinext/src/shims/compat-router.js");
-    // useRouter should be a named export, not a default export (unlike next/router).
-    // Returns null in App Router context instead of throwing.
+    // useRouter is a named export. Returns null in App Router context instead
+    // of throwing. Next.js' entry is CommonJS, so the default export is the
+    // module's API (module.exports), not a router like next/router's.
     expect(typeof mod.useRouter).toBe("function");
-    expect((mod as Record<string, unknown>).default).toBeUndefined();
+    expect(mod.default).toMatchObject({ useRouter: mod.useRouter });
+    expect(mod.default).not.toHaveProperty("default");
   });
 
   it("useRouter returns null when no RouterContext.Provider wraps the tree", async () => {

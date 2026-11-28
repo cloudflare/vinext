@@ -22,3 +22,9 @@ import type { NextRouter } from "./router.js";
 export function useRouter(): NextRouter | null {
   return useContext(RouterContext);
 }
+
+// `next/compat/router` is CommonJS in Next.js, so a default import receives its
+// `module.exports`: the entry's public API (packages/next/src/client/compat/router.ts).
+export default {
+  useRouter,
+};

@@ -1334,3 +1334,11 @@ function serializeMutableCookie(cookie: ResponseCookie): string {
 
 // Re-export types
 export type { RequestCookies };
+
+// `next/headers` is CommonJS in Next.js, so a default import receives its
+// `module.exports`: the entry's public API (packages/next/headers.js).
+export default {
+  cookies,
+  headers,
+  draftMode,
+};

@@ -26,3 +26,9 @@ export function useReportWebVitals(callback: ReportWebVitalsCallback): void {
 }
 
 export type { WebVitalsMetric, ReportWebVitalsCallback };
+
+// `next/web-vitals` is CommonJS in Next.js, so a default import receives its
+// `module.exports`: the entry's public API (packages/next/src/client/web-vitals.ts).
+export default {
+  useReportWebVitals,
+};

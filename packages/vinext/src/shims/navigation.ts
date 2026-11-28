@@ -26,7 +26,17 @@ import {
   getPprFallbackShellState,
   markPprFallbackShellDynamicBoundary,
 } from "./ppr-fallback-shell.js";
-import { BailoutToCSRError as NavigationBailoutToCSRError } from "./navigation-errors.js";
+import {
+  BailoutToCSRError as NavigationBailoutToCSRError,
+  RedirectType,
+  forbidden,
+  notFound,
+  permanentRedirect,
+  redirect,
+  unauthorized,
+  unstable_rethrow,
+} from "./navigation-errors.js";
+import { unstable_isUnrecognizedActionError } from "./unrecognized-action-error.js";
 import { AppRouterContext } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import {
@@ -36,6 +46,7 @@ import {
   getLayoutSegmentContext,
   getNavigationContext,
   registerServerInsertedHTMLCallback,
+  ServerInsertedHTMLContext,
   type NavigationContext,
 } from "./navigation-context-state.js";
 
@@ -933,3 +944,25 @@ export {
   UnrecognizedActionError,
   unstable_isUnrecognizedActionError,
 } from "./unrecognized-action-error.js";
+
+// `next/navigation` is CommonJS in Next.js, so a default import receives its
+// `module.exports`: the entry's public API (packages/next/src/client/components/navigation.ts).
+export default {
+  useSearchParams,
+  usePathname,
+  ServerInsertedHTMLContext,
+  useServerInsertedHTML,
+  useRouter,
+  useParams,
+  useSelectedLayoutSegments,
+  useSelectedLayoutSegment,
+  unstable_isUnrecognizedActionError,
+  ReadonlyURLSearchParams,
+  notFound,
+  forbidden,
+  unauthorized,
+  redirect,
+  permanentRedirect,
+  RedirectType,
+  unstable_rethrow,
+};
