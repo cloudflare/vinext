@@ -73,7 +73,16 @@ test.describe("image optimization source behind middleware", () => {
     // Next.js rejects a source that is itself the image endpoint.
     expect((await request.get(imagePath(imageQuery("/heart.png")))).status()).toBe(400);
 
-    for (const source of ["/logo.svg", "/logo.svg?.png"]) {
+    // Like Next.js, the file's bytes decide its type, so an image extension
+    // on an SVG file does not admit it, held in memory or (above 64 KiB) read
+    // from disk.
+    for (const source of [
+      "/logo.svg",
+      "/logo.svg?.png",
+      "/logo-svg.png",
+      "/logo-svg.avif",
+      "/logo-svg-large.png",
+    ]) {
       const svg = await request.get(imagePath(source));
       expect(svg.status(), source).toBe(400);
       expect(await svg.text(), source).toBe(

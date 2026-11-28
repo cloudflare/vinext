@@ -7,7 +7,7 @@
  */
 
 /** Most bytes of a source kept to replay it after animation detection. */
-const HELD_SOURCE_LIMIT = 1_048_576;
+export const HELD_SOURCE_LIMIT = 1_048_576;
 
 /** Thrown once a source grows past `images.maximumResponseBody`. */
 export class ImageSourceTooLargeError extends Error {
