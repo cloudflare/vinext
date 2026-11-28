@@ -2377,6 +2377,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
             .href,
           getEncryptionKey: () => serverActionsEncryptionKey,
+          hasPagesRouter: () => hasPagesDir,
         });
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
         if (useServerIndex === -1) {
@@ -2396,6 +2397,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       projectRoot: earlyBaseDir,
       cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime")).href,
       allowMissingRsc: true,
+      hasPagesRouter: () => hasPagesDir,
     });
   }
 

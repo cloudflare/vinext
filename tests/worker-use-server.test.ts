@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Plugin } from "vite";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { USE_CACHE_PLUGIN_NAME } from "../packages/vinext/src/plugins/use-cache-callable.js";
 import { createWorkerUseServerPlugins } from "../packages/vinext/src/plugins/worker-use-server.js";
 
 type UnknownHook = (...args: never[]) => unknown;
@@ -23,7 +24,9 @@ afterEach(() => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-async function createUseServerPlugin(): Promise<Plugin> {
+async function createUseServerPlugin(
+  checkWorkerModule: (ast: unknown, id: string) => void = () => {},
+): Promise<Plugin> {
   const rscPluginPath = createRequire(
     path.resolve(import.meta.dirname, "../packages/vinext/package.json"),
   ).resolve("@vitejs/plugin-rsc");
@@ -33,7 +36,10 @@ async function createUseServerPlugin(): Promise<Plugin> {
     rscPluginPath,
   });
   const plugin = plugins.find((candidate) => candidate.name === "vinext:worker-use-server")!;
-  await hookHandler(plugin.configResolved).call(undefined as never, { plugins: [] } as never);
+  await hookHandler(plugin.configResolved).call(
+    undefined as never,
+    { plugins: [{ name: USE_CACHE_PLUGIN_NAME, api: { checkWorkerModule } }] } as never,
+  );
   return plugin;
 }
 
@@ -67,5 +73,36 @@ describe("worker Server Function references", () => {
     expect(addWatchFile).toHaveBeenCalledWith(implPath);
     expect(result?.code).toContain('"worker-key#keyLength"');
     expect(result?.code).not.toContain("./impl");
+  });
+
+  // Next.js compiles workers as part of the browser graph that starts them and
+  // fails the build for inline "use server" functions in the App Router's.
+  it("checks inline Server Functions in modules without a use-server directive", async () => {
+    const checkWorkerModule = vi.fn(() => {
+      throw new Error("inline server function");
+    });
+    const plugin = await createUseServerPlugin(checkWorkerModule);
+    const transform = hookHandler(plugin.transform) as unknown as (
+      this: object,
+      code: string,
+      id: string,
+    ) => Promise<{ code: string } | null>;
+
+    await expect(
+      transform.call(
+        {
+          environment: { mode: "build" },
+          error: (message: string) => {
+            throw new Error(message);
+          },
+        },
+        'export async function keyLength() {\n  "use server";\n  return 1;\n}\nexport const label = "label";\n',
+        "/app/shared.ts",
+      ),
+    ).rejects.toThrow("inline server function");
+    expect(checkWorkerModule).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Program" }),
+      "/app/shared.ts",
+    );
   });
 });
