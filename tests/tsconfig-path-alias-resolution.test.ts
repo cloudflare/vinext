@@ -22,10 +22,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createBuilder, createServer, type AliasOptions } from "vite";
+import { createBuilder, createLogger, createServer, type AliasOptions } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { startFixtureServer, fetchHtml } from "./helpers.js";
+import {
+  aliasEntriesToRecord,
+  buildPagesFixture,
+  startFixtureServer,
+  fetchHtml,
+} from "./helpers.js";
 
 const tmpDirs: string[] = [];
 
@@ -402,4 +407,124 @@ export default function Layout({ children }) { return <html><body>{children}</bo
     },
     120_000,
   );
+});
+
+// Ported from Next.js: test/e2e/typescript-paths/test/index.test.ts
+// https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/typescript-paths/test/index.test.ts
+// Next.js tries every `paths` target in order and never resolves to a `.d.ts`
+// target (webpack: build/webpack/plugins/jsconfig-paths-plugin.ts; Turbopack:
+// turbopack/crates/turbopack-resolve/src/typescript.rs).
+describe("tsconfig path targets (fallbacks and .d.ts)", () => {
+  const fixtureDir = path.resolve(import.meta.dirname, "fixtures/tsconfig-paths-fallbacks");
+  const pages = [
+    ["/resolve-order", "Hello from a"],
+    ["/resolve-fallback", "Hello from only b"],
+    ["/alias-to-d-ts", "Not aliased to d.ts file"],
+    // `lib/missing/*` doesn't resolve, so the fixed `lib/fixed.ts` target wins
+    // over the later `lib/b/*`.
+    ["/resolve-fixed", "Hello from fixed"],
+    // The import's `?raw` query carries over to the fixed fallback.
+    ["/resolve-fixed-raw", "fixed-source-marker"],
+    ["/resolve-fixed-exact-raw", "fixed-source-marker"],
+  ] as const;
+
+  it("resolves the first matching target and skips .d.ts targets in dev", async () => {
+    const { server, baseUrl } = await startFixtureServer(fixtureDir);
+    try {
+      const results = [];
+      for (const [pathname, text] of pages) {
+        const { res, html } = await fetchHtml(baseUrl, pathname);
+        results.push([pathname, res.status, html.includes(text)]);
+      }
+      expect(results).toEqual(pages.map(([pathname]) => [pathname, 200, true]));
+
+      // A key with only declaration targets resolves the specifier as written,
+      // and still shadows broader keys: tsconfig.json's `@types-only` replaces
+      // the parent's runtime target, and `@lib/typed` / `@lib/types/*` are
+      // never handled by `@lib/*`. (Vite's native resolve.tsconfigPaths may
+      // still resolve them to the .d.ts file.)
+      const aliasEntries = server.config.resolve.alias as {
+        find: string | RegExp;
+        replacement: string;
+        customResolver?: unknown;
+      }[];
+      const aliases = aliasEntriesToRecord(aliasEntries);
+      expect(aliases[String(/^d-ts-alias(?=[?#]|$)/)]).toMatch(/components\/alias-to-d-ts\.tsx$/);
+      const findIndex = (find: string) => aliasEntries.findIndex((e) => String(e.find) === find);
+      const passThroughEntries = [
+        [String(/^@types-only(?=[?#]|$)/), "@types-only"],
+        [String(/^@lib\/typed(?=[?#]|$)/), "@lib/typed"],
+        [String(/^@lib\/types\//), "@lib/types/"],
+      ] as const;
+      for (const [find, replacement] of passThroughEntries) {
+        const entry = aliasEntries[findIndex(find)]!;
+        expect(entry.replacement).toBe(replacement);
+        expect(await (entry.customResolver as (id: string) => unknown)(replacement)).toBeNull();
+        expect(findIndex(find)).toBeLessThan(findIndex("@lib"));
+      }
+      // Exact keys also match before a query/hash, so `@lib/typed?raw` never
+      // reaches `@lib/*`.
+      const typedFind = aliasEntries[findIndex(String(/^@lib\/typed(?=[?#]|$)/))]!.find as RegExp;
+      expect(
+        ["@lib/typed?raw", "@lib/typed#x", "@lib/typedx"].map((id) => typedFind.test(id)),
+      ).toEqual([true, true, false]);
+      // Like Next.js, `@lib/types/*` matches paths below `@lib/types` only.
+      const typesFind = aliasEntries[findIndex(String(/^@lib\/types\//))]!.find as RegExp;
+      expect(["@lib/types", "@lib/types/x"].map((id) => typesFind.test(id))).toEqual([false, true]);
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
+
+  // A config whose only keys have declaration targets still adds alias entries
+  // with a customResolver, so Vite's deprecation warning stays filtered.
+  it("filters the customResolver deprecation warning for declaration-only keys", async () => {
+    const warnings: string[] = [];
+    const customLogger = createLogger("warn");
+    customLogger.warn = (msg) => {
+      warnings.push(msg);
+    };
+    const server = await createServer({
+      root: path.resolve(import.meta.dirname, "fixtures/tsconfig-paths-declaration-only"),
+      configFile: false,
+      customLogger,
+      plugins: [vinext({ disableAppRouter: true })],
+      server: { port: 0 },
+    });
+    try {
+      expect(warnings.filter((msg) => msg.includes("customResolver"))).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
+
+  // TypeScript accepts native separators in `paths` targets on Windows.
+  it.runIf(process.platform === "win32")(
+    "resolves fallback targets written with Windows separators",
+    async () => {
+      const { server, baseUrl } = await startFixtureServer(
+        path.resolve(import.meta.dirname, "fixtures/tsconfig-paths-windows-separators"),
+      );
+      try {
+        const { res, html } = await fetchHtml(baseUrl, "/");
+        expect(res.status).toBe(200);
+        expect(html).toContain("Hello from a Windows-separated fallback");
+      } finally {
+        await server.close();
+      }
+    },
+    60_000,
+  );
+
+  it("resolves the first matching target and skips .d.ts targets in a production build", async () => {
+    const entryPath = await buildPagesFixture(fixtureDir);
+    try {
+      const entry = fs.readFileSync(entryPath, "utf-8");
+      for (const [, text] of pages) {
+        expect(entry).toContain(text);
+      }
+    } finally {
+      fs.rmSync(path.dirname(path.dirname(entryPath)), { recursive: true, force: true });
+    }
+  }, 120_000);
 });

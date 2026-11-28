@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@lib/*": ["lib/a/*", "lib/b/*"],
+      "@lib/typed": ["components/alias-to-d-ts.d.ts"],
+      "@lib/types/*": ["components/*.d.ts"],
+      "@fixed/*": ["lib/missing/*", "lib/fixed.ts", "lib/b/*"],
+      "@fixed-exact": ["lib/missing.ts", "lib/fixed.ts"],
+      "d-ts-alias": ["components/alias-to-d-ts.d.ts", "components/alias-to-d-ts.tsx"],
+      "@types-only": ["components/alias-to-d-ts.d.ts"]
+    },
+    "jsx": "react-jsx",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["pages", "lib", "components"]
+}
