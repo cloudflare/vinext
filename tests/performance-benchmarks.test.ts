@@ -321,7 +321,7 @@ describe("paired performance benchmarks", () => {
     mkdirSync(linkedDirectory, { recursive: true });
     mkdirSync(outputDirectory, { recursive: true });
     writeFileSync(join(linkedDirectory, "entry.js"), "console.log('linked')");
-    execFileSync("ln", ["-s", linkedDirectory, join(outputDirectory, "client")]);
+    symlinkSync(linkedDirectory, join(outputDirectory, "client"), "dir");
 
     expect(() =>
       execFileSync(process.execPath, ["benchmarks/perf/bundle-size.mjs", "vinext"], {
@@ -338,7 +338,7 @@ describe("paired performance benchmarks", () => {
     mkdirSync(join(directory, "benchmarks"), { recursive: true });
     mkdirSync(join(linkedRoot, "dist/client"), { recursive: true });
     writeFileSync(join(linkedRoot, "dist/client/entry.js"), "console.log('linked')");
-    execFileSync("ln", ["-s", linkedRoot, join(directory, "benchmarks/vinext")]);
+    symlinkSync(linkedRoot, join(directory, "benchmarks/vinext"), "dir");
 
     expect(() =>
       execFileSync(process.execPath, ["benchmarks/perf/bundle-size.mjs", "vinext"], {
