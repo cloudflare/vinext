@@ -84,7 +84,9 @@ register(
     encodeURIComponent(\`
       import { fileURLToPath, pathToFileURL } from "node:url";
       export async function resolve(specifier, context, next) {
-        if (/^[A-Za-z]:[\\\\\\\\/]/.test(specifier)) specifier = pathToFileURL(specifier).href;
+        if (/^[A-Za-z]:[\\\\\\\\/]/.test(specifier)) {
+          specifier = specifier.replace(/^[^?]+/, (file) => pathToFileURL(file).href);
+        }
         return next(specifier, context);
       }
       export async function load(url, context, next) {

@@ -18,6 +18,7 @@
  */
 import { describe, it, expect, vi } from "vite-plus/test";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import { buildPagesNextDataScript } from "../packages/vinext/src/server/pages-page-response.js";
 
@@ -112,7 +113,11 @@ function buildNavHtml(
   return `<html><head></head><body>${nextDataScript}</body></html>`;
 }
 
-const PAGE_MODULE_URL = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+const PAGE_MODULE_PATH = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+// The router only imports module URLs that start with `/`, so a Windows drive
+// path goes through Vite's `/@fs/` URL.
+const PAGE_MODULE_URL =
+  process.platform === "win32" ? `/@fs/${toSlash(PAGE_MODULE_PATH)}` : PAGE_MODULE_PATH;
 
 // Ported from Next.js test/e2e/ignore-invalid-popstateevent — Next.js writes
 // `{ url, as, options, __N: true, key }` on every pushState/replaceState so

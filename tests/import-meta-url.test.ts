@@ -501,11 +501,20 @@ describe("vinext:import-meta-url plugin", () => {
     );
     const code = emitted?.code ?? "";
     const processImport = code.match(/import \* as (\w+) from "node:process";/);
-    // Workerd exposes the node:process module but not process.cwd(), and its
-    // module-registry URL is not guaranteed to use the file: scheme.
+    // Workerd exposes the node:process module but not process.cwd(), its
+    // module-registry URL is not guaranteed to use the file: scheme, and its
+    // node:url has POSIX semantics on every host.
+    const posixNodeUrl = `data:text/javascript,${encodeURIComponent(
+      [
+        'import * as url from "node:url";',
+        "export const fileURLToPath = (value) => url.fileURLToPath(value, { windows: false });",
+        "export const pathToFileURL = (value) => url.pathToFileURL(value, { windows: false });",
+      ].join("\n"),
+    )}`;
     const workerdLikeCode = code
       .replace(processImport?.[0] ?? "", processImport ? `const ${processImport[1]} = {};` : "")
-      .replace("const runtimeUrl = import.meta.url;", 'const runtimeUrl = "worker";');
+      .replace("const runtimeUrl = import.meta.url;", 'const runtimeUrl = "worker";')
+      .replaceAll('from "node:url"', `from "${posixNodeUrl}"`);
     const module = await import(
       `data:text/javascript;base64,${Buffer.from(workerdLikeCode).toString("base64")}`
     );

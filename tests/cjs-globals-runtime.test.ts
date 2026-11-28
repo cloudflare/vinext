@@ -699,9 +699,10 @@ function htmlValue(html: string, id: string): string {
 }
 
 function expectedFileUrl(filename: string): string {
-  // Worker virtual filesystem paths are POSIX even when this test runs on a
-  // Windows host, so do not let host path semantics add a drive letter.
-  return filename.startsWith("/bundle/")
+  // Workerd paths are POSIX even when this test runs on a Windows host
+  // (`/bundle/...` in a Worker bundle, `/C:/...` for host files in dev), so do
+  // not let host path semantics add a drive letter.
+  return filename.startsWith("/bundle/") || /^\/[A-Za-z]:\//.test(filename)
     ? new URL(`file://${filename}`).href
     : pathToFileURL(filename).href;
 }
