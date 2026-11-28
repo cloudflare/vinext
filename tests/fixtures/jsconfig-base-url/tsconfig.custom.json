@@ -1,0 +1,7 @@
+{
+  "compilerOptions": {
+    "baseUrl": "custom-base",
+    "jsx": "react-jsx",
+    "allowJs": true
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "vite-tsconfig-base-url-fixture",
+  "private": true,
+  "type": "module"
+}

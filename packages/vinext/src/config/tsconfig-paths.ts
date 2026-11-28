@@ -29,18 +29,21 @@ import { parseStaticObjectLiteral } from "../plugins/fonts.js";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
+const CONFIG_DIR_TEMPLATE_RE = /\$\{configDir\}/g;
 
 type TsconfigPathResolution = {
   aliases: Record<string, string>;
   baseUrl: string | null;
 };
 
-function resolveTsconfigPathCandidate(candidate: string): string | null {
-  const candidates = candidate.endsWith(".json")
+function tsconfigPathCandidates(candidate: string): string[] {
+  return candidate.endsWith(".json")
     ? [candidate]
     : [candidate, `${candidate}.json`, path.join(candidate, "tsconfig.json")];
+}
 
-  for (const item of candidates) {
+function resolveTsconfigPathCandidate(candidate: string): string | null {
+  for (const item of tsconfigPathCandidates(candidate)) {
     if (fs.existsSync(item) && fs.statSync(item).isFile()) {
       return item;
     }
@@ -65,9 +68,13 @@ function normalizeExtends(extendsField: unknown): string[] {
   return [];
 }
 
+function isRelativeExtends(specifier: string): boolean {
+  return specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\");
+}
+
 function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
   const fromDir = path.dirname(configPath);
-  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
+  if (isRelativeExtends(specifier)) {
     return resolveTsconfigPathCandidate(path.resolve(fromDir, specifier));
   }
 
@@ -124,11 +131,32 @@ function emptyResolution(): TsconfigPathResolution {
 
 function loadResolutionFromTsconfigFile(
   configPath: string,
-  seen: Set<string>,
+  activeConfigs: Set<string>,
+  // Collects every config file read (and missing relative parents), for
+  // watching.
+  readConfigs?: Set<string>,
+  // The directory of the config the chain starts from, for `${configDir}`.
+  rootConfigDir = path.dirname(configPath),
 ): TsconfigPathResolution {
-  if (seen.has(configPath)) return emptyResolution();
-  seen.add(configPath);
+  // `activeConfigs` holds only the configs on the current `extends` chain, so
+  // it breaks cycles while a config shared by several parents (`[B, C]` both
+  // extending `D`) is still read through each of them.
+  if (activeConfigs.has(configPath)) return emptyResolution();
+  activeConfigs.add(configPath);
+  readConfigs?.add(configPath);
+  try {
+    return readResolutionFromTsconfigFile(configPath, activeConfigs, readConfigs, rootConfigDir);
+  } finally {
+    activeConfigs.delete(configPath);
+  }
+}
 
+function readResolutionFromTsconfigFile(
+  configPath: string,
+  activeConfigs: Set<string>,
+  readConfigs: Set<string> | undefined,
+  rootConfigDir: string,
+): TsconfigPathResolution {
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = parseStaticObjectLiteral(fs.readFileSync(configPath, "utf-8"));
@@ -144,8 +172,20 @@ function loadResolutionFromTsconfigFile(
 
   for (const extendsSpecifier of extendsList) {
     const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
+    if (readConfigs && (isRelativeExtends(extendsSpecifier) || path.isAbsolute(extendsSpecifier))) {
+      // Watch every candidate of a relative or absolute (including
+      // drive-letter) parent, so creating a missing or higher-priority one is
+      // picked up.
+      const parentPath = path.resolve(path.dirname(configPath), extendsSpecifier);
+      for (const candidate of tsconfigPathCandidates(parentPath)) readConfigs.add(candidate);
+    }
     if (extendedPath) {
-      const parent = loadResolutionFromTsconfigFile(extendedPath, seen);
+      const parent = loadResolutionFromTsconfigFile(
+        extendedPath,
+        activeConfigs,
+        readConfigs,
+        rootConfigDir,
+      );
       resolution = {
         aliases: { ...resolution.aliases, ...parent.aliases },
         baseUrl: parent.baseUrl ?? resolution.baseUrl,
@@ -156,7 +196,12 @@ function loadResolutionFromTsconfigFile(
   const compilerOptions = isRecord(parsed.compilerOptions) ? parsed.compilerOptions : null;
   const ownBaseUrl =
     compilerOptions && typeof compilerOptions.baseUrl === "string"
-      ? path.resolve(path.dirname(configPath), compilerOptions.baseUrl)
+      ? // Like TypeScript and Next.js lib/typescript/loadTsConfig.ts,
+        // `${configDir}` is the directory of the config the chain starts from.
+        path.resolve(
+          path.dirname(configPath),
+          compilerOptions.baseUrl.replace(CONFIG_DIR_TEMPLATE_RE, () => rootConfigDir),
+        )
       : null;
   const baseUrl = ownBaseUrl ?? resolution.baseUrl;
 
@@ -206,6 +251,45 @@ export function loadTsconfigResolutionForRoot(projectRoot: string): TsconfigPath
     };
   }
   return emptyResolution();
+}
+
+export type TsconfigBaseUrlConfig = { configPath: string; baseUrl: string };
+
+export type TsconfigBaseUrlLoad = {
+  config: TsconfigBaseUrlConfig | null;
+  // The candidate configs and every config the selected one extends, including
+  // missing relative parents.
+  watchFiles: string[];
+};
+
+/**
+ * Return the explicit `compilerOptions.baseUrl` (own or inherited through
+ * `extends`) of the config file vinext reads compiler options from:
+ * `typescript.tsconfigPath` when set, else `tsconfig.json`, else
+ * `jsconfig.json` (Next.js build/load-jsconfig.ts). `config` is null when no
+ * config file sets `baseUrl`.
+ */
+export function loadTsconfigBaseUrl(
+  projectRoot: string,
+  configuredPath?: string,
+): TsconfigBaseUrlLoad {
+  // Like Next.js build/load-jsconfig.ts: the configured tsconfigPath (else
+  // tsconfig.json) when it exists, else jsconfig.json.
+  const candidates = [
+    configuredPath
+      ? path.resolve(projectRoot, configuredPath)
+      : path.join(projectRoot, "tsconfig.json"),
+    path.join(projectRoot, "jsconfig.json"),
+  ];
+  const readConfigs = new Set<string>();
+  let config: TsconfigBaseUrlConfig | null = null;
+  for (const configPath of candidates) {
+    if (!fs.existsSync(configPath)) continue;
+    const { baseUrl } = loadResolutionFromTsconfigFile(configPath, new Set(), readConfigs);
+    config = baseUrl ? { configPath, baseUrl } : null;
+    break;
+  }
+  return { config, watchFiles: [...new Set([...candidates, ...readConfigs])] };
 }
 
 /**

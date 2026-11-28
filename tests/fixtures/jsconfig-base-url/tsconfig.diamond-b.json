@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.diamond-d.json",
+  "compilerOptions": {
+    "baseUrl": "custom-base"
+  }
+}
