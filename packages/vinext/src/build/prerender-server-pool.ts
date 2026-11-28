@@ -20,6 +20,7 @@ import path from "pathslash";
 import { fileURLToPath } from "node:url";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { startProdServer } from "../server/prod-server.js";
+import { FATAL_UNHANDLED_NEXT_API_EXIT_CODE } from "../server/socket-error-backstop.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_ENTRY = path.join(__dirname, "prerender-server-entry.js");
@@ -285,11 +286,20 @@ export async function startPrerenderServerPool(
     };
     const assertHealthy = (): void => {
       if (crash) {
+        // Killed by a signal (the OOM killer's SIGKILL, V8's heap-limit abort)
+        // the worker printed nothing useful; an exit code means it ran its
+        // own exit path, which may have printed an error to the inherited
+        // stderr.
+        const reason =
+          crash.signal !== null
+            ? `This is often an out-of-memory kill — try a lower --prerender-concurrency.`
+            : crash.code === FATAL_UNHANDLED_NEXT_API_EXIT_CODE
+              ? `A Next.js API that uses exceptions to signal framework behavior was uncaught; its error is printed above.`
+              : `Any error it printed is above.`;
         throw new Error(
           `[vinext] A prerender render worker (port ${crash.port}) exited unexpectedly ` +
             `(code ${crash.code}, signal ${crash.signal}) during the build. ` +
-            `Prerender output is incomplete; failing the build. ` +
-            `This is often an out-of-memory kill — try a lower --prerender-concurrency.`,
+            `Prerender output is incomplete; failing the build. ${reason}`,
         );
       }
       if (renderTransportError) {

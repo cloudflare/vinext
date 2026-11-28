@@ -17,6 +17,11 @@
 import { startProdServer } from "../server/prod-server.js";
 import { NoOpCacheHandler, setCacheHandler } from "vinext/shims/cache-handler";
 import { registerPrerenderCloudflareLoader } from "./prerender-cloudflare-loader.js";
+import { installSocketErrorBackstop } from "../server/socket-error-backstop.js";
+
+// Before any application module loads: this process only renders, so it takes
+// the backstop's render-worker handling rather than the build process's.
+installSocketErrorBackstop({ prerenderWorker: true });
 
 // A Workers server bundle can replace `globalThis.process` with a polyfill that
 // has no IPC channel, so keep the real process for talking to the parent.

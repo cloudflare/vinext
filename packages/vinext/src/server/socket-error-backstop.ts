@@ -31,8 +31,24 @@
  *     it rejects, so crashing would let one anonymous request take down
  *     the whole process. The dev server's `configureServer` hook and
  *     `startProdServer()` opt in via `{ runningServer: true }`.
- *   - **Build and prerender**: synchronously re-thrown, preserving
- *     Node's default crash semantics.
+ *   - **Prerender render worker** (forked by `build/prerender-server-pool.ts`,
+ *     opted in by `build/prerender-server-entry.ts` via
+ *     `{ prerenderWorker: true }`): an unhandled rejection is logged and
+ *     absorbed, matching Next.js's static export worker
+ *     (`packages/next/src/export/worker.ts`). A rejection left floating by
+ *     app code at module scope or during a render (e.g. a
+ *     `"URL dependency"` `import()`) can't change the output of a render
+ *     that never awaited it, and Next.js still builds. Like that worker,
+ *     an unhandled framework signal (`notFound()`, `redirect()`,
+ *     `forbidden()`, `unauthorized()`, dynamic usage, bailout to client
+ *     rendering) is ignored. An uncaught exception is reported and ends
+ *     the worker, which fails the build: a framework signal with Next.js's
+ *     message and {@link FATAL_UNHANDLED_NEXT_API_EXIT_CODE}, anything
+ *     else with exit code 1, since vinext has no per-page generation
+ *     timeout to release a request the throw left waiting.
+ *   - **Build**, including the build process during prerender:
+ *     synchronously re-thrown, preserving Node's default crash semantics,
+ *     as Next.js's build process exits on these errors.
  *
  * **Installed at module load.** Earlier iterations tried to gate
  * install via Vite's `config()` hook (`command === "serve"`) so it
@@ -45,45 +61,43 @@
  *
  * **Prerender check is dynamic, not install-time.** Prerender (in
  * `build/prerender.ts` and `build/run-prerender.ts`) calls
- * `startProdServer()` from inside `vite build` to render pages
- * against a real HTTP server. User `fetch()` calls during prerender
- * hit external APIs that can drop connections; absorbing those would
- * silently produce corrupt prerendered output instead of crashing
- * the build. Prerender already sets `VINEXT_PRERENDER=1` for its
- * own purposes — the listener checks it at fire time and re-throws
- * unconditionally when set, acting as if no listener were installed.
- * Doing the check at install time wouldn't work: `index.ts` loads at
- * Vite plugin import, well before prerender starts, so by the time
- * `VINEXT_PRERENDER` is set the listener has already been installed
- * (we cannot uninstall and re-install per phase).
+ * `startProdServer()` from inside `vite build`, or in forked render
+ * workers, to render pages against a real HTTP server. It sets
+ * `VINEXT_PRERENDER=1` for its own purposes, and the listener checks it
+ * at fire time. Doing the check at install time wouldn't work:
+ * `index.ts` loads at Vite plugin import, well before prerender starts,
+ * so by the time `VINEXT_PRERENDER` is set the listener has already
+ * been installed (we cannot uninstall and re-install per phase).
  *
- * Side-effect of the unconditional re-throw during prerender: an
- * orchestrator-induced ECONNRESET (e.g. the prerender's own HTTP
- * client aborting a stuck route fetch) will surface the build crash
- * as `Error: read ECONNRESET` rather than the underlying route
- * failure. Acceptable trade-off — a hung prerender route is itself
- * a build problem worth surfacing — but the resulting stack will
- * point at the disconnect, not the cause. Set
- * `VINEXT_DEBUG_SOCKET_ERRORS=1` to log peer-disconnect codes if
- * you need to disambiguate.
+ * In a render worker every other unhandled rejection is logged rather
+ * than absorbed silently, peer disconnects included, as Next.js's export
+ * worker logs them. Only benign asset-import errors and unhandled
+ * framework-signal rejections pass without a log line. A render that a
+ * dropped connection breaks fails on its own, so the route is reported
+ * where it rendered. The in-process prerender server, used only when
+ * vinext runs from source, shares the build process and keeps its
+ * re-throw.
  *
  * **Test skip is install-time.** Vitest workers that import
  * `index.ts` directly should never have the listener installed —
  * peer-disconnect errors during test runs should surface normally.
  * `process.env.VITEST === "true"` is set by Vitest in every worker;
  * `NODE_ENV === "test"` covers other test runners that follow the
- * standard convention.
+ * standard convention, except for a running server or a prerender render
+ * worker, which install the listener whatever NODE_ENV is, as Next.js's
+ * router server and export worker do.
  *
  * **Listener ordering.** `index.ts` is imported synchronously at the
  * top of every user's `vite.config.ts`, so vinext's listener registers
  * before most user / tooling listeners (Sentry, OpenTelemetry,
  * structured logging). For peer-disconnect codes the early-return is
- * fine, and on a running production server every other error is
- * logged without throwing, so later listeners still observe it. In
- * the re-throw phases the synchronous re-throw still crashes the
- * process with the original stack, but listeners registered after
- * vinext don't observe the event. Users who need crash-reporter
- * visibility there must register their handler before importing vinext.
+ * fine, and on a running production server (or for an unhandled
+ * rejection in a prerender render worker) every other error is logged
+ * without throwing, so later listeners still observe it. In the re-throw
+ * phase the synchronous re-throw still crashes the process with the
+ * original stack, but listeners registered after vinext don't observe the
+ * event. Users who need crash-reporter visibility there must register
+ * their handler before importing vinext.
  *
  * **Symbol.for caveat.** `Symbol.for("vinext.socketErrorBackstop")`
  * is process-global, so if two different vinext versions are loaded
@@ -93,12 +107,22 @@
  * Set `VINEXT_DEBUG_SOCKET_ERRORS=1` to log a one-line marker each
  * time the listener absorbs an error.
  */
+import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
+
 const SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.socketErrorBackstop");
 const RUNNING_SERVER_FLAG = Symbol.for("vinext.socketErrorBackstop.runningServer");
+const PRERENDER_WORKER_FLAG = Symbol.for("vinext.socketErrorBackstop.prerenderWorker");
+
+/**
+ * The exit code of a prerender that hit an uncaught framework signal, as
+ * Next.js's export worker exits with (`FATAL_UNHANDLED_NEXT_API_EXIT_CODE`).
+ */
+export const FATAL_UNHANDLED_NEXT_API_EXIT_CODE = 78;
 
 type BackstopProcess = typeof process & {
   [SOCKET_BACKSTOP_FLAG]?: true;
   [RUNNING_SERVER_FLAG]?: true;
+  [PRERENDER_WORKER_FLAG]?: true;
 };
 
 /**
@@ -121,7 +145,7 @@ export function peerDisconnectCode(err: unknown): string | undefined {
 // these "URL dependency" side-effects as build-safe (the test fixture comment
 // literally reads "it shouldn't break the build"), so the prerender backstop
 // must not crash on them. Kept deliberately narrow: JS/TS module extensions
-// are excluded so a genuine missing-module bug still surfaces as a hard crash.
+// are excluded so a genuine missing-module bug is still reported.
 const STATIC_ASSET_IMPORT_EXTENSIONS = new Set([
   ".css",
   ".scss",
@@ -164,7 +188,7 @@ const STATIC_ASSET_IMPORT_EXTENSIONS = new Set([
  *     static-asset extension.
  *
  * Anything outside this allow-list (including missing `.js`/`.mjs`/`.ts`
- * modules with no extension) returns `false` so real bugs still crash.
+ * modules with no extension) returns `false` so real bugs are still reported.
  * Exported for unit testing in isolation.
  */
 export function isBenignAssetImportError(err: unknown): boolean {
@@ -215,6 +239,20 @@ export function isCancelledRequestBodyEnqueueError(err: unknown): boolean {
 }
 
 /**
+ * Next.js's `isDynamicUsageError`, the errors its export worker never logs:
+ * a valid navigation signal (`redirect()`, `notFound()`, `forbidden()`,
+ * `unauthorized()`), dynamic server usage, or a bailout to client rendering.
+ * Navigation digests are validated in full, as Next.js's `isNextRouterError`
+ * does, so an arbitrary digest prefix can't hide a real error.
+ */
+function isFrameworkSignalError(err: unknown): boolean {
+  if (isValidNavigationSignalError(err)) return true;
+  if (err === null || typeof err !== "object" || !("digest" in err)) return false;
+  const digest = (err as { digest: unknown }).digest;
+  return digest === "DYNAMIC_SERVER_USAGE" || digest === "BAILOUT_TO_CLIENT_SIDE_RENDERING";
+}
+
+/**
  * Test-only: returns whether the backstop has been installed in this
  * process. Used by the unit test to assert idempotent install via the
  * Symbol.for guard. Not part of the public API.
@@ -226,14 +264,27 @@ export function isSocketErrorBackstopInstalled(): boolean {
 /**
  * Installs the backstop once per process. Pass `{ runningServer: true }`
  * from a long-lived production server to log, rather than re-throw,
- * errors outside the absorbed set. The flag is process-global and sticky,
- * so it also applies when `index.ts` installed the listeners first.
+ * errors outside the absorbed set, and `{ prerenderWorker: true }` from a
+ * forked prerender render worker for its prerender handling. The flags are
+ * process-global and sticky, so they also apply when `index.ts` installed
+ * the listeners first.
  */
-export function installSocketErrorBackstop(options: { runningServer?: boolean } = {}): void {
+export function installSocketErrorBackstop(
+  options: { prerenderWorker?: boolean; runningServer?: boolean } = {},
+): void {
   const proc = process as BackstopProcess;
   if (options.runningServer) proc[RUNNING_SERVER_FLAG] = true;
+  if (options.prerenderWorker) proc[PRERENDER_WORKER_FLAG] = true;
   if (proc[SOCKET_BACKSTOP_FLAG]) return;
-  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return;
+  if (process.env.VITEST === "true") return;
+  // A running server or a prerender render worker installs it whatever
+  // NODE_ENV is, as `next start`, `next dev` and Next.js's export worker
+  // install their handlers. A test runner that sets NODE_ENV=test (Jest) can
+  // still start one as a separate process, and a build keeps NODE_ENV=test
+  // for its workers.
+  if (process.env.NODE_ENV === "test" && !options.runningServer && !options.prerenderWorker) {
+    return;
+  }
   proc[SOCKET_BACKSTOP_FLAG] = true;
 
   const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
@@ -258,7 +309,24 @@ export function installSocketErrorBackstop(options: { runningServer?: boolean } 
 
   process.on("uncaughtException", (err: Error) => {
     if (absorbBenignAssetImport(err, "uncaughtException")) return;
-    if (process.env.VINEXT_PRERENDER === "1") throw err;
+    if (proc.env.VINEXT_PRERENDER === "1") {
+      if (!proc[PRERENDER_WORKER_FLAG]) throw err;
+      if (isFrameworkSignalError(err)) {
+        console.error(
+          "[vinext] A Next.js API that uses exceptions to signal framework behavior was uncaught. " +
+            "This suggests improper usage of a Next.js API. The original error is printed below " +
+            "and the build will now exit.",
+        );
+        console.error(err);
+        proc.exit(FATAL_UNHANDLED_NEXT_API_EXIT_CODE);
+      }
+      // Next.js's export worker logs it and keeps rendering, but bounds each
+      // page by `staticPageGenerationTimeout`. vinext has no such bound, so a
+      // request left waiting on the work the throw abandoned would hang the
+      // build; the worker exits with the error instead.
+      console.error("[vinext] uncaughtException during prerender:", err);
+      proc.exit(1);
+    }
     const code = peerDisconnectCode(err);
     if (code) {
       if (debug) console.warn(`[vinext] absorbed uncaughtException ${code}`);
@@ -277,9 +345,18 @@ export function installSocketErrorBackstop(options: { runningServer?: boolean } 
     }
     throw err;
   });
+  // A rejection handled after its `unhandledRejection` turn, such as a
+  // preloaded promise awaited later, is expected, so Node's
+  // PromiseRejectionHandledWarning is suppressed, as Next.js's router server
+  // and export worker suppress it.
+  process.on("rejectionHandled", () => {});
   process.on("unhandledRejection", (reason: unknown) => {
     if (absorbBenignAssetImport(reason, "unhandledRejection")) return;
-    if (process.env.VINEXT_PRERENDER === "1") throw reason;
+    if (proc.env.VINEXT_PRERENDER === "1") {
+      if (!proc[PRERENDER_WORKER_FLAG]) throw reason;
+      if (!isFrameworkSignalError(reason)) console.error("[vinext] unhandledRejection:", reason);
+      return;
+    }
     const code = peerDisconnectCode(reason);
     if (code) {
       if (debug) console.warn(`[vinext] absorbed unhandledRejection ${code}`);
