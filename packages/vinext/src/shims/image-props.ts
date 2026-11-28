@@ -263,10 +263,13 @@ function extractLocalDeploymentId(src: string): { src: string; deploymentId?: st
   };
 }
 
-// Next.js defaults `images.path` to `${basePath}/_next/image` and appends a
-// slash when trailingSlash is enabled. The `url` source is never prefixed.
-const __imageEndpoint = `${process.env.__NEXT_ROUTER_BASEPATH ?? ""}/_next/image${
-  process.env.__VINEXT_TRAILING_SLASH === "true" ? "/" : ""
+// Next.js only prefixes the default image path with basePath. A custom path
+// changes the advertised URL while the server keeps the built-in optimizer.
+const __configuredImagePath = process.env.__VINEXT_IMAGE_PATH ?? "/_next/image";
+const __imageEndpoint = `${
+  __configuredImagePath === "/_next/image" ? (process.env.__NEXT_ROUTER_BASEPATH ?? "") : ""
+}${__configuredImagePath}${
+  process.env.__VINEXT_TRAILING_SLASH === "true" && !__configuredImagePath.endsWith("/") ? "/" : ""
 }`;
 
 /**
@@ -302,11 +305,11 @@ function findClosestQuality(quality: number): number {
 }
 
 /**
- * Build a `/_next/image` optimization URL.
+ * Build an image optimization URL using the loader's configured path.
  *
- * In production (Cloudflare Workers), the worker intercepts this path and uses
- * the Images binding to resize/transcode on the fly. In dev, the Vite dev
- * server handles it as a passthrough (serves the original file).
+ * The built-in optimizer can resize and transcode images with a Workers Images
+ * binding. In development, it serves the original file. A custom path needs
+ * a proxy or CDN to forward the full query string to the built-in endpoint.
  */
 export function imageOptimizationUrl(src: string, width: number, quality: number = 75): string {
   const q = findClosestQuality(quality);
@@ -316,12 +319,7 @@ export function imageOptimizationUrl(src: string, width: number, quality: number
   return `${__imageEndpoint}?url=${encodeURIComponent(source.src)}&w=${width}&q=${q}${deploymentQuery}`;
 }
 
-/**
- * Generate a srcSet string for responsive images.
- *
- * Each width points to the `/_next/image` optimization endpoint so the
- * server can resize and transcode the image.
- */
+/** Select the configured width candidates for a fixed-size image. */
 function getImageWidths(width: number): number[] {
   return [
     ...new Set(
@@ -495,7 +493,6 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
       ? optimizedAttributes.src
       : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
 
-  // Build srcSet for local images — each width points to /_next/image
   const srcSet = optimizedAttributes?.srcSet;
 
   // Blur placeholder styles — sanitize to prevent CSS injection
