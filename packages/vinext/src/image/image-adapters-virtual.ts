@@ -2,19 +2,16 @@
  * Code generation for the `virtual:vinext-image-adapters` module, resolved by
  * the vinext vite plugin from the user's `images` config ({@link VinextImageConfig}).
  *
- * The generated module exports `registerConfiguredImageOptimizer(env)`, which the
- * server entries call on each request. It self-guards (the optimizer instantiates
- * once per isolate) and is a no-op when nothing is configured. Registration is
- * resilient: a factory that throws (e.g. a Cloudflare Images adapter on the
- * Node.js server, where the `IMAGES` binding can't exist) is logged and skipped
- * rather than failing every request, so the same config can be registered from
- * every runtime/router entry. When no optimizer is registered, image requests
- * fall back to serving the original asset unoptimized.
+ * The generated module exports `createConfiguredImageOptimizer(env)` for Node
+ * servers to create their own backend, and `registerConfiguredImageOptimizer(env)`
+ * for Workers entries to register once per isolate. A factory that throws (e.g.
+ * a Cloudflare Images adapter on Node.js, where the `IMAGES` binding can't exist)
+ * is logged and skipped so images fall back to unoptimized passthrough.
  *
  * Descriptor `options` are inlined into the generated module and forwarded to the
  * factory at runtime, so a config-time builder like `imagesOptimizer({ binding })`
- * never touches the Workers runtime — instantiation is deferred to the first
- * request.
+ * never touches the Workers runtime — instantiation is deferred to Node server
+ * startup or the first Workers request.
  *
  * This mirrors the cache-adapter pattern in `cache/cache-adapters-virtual.ts`.
  */
@@ -73,7 +70,8 @@ function inlineOptions(adapter: string, options: Record<string, unknown> | undef
 
 /**
  * Generate the source of the `virtual:vinext-image-adapters` module for the
- * given config. Always exports `registerConfiguredImageOptimizer(env)`.
+ * given config. Always exports `createConfiguredImageOptimizer(env)` and
+ * `registerConfiguredImageOptimizer(env)`.
  */
 export function generateImageAdaptersModule(images?: VinextImageConfig): string {
   const optimizer = images?.optimizer;
@@ -83,6 +81,7 @@ export function generateImageAdaptersModule(images?: VinextImageConfig): string 
   if (!optimizer?.adapter) {
     return [
       "// vinext: no images.optimizer adapter configured — registration is a no-op.",
+      "export function createConfiguredImageOptimizer() { return null; }",
       "export function registerConfiguredImageOptimizer() {}",
       "",
     ].join("\n");
@@ -106,19 +105,27 @@ export function generateImageAdaptersModule(images?: VinextImageConfig): string 
     "",
     "let __vinextImageOptimizerRegistered = false;",
     "",
-    "export function registerConfiguredImageOptimizer(env) {",
-    "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
-    "  if (__vinextImageOptimizerRegistered) return;",
+    "export function createConfiguredImageOptimizer(env) {",
+    "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return null;",
+    "  // Prevent a Worker-shaped entry from registering a Node server's backend again.",
     "  __vinextImageOptimizerRegistered = true;",
     "  try {",
-    `    setImageOptimizer(__vinextImageOptimizerFactory({ env, options: ${inlineOptions(
+    `    return __vinextImageOptimizerFactory({ env, options: ${inlineOptions(
       optimizer.adapter,
       optimizer.options,
-    )} }));`,
+    )} });`,
     "  } catch (error) {",
     '    console.warn("[vinext] failed to initialize the configured image optimizer; ' +
       'serving images unoptimized.\\n" + __vinextFormatAdapterError(error));',
+    "    return null;",
     "  }",
+    "}",
+    "",
+    "export function registerConfiguredImageOptimizer(env) {",
+    "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
+    "  if (__vinextImageOptimizerRegistered) return;",
+    "  const optimizer = createConfiguredImageOptimizer(env);",
+    "  if (optimizer !== null) setImageOptimizer(optimizer);",
     "}",
     "",
   ];
