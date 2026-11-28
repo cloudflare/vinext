@@ -55,6 +55,7 @@ const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps 
 type ClientBuildManifestEntry = {
   file?: string;
   name?: string;
+  src?: string;
   isEntry?: boolean;
   css?: string[];
   assets?: string[];
@@ -6530,7 +6531,9 @@ export const config = { matcher: ["/protected"] };
     };
     const frameworkChunk = chunkFileByName("framework");
     const vinextChunk = chunkFileByName("vinext");
-    const entryChunk = Object.values(buildManifest).find((entry) => entry.isEntry)?.file;
+    const entryChunk = Object.values(buildManifest).find(
+      (entry) => entry.isEntry && entry.src?.endsWith("virtual:vinext-client-entry"),
+    )?.file;
     expect(frameworkChunk).toBeDefined();
     expect(vinextChunk).toBeDefined();
     expect(entryChunk).toBeDefined();

@@ -13,6 +13,9 @@
   "dependencies": {
     "@cloudflare/vite-plugin": "catalog:",
     "@vinext/cloudflare": "workspace:*",
+    "atlas-glyphs": "file:./__test_packages__/atlas-glyphs",
+    "atlas-grid-kit": "file:./__test_packages__/atlas-grid-kit",
+    "atlas-legacy-format": "file:./__test_packages__/atlas-legacy-format",
     "i18next": "^24.2.3",
     "react": "catalog:",
     "react-dom": "catalog:",

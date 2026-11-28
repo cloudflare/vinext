@@ -14,6 +14,7 @@ import { buildPagesDataHref, matchPagesPattern } from "./pages-data-url.js";
 import { fetchStaticPagesData, fetchUncachedPagesData } from "./pages-data-fetch-dedup.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 import { isUnknownRecord } from "../../utils/record.js";
+import { loadPagesRouteStylesheets } from "./pages-stylesheets.js";
 
 const routerBasePath = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 
@@ -260,8 +261,9 @@ export function resolvePagesDataNavigationTarget(
 }
 
 /**
- * Kick off the code-split loader and, for SSG pages, prefetch the data JSON so
- * the chunk and payload are warm by the time the user clicks.
+ * Kick off the code-split loader and the page's stylesheets and, for SSG
+ * pages, prefetch the data JSON so the chunk and payload are warm by the time
+ * the user clicks.
  *
  * Used by both `Router.prefetch()` and `<Link>` hover/viewport prefetch.
  * Matches Next.js Pages Router prefetch: non-SSG routes only warm the page
@@ -276,6 +278,7 @@ export function prefetchPagesData(target: PagesDataTarget): void {
   if (typeof document === "undefined") return;
 
   void target.loader().catch(() => {});
+  void loadPagesRouteStylesheets(target.pattern)?.catch(() => {});
 
   if (target.dataKind !== "static" && !target.middlewareDataHref) return;
 
@@ -314,5 +317,7 @@ function prefetchMiddlewareRewriteLoader(response: Response): void {
   if (!rewriteTarget) return;
 
   const target = resolvePagesDataNavigationTarget(rewriteTarget, routerBasePath);
-  if (target) void target.loader().catch(() => {});
+  if (!target) return;
+  void target.loader().catch(() => {});
+  void loadPagesRouteStylesheets(target.pattern)?.catch(() => {});
 }

@@ -55,6 +55,12 @@ import {
   getPagesStaticDataCache,
 } from "./internal/pages-data-fetch-dedup.js";
 import { resolveDirectHybridClientRouteOwner } from "./internal/hybrid-client-route-owner-direct.js";
+import {
+  commitPagesStylesheets,
+  insertPagesStylesheets,
+  loadPagesRouteStylesheets,
+  type PagesStylesheet,
+} from "./internal/pages-stylesheets.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isExternalUrl } from "../utils/external-url.js";
@@ -159,9 +165,23 @@ function PagesRouterCommitBoundaryHelper({
   return createElement(Fragment, null, children);
 }
 
+/**
+ * Runs `onCommit` as a render commits, ahead of the page's own layout effects:
+ * `wrapWithRouterContext` renders it before the page, as Next.js renders the
+ * `<Head>` that turns the page's stylesheets on.
+ */
+function PagesStylesheetsCommit({ onCommit }: { onCommit: () => void }): null {
+  useNonWarningLayoutEffect(() => {
+    onCommit();
+  }, [onCommit]);
+
+  return null;
+}
+
 function renderPagesRouterElement(
   element: ReactElement,
   scroll?: ScrollPosition | null,
+  stylesheets?: readonly PagesStylesheet[],
 ): Promise<void> {
   const root = window.__VINEXT_ROOT__;
   if (!root) {
@@ -170,6 +190,9 @@ function renderPagesRouterElement(
 
   cancelPreviousRenderCommit();
   commitRouterSnapshot();
+  // A cancelled navigation's render still commits, and shows its page, unless
+  // a newer render replaces it.
+  const renderId = ++routerRuntimeState.pagesRenderId;
 
   return new Promise<void>((resolve, reject) => {
     const cancel = () => {
@@ -196,6 +219,7 @@ function renderPagesRouterElement(
       }
     };
 
+    if (stylesheets) insertPagesStylesheets(stylesheets);
     root.render(
       wrapWithRouterContext(
         element,
@@ -218,6 +242,13 @@ function renderPagesRouterElement(
           clearIfCurrent();
           reject(error);
         },
+        stylesheets
+          ? () => {
+              if (renderId === routerRuntimeState.pagesRenderId) {
+                commitPagesStylesheets(stylesheets);
+              }
+            }
+          : undefined,
       ),
     );
     if (!hasBrowserDocument()) {
@@ -435,6 +466,8 @@ type PagesRouterRuntimeState = {
   activeAbortController: AbortController | null;
   activeNavigationEvent: PagesNavigationEventContext | null;
   cancelPendingRenderCommit: (() => void) | null;
+  /** Counts navigation renders, so only the latest switches page stylesheets. */
+  pagesRenderId: number;
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
   lastHash: string;
@@ -462,6 +495,7 @@ type PagesRouterRuntimeComponents = {
     onError: (error: Error) => void;
   }>;
   Provider: ComponentType<{ children: ReactNode }>;
+  StylesheetsCommit: ComponentType<{ onCommit: () => void }>;
 };
 
 const PAGES_ROUTER_RUNTIME_STATE_KEY = Symbol.for("vinext.pagesRouter.runtimeState");
@@ -474,6 +508,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     activeAbortController: null,
     activeNavigationEvent: null,
     cancelPendingRenderCommit: null,
+    pagesRenderId: 0,
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
     lastHash: typeof window !== "undefined" ? window.location.hash : "",
@@ -520,6 +555,7 @@ function getPagesRouterRuntimeComponents(): PagesRouterRuntimeComponents {
   const components: PagesRouterRuntimeComponents = {
     CommitBoundary: PagesRouterCommitBoundary,
     Provider: PagesRouterProvider,
+    StylesheetsCommit: PagesStylesheetsCommit,
   };
   routerRuntimeState.components = components;
   return components;
@@ -2200,12 +2236,32 @@ async function loadTargetPageModule(
   target: PagesDataTarget,
   url: string,
   failurePrefix: string,
+  assertStillCurrent: () => void,
 ): Promise<{ default?: unknown; [key: string]: unknown }> {
+  // Fetch the page's stylesheets alongside its module; rendering awaits them.
+  loadPagesRouteStylesheets(target.pattern)?.catch(() => {});
   try {
     return await target.loader();
   } catch (err) {
+    // A newer navigation has taken over; reloading would override it.
+    assertStillCurrent();
     console.error("[vinext] Page loader threw during navigation:", err);
     scheduleHardNavigationAndThrow(url, `${failurePrefix}: page loader threw`);
+  }
+}
+
+/** The stylesheets of the page that renders `route`; reloads the page if one fails. */
+async function loadNavigationStylesheets(
+  route: string,
+  url: string,
+  assertStillCurrent: () => void,
+): Promise<PagesStylesheet[] | undefined> {
+  try {
+    return await loadPagesRouteStylesheets(route);
+  } catch (err) {
+    assertStillCurrent();
+    console.error("[vinext] Page stylesheet failed to load during navigation:", err);
+    scheduleHardNavigationAndThrow(url, "Navigation failed: page stylesheet failed to load");
   }
 }
 
@@ -2302,10 +2358,20 @@ async function renderPagesNavigationTarget(
   preloaded?: {
     appComponent?: PagesAppComponent;
     pageModule?: { default?: unknown; [key: string]: unknown };
+    /** The route of `pageModule` when it is not the target's. */
+    pageRoute?: string;
   },
 ): Promise<void> {
   const pageModule =
-    preloaded?.pageModule ?? (await loadTargetPageModule(target, url, "Navigation failed"));
+    preloaded?.pageModule ??
+    (await loadTargetPageModule(target, url, "Navigation failed", assertStillCurrent));
+  assertStillCurrent();
+
+  const stylesheets = await loadNavigationStylesheets(
+    preloaded?.pageRoute ?? target.pattern,
+    url,
+    assertStillCurrent,
+  );
   assertStillCurrent();
 
   const PageComponent = pageModule.default;
@@ -2343,7 +2409,7 @@ async function renderPagesNavigationTarget(
   options.beforeHistoryChange?.();
   window.__NEXT_DATA__ = nextData;
   applyVinextLocaleGlobals(window, nextData);
-  await renderPagesRouterElement(element, options.scroll);
+  await renderPagesRouterElement(element, options.scroll, stylesheets);
   assertStillCurrent();
 }
 
@@ -2364,7 +2430,12 @@ async function navigateClientNoData(
     throw new NavigationCancelledError(url);
   }
 
-  const pageModule = await loadTargetPageModule(target, url, "Navigation failed");
+  const pageModule = await loadTargetPageModule(
+    target,
+    url,
+    "Navigation failed",
+    assertStillCurrent,
+  );
   assertStillCurrent();
 
   const PageComponent = pageModule.default;
@@ -2505,7 +2576,12 @@ async function navigateClientData(
           dataKind: "none",
           loader: errorLoader ?? (() => import("next/error")),
         };
-        const pageModule = await loadTargetPageModule(errorTarget, url, "Data navigation failed");
+        const pageModule = await loadTargetPageModule(
+          errorTarget,
+          url,
+          "Data navigation failed",
+          assertStillCurrent,
+        );
         assertStillCurrent();
         const PageComponent = pageModule.default;
         if (!isPageComponent(PageComponent)) {
@@ -2521,6 +2597,7 @@ async function navigateClientData(
         await renderPagesNavigationTarget(url, initialTarget, props, options, assertStillCurrent, {
           appComponent,
           pageModule,
+          pageRoute: errorTarget.pattern,
         });
         return;
       }
@@ -2761,6 +2838,8 @@ async function navigateClientHtml(
   }
 
   let pageModule: { default?: unknown; [key: string]: unknown };
+  // Fetch the page's stylesheets alongside its module; rendering awaits them.
+  loadPagesRouteStylesheets(nextData.page)?.catch(() => {});
   const loader = window.__VINEXT_PAGE_LOADERS__?.[nextData.page];
   if (loader) {
     // Prefer the generated route loader when it exists, even on the HTML
@@ -2787,6 +2866,13 @@ async function navigateClientHtml(
     // Dynamically import the new page module
     pageModule = await import(/* @vite-ignore */ pageModuleUrl);
   }
+  assertStillCurrent();
+
+  const stylesheets = await loadNavigationStylesheets(
+    nextData.page,
+    browserUrl,
+    assertStillCurrent,
+  );
   assertStillCurrent();
 
   const PageComponent = pageModule.default;
@@ -2860,7 +2946,7 @@ async function navigateClientHtml(
   const committedNextData = nextDataRouteState ? { ...nextData, ...nextDataRouteState } : nextData;
   window.__NEXT_DATA__ = committedNextData;
   applyVinextLocaleGlobals(window, committedNextData);
-  await renderPagesRouterElement(element, options.scroll);
+  await renderPagesRouterElement(element, options.scroll, stylesheets);
   assertStillCurrent();
 }
 
@@ -4454,8 +4540,9 @@ export function wrapWithRouterContext(
   element: ReactElement,
   onCommit: () => void = noopCommit,
   onError: (error: Error) => void = noopCommit,
+  onStylesheetsCommit: () => void = noopCommit,
 ): ReactElement {
-  const { CommitBoundary, Provider } = getPagesRouterRuntimeComponents();
+  const { CommitBoundary, Provider, StylesheetsCommit } = getPagesRouterRuntimeComponents();
   // React Strict Mode (Pages Router). When `reactStrictMode: true`, wrap the
   // router-context subtree in <React.StrictMode> so React runs its dev-only
   // strict checks. We read a client-only `window` flag rather than wrapping
@@ -4472,7 +4559,12 @@ export function wrapWithRouterContext(
   if (typeof window !== "undefined" && window.__VINEXT_REACT_STRICT_MODE__ === true) {
     inner = createElement(StrictMode, null, inner);
   }
-  return createElement(CommitBoundary, { onCommit, onError }, inner);
+  return createElement(
+    CommitBoundary,
+    { onCommit, onError },
+    createElement(StylesheetsCommit, { onCommit: onStylesheetsCommit }),
+    inner,
+  );
 }
 
 /**

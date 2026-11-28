@@ -1,0 +1,10 @@
+.panel {
+  border: 1px solid #c7ccd6;
+  border-radius: 4px;
+  padding: 0.75rem;
+}
+
+.panelTitle {
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}

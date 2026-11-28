@@ -181,9 +181,11 @@ import { PagesRouteAnnouncer } from "vinext/route-announcer";
 // Mounted from the client entry only, as Next.js's client/index.tsx does.
 _registerPagesRouteAnnouncer(PagesRouteAnnouncer);
 
-const pageLoaders = {
+// Assigned to window in place, which also marks these loaders for the build:
+// it strips page stylesheets from their preloads (vinext:pages-client-stylesheets).
+const pageLoaders = (window.__VINEXT_PAGE_LOADERS__ = {
 ${loaderEntries.join(",\n")}
-};
+});
 ${
   hasApp
     ? `
@@ -193,7 +195,7 @@ const appLoader = () => import(${JSON.stringify(appFileBase!)});
 const appLoader = undefined;
 `
 }
-// Expose the code-split loader manifest on window so client-side
+// The code-split loader manifest is on window (above) so client-side
 // _next/data navigations in shims/router.ts can resolve the correct page
 // chunk for any route. Without this, navigateClient() would have to extract
 // the chunk URL from an HTML response — the whole point of switching to the
@@ -206,7 +208,6 @@ const appLoader = undefined;
 // which pagesRouter() has already sorted by specificity (static → dynamic →
 // catch-all → optional catch-all) via sortRoutes — so matchPagesPattern()
 // can iterate in order and trust the first match.
-window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
 // reactStrictMode flag — read by wrapWithRouterContext (next/router) so the
 // <React.StrictMode> wrap is applied on initial hydration and every navigation.

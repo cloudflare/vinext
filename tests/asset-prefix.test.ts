@@ -124,6 +124,12 @@ describe("renderVinextBuiltUrl", () => {
     );
   });
 
+  it("versions stylesheets for JavaScript hosts, as the server links them", () => {
+    expect(renderVinextBuiltUrl("_next/static/css/page.css", "", "dpl_123", "js")).toBe(
+      "/_next/static/css/page.css?dpl=dpl_123",
+    );
+  });
+
   it("versions worker entries and worker-owned assets without versioning app chunks", () => {
     expect(
       renderVinextBuiltUrl(
@@ -579,7 +585,7 @@ describe("assetPrefix end-to-end build", () => {
     };
     collectFiles(clientDir);
     for (const file of builtFiles.filter((file) => /\.[cm]?js$/.test(file))) {
-      expect(fs.readFileSync(file, "utf8"), file).not.toContain("?dpl=dpl_123");
+      expect(fs.readFileSync(file, "utf8"), file).not.toMatch(/\.js\?dpl=/);
     }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
@@ -605,6 +611,26 @@ describe("assetPrefix end-to-end build", () => {
       for (const assetUrl of assetUrls.filter((url) => /\.js(?:[?#]|$)/.test(url))) {
         expect(assetUrl).not.toContain("dpl=");
       }
+      // Stylesheets keep the query, as do the ones dynamic imports load.
+      for (const assetUrl of assetUrls.filter((url) => /\.css(?:[?#]|$)/.test(url))) {
+        expect(assetUrl).toContain("?dpl=dpl_123");
+      }
+
+      // A client reference's Flight row names its stylesheets as the server
+      // links them, or the browser would link them again.
+      const referenceHtml = await (
+        await fetch(`http://localhost:${port}/cookie-notice-chunks`)
+      ).text();
+      const linked = Array.from(
+        referenceHtml.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g),
+        (match) => match[1],
+      );
+      const named = Array.from(
+        referenceHtml.matchAll(/\/_next\/static\/[\w./-]+\.css(?:\?dpl=[\w-]+)?/g),
+        (match) => match[0],
+      );
+      expect(named.length).toBeGreaterThan(linked.length);
+      for (const url of named) expect(linked.some((href) => href?.endsWith(url))).toBe(true);
     } finally {
       server.close();
     }

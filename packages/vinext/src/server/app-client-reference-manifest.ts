@@ -1,4 +1,5 @@
 import { toFlightChunks, type ClientReferenceChunks } from "../utils/client-reference-chunks.js";
+import { appendDeploymentIdQuery, getDeploymentId } from "../utils/deployment-id.js";
 
 type ClientManifestEntry = { id: string; name: string; chunks: string[]; async?: boolean };
 type ClientManifest = Record<string, ClientManifestEntry>;
@@ -9,13 +10,20 @@ type ClientManifest = Record<string, ClientManifestEntry>;
  * reference in the app (see shims/internal/client-reference-loader.ts). Returns a
  * function that wraps @vitejs/plugin-rsc's client manifest, which leaves the
  * chunks empty. Without chunk data (development, or `rsc: false`) it returns
- * the manifest unchanged.
+ * the manifest unchanged. Stylesheets carry the deployment ID query, as the
+ * server's links to them do, so the browser finds them linked already.
  */
 export function createClientReferenceChunksManifest(
   referenceChunks: ClientReferenceChunks | undefined,
+  deploymentId = getDeploymentId(),
 ): (manifest: ClientManifest) => ClientManifest {
   if (!referenceChunks) return (manifest) => manifest;
-  const flightChunks = referenceChunks.modules.map(toFlightChunks);
+  const flightChunks = referenceChunks.modules.map((module) =>
+    toFlightChunks({
+      ...module,
+      css: module.css.map((file) => appendDeploymentIdQuery(file, deploymentId)),
+    }),
+  );
   return (manifest) =>
     new Proxy(manifest, {
       get(target, id, receiver) {

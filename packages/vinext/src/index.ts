@@ -34,6 +34,7 @@ import {
   apiRouter,
   invalidateRouteCache,
   matchRoute,
+  patternToNextFormat as pagesPatternToNextFormat,
 } from "./routing/pages-router.js";
 import {
   generatePagesRequestEntry as _generatePagesRequestEntry,
@@ -261,6 +262,12 @@ import {
   assertNoPublicNextRequestConflict,
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
+import {
+  appendToChunkCode,
+  collectPagesPageStylesheets,
+  pagesStylesheetUrl,
+  withoutPreloadedStylesheets,
+} from "./build/pages-page-stylesheets.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { createNitroDevDepsOptimizerGatePlugin } from "./plugins/nitro-dev-deps-optimizer-gate.js";
 import { createClientCompileHintsPlugin } from "./plugins/client-compile-hints.js";
@@ -353,6 +360,17 @@ import {
   getOutputFileNames,
   createClientManualChunks,
   createClientCodeSplittingConfig,
+  collectUncopiedStylesheets,
+  collectDoublyCopiedModules,
+  collectSharedGroupDependencies,
+  collectSharedGroupModules,
+  collectPagesAppChunkRoots,
+  collectPagesClientGraph,
+  createPagesClientCodeSplittingConfig,
+  isStylesheetModule,
+  STYLESHEET_MODULE_RE,
+  supportsInlineCommonChunks,
+  withInlineCommonChunks,
   createClientAssetFileNames,
   createWorkerFileNames,
   createMultiStageCodeSplittingConfig,
@@ -427,6 +445,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { getPagesPreviewModeId } from "./server/pages-preview.js";
+import { createSideEffectsDeclarationCheck } from "./build/client-reference-async.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
@@ -972,8 +991,8 @@ function resolvedStylesheetToDevManifestAsset(root: string, resolvedId: string):
 async function collectDevPagesAppStylesheetAssets(
   appFilePath: string,
   getModuleDependencies: (modulePath: string) => Promise<DevPagesModuleDependency[]>,
-): Promise<string[]> {
-  const stylesheetAssets: string[] = [];
+): Promise<{ asset: string; id: string }[]> {
+  const stylesheetAssets: { asset: string; id: string }[] = [];
   const seenAssets = new Set<string>();
   const seenModules = new Set<string>();
 
@@ -985,7 +1004,7 @@ async function collectDevPagesAppStylesheetAssets(
       if (dependency.type === "stylesheet") {
         if (seenAssets.has(dependency.asset)) continue;
         seenAssets.add(dependency.asset);
-        stylesheetAssets.push(dependency.asset);
+        stylesheetAssets.push({ asset: dependency.asset, id: dependency.id });
       } else {
         await visitModule(dependency.id);
       }
@@ -997,7 +1016,7 @@ async function collectDevPagesAppStylesheetAssets(
 }
 
 type DevPagesModuleDependency =
-  | { type: "stylesheet"; asset: string }
+  | { type: "stylesheet"; asset: string; id: string }
   | { type: "script"; id: string };
 
 function createDevPagesModuleDependencyReader(
@@ -1044,7 +1063,7 @@ function createDevPagesModuleDependencyReader(
 
       if (isStylesheetSpecifier(specifier) || isStylesheetSpecifier(resolved.id)) {
         const asset = resolvedStylesheetToDevManifestAsset(root, resolved.id);
-        if (asset) dependencies.push({ type: "stylesheet", asset });
+        if (asset) dependencies.push({ type: "stylesheet", asset, id: resolved.id });
       } else if (
         !specifier.includes("?") &&
         !specifier.includes("#") &&
@@ -1540,6 +1559,8 @@ const VIRTUAL_PAGES_RESPONSE_ENTRY = "virtual:vinext-pages-response-entry";
 const RESOLVED_PAGES_RESPONSE_ENTRY = VIRTUAL_PREFIX + VIRTUAL_PAGES_RESPONSE_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
 const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
+const VIRTUAL_PAGES_APP_ENTRY = "virtual:vinext-pages-app-entry";
+const RESOLVED_PAGES_APP_ENTRY = VIRTUAL_PREFIX + VIRTUAL_PAGES_APP_ENTRY;
 const VIRTUAL_PAGES_CLIENT_ASSETS = "virtual:vinext-pages-client-assets";
 const RESOLVED_PAGES_CLIENT_ASSETS = VIRTUAL_PREFIX + VIRTUAL_PAGES_CLIENT_ASSETS;
 
@@ -1774,9 +1795,13 @@ const appClientCodeSplittingConfig = createClientCodeSplittingConfig(appClientMa
 const appOnlyClientManualChunks = createClientManualChunks(_shimsDir, true, false);
 const appOnlyClientCodeSplittingConfig = createClientCodeSplittingConfig(appOnlyClientManualChunks);
 
-function getClientOutputConfig(preserveAppRouteBoundaries = false, hasPagesRouter = true) {
+function getClientOutputConfig(
+  pagesCodeSplitting: object,
+  preserveAppRouteBoundaries = false,
+  hasPagesRouter = true,
+) {
   const codeSplitting = !preserveAppRouteBoundaries
-    ? clientCodeSplittingConfig
+    ? pagesCodeSplitting
     : hasPagesRouter
       ? appClientCodeSplittingConfig
       : appOnlyClientCodeSplittingConfig;
@@ -1803,13 +1828,20 @@ export type VinextOptions = {
    */
   disableAppRouter?: boolean;
   /**
-   * Turn off Next.js-like client chunking in App Router production builds.
-   * By default, client components that the same routes use load through one
-   * shared chunk, as they do from Next.js' per-route client entries. Set this
-   * to load each client component from its own chunk instead, for example to
-   * control chunking entirely through your own chunk groups. vinext already
-   * turns this chunking off when the client build has chunk groups other than
-   * its own (`codeSplitting.groups`, `advancedChunks` or `manualChunks`).
+   * Turn off Next.js-like client chunking in production builds.
+   * By default, App Router client components that the same routes use load
+   * through one shared chunk, as they do from Next.js' per-route client
+   * entries. Set this to load each client component from its own chunk
+   * instead, for example to control chunking entirely through your own chunk
+   * groups. vinext already turns App Router grouping off when the client build
+   * has chunk groups other than its own (`codeSplitting.groups`,
+   * `advancedChunks` or `manualChunks`).
+   *
+   * Pages Router builds (other than hybrid App + Pages builds) load the
+   * modules `_app` imports as one chunk beside it and, with Rolldown 1.2.18 or
+   * later, copy small modules that pages share into each page instead of
+   * loading them as separate tiny chunks, as Next.js does. Set this to leave
+   * Pages Router chunking to the bundler.
    * @default false
    */
   disableNextLikeChunking?: boolean;
@@ -2006,6 +2038,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let nitroBuildDir: string | undefined;
   let nitroOptions: NitroSetupContext["options"] | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
+  // Filled in from the client module graph; see vinext:pages-client-chunks.
+  const pagesAppChunkRoots = new Set<string>();
+  const pagesSharedGroupModules = new Map<string, string>();
+  // Each client stylesheet's compiled size, and those that keep a chunk.
+  const pagesStylesheetSizes = new Map<string, number>();
+  const pagesUncopiedModules = new Set<string>();
+  // Whether the Pages Router client output may copy small common chunks
+  // (vinext:pages-client-chunks). Hybrid builds use the App Router's groups.
+  const pagesInlinesCommonChunks = (rolldownVersion: string) =>
+    hasPagesDir &&
+    !hasAppDir &&
+    !options.disableNextLikeChunking &&
+    supportsInlineCommonChunks(rolldownVersion);
+  // Whether the client output copies small common chunks; Rolldown runs the
+  // `outputOptions` hook that decides it before the build.
+  let pagesClientInlinesChunks = false;
+  // The client's input options once every plugin's `options` hook has run.
+  let pagesClientInputOptions: { preserveEntrySignatures?: unknown; onDemandWrapping?: unknown } =
+    {};
+
+  const pagesClientChunks = createPagesClientCodeSplittingConfig(
+    clientCodeSplittingConfig,
+    pagesAppChunkRoots,
+    pagesSharedGroupModules,
+  );
+  const pagesClientCodeSplitting = options.disableNextLikeChunking
+    ? clientCodeSplittingConfig
+    : pagesClientChunks.codeSplitting;
   let middlewarePath: string | null = null;
   let canonicalMiddlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
@@ -4095,7 +4155,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Router). For multi-environment builds (App Router, Cloudflare),
               // manualChunks is set per-environment on the client env below
               // to avoid leaking into RSC/SSR environments.
-              ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig() } : {}),
+              // Library builds keep the plain groups.
+              ...(!isSSR && !isMultiEnv
+                ? {
+                    output: getClientOutputConfig(
+                      config.build?.lib ? clientCodeSplittingConfig : pagesClientCodeSplitting,
+                    ),
+                  }
+                : {}),
             }),
           },
           worker: {
@@ -4794,7 +4861,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: appClientInput,
-                  output: getClientOutputConfig(true, hasPagesDir),
+                  output: getClientOutputConfig(pagesClientCodeSplitting, true, hasPagesDir),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -4820,7 +4887,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfig(),
+                  output: getClientOutputConfig(pagesClientCodeSplitting),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -4850,7 +4917,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfig(),
+                  output: getClientOutputConfig(pagesClientCodeSplitting),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -5594,12 +5661,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const metadata: {
               clientEntry: string;
               ssrManifest?: Record<string, string[]>;
+              stylesheetDevIds?: Record<string, string>;
               crossOrigin: "" | "anonymous" | "use-credentials";
             } = {
               clientEntry: DEV_PAGES_CLIENT_ENTRY,
               crossOrigin: nextConfig?.crossOrigin ?? "",
             };
             const ssrManifest: Record<string, string[]> = {};
+            const stylesheetDevIds: Record<string, string> = {};
             const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
             const pagesRoutes = await pagesRouter(
               pagesDir,
@@ -5626,10 +5695,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 getModuleDependencies,
               );
               if (stylesheetAssets.length > 0) {
-                ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets;
+                ssrManifest[toSlash(moduleFilePath)] = stylesheetAssets.map(({ asset }) => asset);
+              }
+              // Vite's client adopts a server-rendered link with the id its CSS
+              // transform passes to updateStyle(), rather than injecting the
+              // stylesheet again in module execution order. A null byte can't
+              // survive HTML parsing, so virtual ids are left out.
+              for (const { asset, id } of stylesheetAssets) {
+                if (!id.includes("\0")) stylesheetDevIds[asset] = id;
               }
             }
             if (Object.keys(ssrManifest).length > 0) metadata.ssrManifest = ssrManifest;
+            if (Object.keys(stylesheetDevIds).length > 0) {
+              metadata.stylesheetDevIds = stylesheetDevIds;
+            }
             return `export default ${JSON.stringify(metadata)};`;
           }
           // App Router virtual modules
@@ -9709,6 +9788,303 @@ export const loadServerActionClient = ${
     plugins.push(createRouteClientReferencesFallbackPlugin());
     if (manualUseCachePluginPromise) plugins.push(manualUseCachePluginPromise);
   }
+  // Next.js-like Pages Router client chunks: `_app`'s imports load as one
+  // chunk, and small chunks that pages share are copied into each page.
+  plugins.push({
+    name: "vinext:pages-client-stylesheet-sizes",
+    apply: "build",
+    // Normal order: sees a stylesheet once vite:css compiles it, before
+    // vite:css-post turns it into JavaScript.
+    transform: {
+      filter: { id: STYLESHEET_MODULE_RE },
+      handler(code, id) {
+        if (this.environment?.name !== "client" || !isStylesheetModule(id)) return;
+        if (!pagesInlinesCommonChunks(this.meta.rolldownVersion)) return;
+
+        // In bytes, as webpack sizes chunks.
+        pagesStylesheetSizes.set(id, Buffer.byteLength(code));
+      },
+    },
+  });
+  plugins.push({
+    name: "vinext:pages-client-chunks",
+    apply: "build",
+    // Runs its post-order hooks after those of normal-order plugins.
+    enforce: "post",
+    options: {
+      // Vite sets `preserveEntrySignatures` for library builds itself.
+      order: "post",
+      handler(inputOptions) {
+        const environment = this.environment;
+        if (environment?.name !== "client") return;
+
+        pagesClientInputOptions = {
+          preserveEntrySignatures: inputOptions.preserveEntrySignatures,
+          onDemandWrapping: (
+            inputOptions.experimental as { onDemandWrapping?: unknown } | undefined
+          )?.onDemandWrapping,
+        };
+
+        // `_app` is an entry of the client build, as in Next.js. Rolldown
+        // orders a chunk's modules (and so its CSS) by visiting the entries
+        // before the `import()` targets, which it visits by path: as one of
+        // those, the pages sorting before `_app` would order what they share
+        // with it ahead of `_app`'s own imports. The entry resolves to `_app`
+        // on each build, as watch builds keep the input while `_app` may be
+        // added or removed. Rolldown takes a single input when code splitting
+        // is off.
+        const input = inputOptions.input ?? [];
+        const inputIds =
+          typeof input === "string" ? [input] : Array.isArray(input) ? input : Object.values(input);
+        const outputs = [environment.config.build.rolldownOptions?.output ?? []].flat();
+        if (
+          environment.config.build.lib ||
+          !hasPagesDir ||
+          hasAppDir ||
+          options.disableNextLikeChunking ||
+          !inputIds.includes(VIRTUAL_CLIENT_ENTRY) ||
+          outputs.some((output) => output.codeSplitting === false || output.inlineDynamicImports)
+        ) {
+          return;
+        }
+        if (typeof input === "string" || Array.isArray(input)) {
+          return { ...inputOptions, input: [...inputIds, VIRTUAL_PAGES_APP_ENTRY] };
+        }
+        let name = "_app";
+        while (name in input) name = `_${name}`;
+        return { ...inputOptions, input: { ...input, [name]: VIRTUAL_PAGES_APP_ENTRY } };
+      },
+    },
+    resolveId: {
+      filter: { id: /^virtual:vinext-pages-app-entry$/ },
+      async handler() {
+        const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+        // A watch build rebuilds once `_app` is added.
+        if (!appFilePath) this.addWatchFile(pagesDir);
+        // As the client entry's import of `_app` resolves.
+        const resolved =
+          appFilePath && (await this.resolve(appFilePath, undefined, { skipSelf: true }));
+        return resolved || RESOLVED_PAGES_APP_ENTRY;
+      },
+    },
+    load: {
+      // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
+      filter: { id: /^\u0000virtual:vinext-pages-app-entry$/ },
+      handler() {
+        return "export {};";
+      },
+    },
+    buildStart() {
+      if (this.environment?.name !== "client") return;
+
+      pagesAppChunkRoots.clear();
+      pagesSharedGroupModules.clear();
+      // Sizes stay across watch builds, which skip the transforms of
+      // stylesheets that haven't changed.
+      pagesUncopiedModules.clear();
+    },
+    buildEnd() {
+      const environment = this.environment;
+      if (environment?.name !== "client" || environment.config.build.lib || !hasPagesDir) return;
+
+      const getModuleInfo = (moduleId: string) => this.getModuleInfo(moduleId);
+      const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+      const appIds = appFilePath && new Set([toSlash(appFilePath), canonicalize(appFilePath)]);
+      const appId = appIds && [...this.getModuleIds()].find((id) => appIds.has(toSlash(id)));
+
+      if (appId) {
+        for (const id of collectPagesAppChunkRoots(
+          appId,
+          this.getModuleIds(),
+          getModuleInfo,
+          clientManualChunks,
+        )) {
+          pagesAppChunkRoots.add(id);
+        }
+      }
+
+      if (!pagesInlinesCommonChunks(this.meta.rolldownVersion)) return;
+
+      const graph = collectPagesClientGraph(this.getModuleIds(), getModuleInfo);
+      for (const id of collectUncopiedStylesheets(
+        pagesStylesheetSizes,
+        graph,
+        RESOLVED_CLIENT_ENTRY,
+      )) {
+        pagesUncopiedModules.add(id);
+      }
+
+      // The "pages-app" group takes its roots and what they import.
+      const appGroupModules = new Set<string>();
+      const pending = [...pagesAppChunkRoots];
+      while (pending.length > 0) {
+        const id = pending.pop()!;
+        if (appGroupModules.has(id) || clientManualChunks(id) !== undefined) continue;
+
+        appGroupModules.add(id);
+        pending.push(...(this.getModuleInfo(id)?.importedIds ?? []));
+      }
+
+      const groupOf = (id: string) =>
+        clientManualChunks(id) ?? (appGroupModules.has(id) ? "pages-app" : undefined);
+      // Bytes of transformed code, as Rolldown sizes what it may copy.
+      const sizeOf = (id: string) => {
+        const code = this.getModuleInfo(id)?.code;
+        return code ? Buffer.byteLength(code) : 0;
+      };
+
+      // Shared groups leave the small modules that import others for the pages
+      // to copy.
+      if (pagesClientInlinesChunks) {
+        for (const [id, chunkName] of collectSharedGroupModules(graph, { groupOf, sizeOf })) {
+          pagesSharedGroupModules.set(id, chunkName);
+        }
+        for (const id of collectSharedGroupDependencies(graph, pagesSharedGroupModules, sizeOf)) {
+          pagesUncopiedModules.add(id);
+        }
+      }
+
+      // Tree shaking leaves out of "pages-app" what `_app` imports from a
+      // side-effect-free barrel without using it, so a module that others
+      // import too, and what it imports, may be copied.
+      const leavingAppGroup = new Set<string>();
+      const leaving = [...appGroupModules].filter((id) =>
+        (this.getModuleInfo(id)?.importers ?? []).some(
+          (importer) => importer !== appId && !appGroupModules.has(importer),
+        ),
+      );
+      while (leaving.length > 0) {
+        const id = leaving.pop()!;
+        if (leavingAppGroup.has(id)) continue;
+        leavingAppGroup.add(id);
+        for (const imported of this.getModuleInfo(id)?.importedIds ?? []) {
+          if (appGroupModules.has(imported)) leaving.push(imported);
+        }
+      }
+      for (const id of collectDoublyCopiedModules(graph, {
+        // Tree shaking may split a shared group by the pages that use each
+        // module, so each counts as a chunk of its own.
+        groupOf: (id) =>
+          leavingAppGroup.has(id)
+            ? undefined
+            : (groupOf(id) ??
+              (pagesSharedGroupModules.has(id)
+                ? `${pagesSharedGroupModules.get(id)}:${id}`
+                : undefined)),
+        isAlwaysLoaded: (id) => id === appId,
+        sizeOf,
+        uncopied: pagesUncopiedModules,
+        declaresSideEffects: createSideEffectsDeclarationCheck(),
+        // `_app` and what stays with it take from those only what stays in
+        // "pages-app".
+        importsNothingFrom: (importer, id) =>
+          leavingAppGroup.has(id) &&
+          !leavingAppGroup.has(importer) &&
+          (importer === appId || appGroupModules.has(importer)),
+      })) {
+        pagesUncopiedModules.add(id);
+      }
+    },
+    outputOptions: {
+      // Sees the client output after other plugins' outputOptions hooks.
+      order: "post",
+      handler(output) {
+        const environment = this.environment;
+        if (environment?.name !== "client") return;
+
+        pagesClientInlinesChunks = false;
+        // Only outputs that still use vinext's Pages Router groups.
+        const codeSplitting = output.codeSplitting;
+        if (
+          !codeSplitting ||
+          typeof codeSplitting !== "object" ||
+          !codeSplitting.groups?.includes(pagesClientChunks.pagesAppGroup)
+        ) {
+          return;
+        }
+
+        const inlined = withInlineCommonChunks(output, {
+          ...pagesClientInputOptions,
+          rolldownVersion: this.meta.rolldownVersion,
+          uncopiedModules: pagesUncopiedModules,
+        });
+        pagesClientInlinesChunks = inlined !== undefined;
+        return inlined;
+      },
+    },
+    generateBundle(_options, bundle) {
+      // The client chunks exist now. A plain Pages Router SSR build inherits
+      // the top-level client output, so it must not group `_app`'s imports.
+      if (this.environment?.name === "client") {
+        pagesAppChunkRoots.clear();
+        pagesSharedGroupModules.clear();
+      }
+      // Without `_app`, its entry is empty and nothing loads it.
+      for (const [fileName, item] of Object.entries(bundle)) {
+        if (item.type === "chunk" && item.facadeModuleId === RESOLVED_PAGES_APP_ENTRY) {
+          delete bundle[fileName];
+        }
+      }
+    },
+  });
+  plugins.push({
+    name: "vinext:pages-client-stylesheets",
+    apply: "build",
+    generateBundle: {
+      // After vite:css-post records each chunk's stylesheets.
+      order: "post",
+      async handler(_options, bundle) {
+        const environment = this.environment;
+        if (environment?.name !== "client" || environment.config.build.lib || !hasPagesDir) return;
+
+        const entry = Object.values(bundle).find(
+          (item) => item.type === "chunk" && item.facadeModuleId === RESOLVED_CLIENT_ENTRY,
+        );
+        if (entry?.type !== "chunk") return;
+
+        const routes = new Map<string, string>();
+        for (const route of await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher)) {
+          routes.set(canonicalize(route.filePath), pagesPatternToNextFormat(route.pattern));
+        }
+        const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
+        if (errorFilePath) routes.set(canonicalize(errorFilePath), "/_error");
+        const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+        const appId = appFilePath ? canonicalize(appFilePath) : undefined;
+
+        const stylesheets = collectPagesPageStylesheets(bundle, {
+          routeOf: (id) => routes.get(canonicalize(id)),
+          isAlwaysLoaded: (id) => id === RESOLVED_CLIENT_ENTRY || canonicalize(id) === appId,
+          loaderChunk: entry.fileName,
+        });
+        // The URLs the server links these with.
+        const url = (file: string) =>
+          pagesStylesheetUrl(file, {
+            base: environment.config.base,
+            basePath: nextConfig.basePath,
+            assetPrefix: nextConfig.assetPrefix,
+            deploymentId: nextConfig.deploymentId,
+          });
+        const manifest = {
+          routes: Object.fromEntries(
+            Object.entries(stylesheets.routes).map(([route, files]) => [route, files.map(url)]),
+          ),
+          shared: stylesheets.shared.map(url),
+        };
+        // The page loaders' dynamic imports leave page stylesheets to the
+        // router, which turns them on as each page renders.
+        entry.code = withoutPreloadedStylesheets(entry, {
+          stylesheets: new Set(Object.values(stylesheets.routes).flat()),
+          routeChunks: stylesheets.routeChunks,
+          renderBuiltUrl: environment.config.experimental.renderBuiltUrl,
+        });
+        // Appended, so the entry's source map still lines up.
+        entry.code = appendToChunkCode(
+          entry.code,
+          `window.__VINEXT_PAGE_STYLESHEETS__=${JSON.stringify(manifest)};`,
+        );
+      },
+    },
+  });
   plugins.push({
     name: "vinext:plain-pages-build-config",
     apply: "build",

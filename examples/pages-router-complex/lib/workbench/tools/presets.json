@@ -1,0 +1,7 @@
+{
+  "presets": [
+    { "id": "weekly", "label": "Weekly rollup", "windowDays": 7 },
+    { "id": "monthly", "label": "Monthly rollup", "windowDays": 30 },
+    { "id": "quarterly", "label": "Quarterly rollup", "windowDays": 91 }
+  ]
+}

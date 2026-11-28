@@ -137,7 +137,12 @@ export default function Other() { return <Panel>Other page</Panel>; }
       key.endsWith("pages/_app.tsx"),
     )?.[1];
     expect(appEntry?.imports).not.toHaveLength(0);
-    expect(appEntry?.css).not.toHaveLength(0);
+    // `_app`'s stylesheets load with its imports, in the chunk it imports.
+    const appCss = [
+      appEntry,
+      ...(appEntry?.imports ?? []).map((key) => emittedCssGraph[key]),
+    ].flatMap((entry) => entry?.css ?? []);
+    expect(appCss).not.toHaveLength(0);
 
     const response = await fetch(url);
     expect(response.status).toBe(200);
@@ -154,9 +159,6 @@ export default function Other() { return <Panel>Other page</Panel>; }
     );
     const baseIndex = stylesheets.findIndex((css) => css.includes("--css-order:base"));
     const resetIndex = stylesheets.findIndex((css) => css.includes("--css-order:reset"));
-    const baseLastIndex = stylesheets
-      .map((css) => css.includes("--css-order:base"))
-      .lastIndexOf(true);
     const dynamicOverrideIndex = stylesheets.findIndex((css) =>
       css.includes("--dynamic-css-order:override"),
     );
@@ -170,7 +172,10 @@ export default function Other() { return <Panel>Other page</Panel>; }
     expect(dynamicOverrideIndex).toBeGreaterThanOrEqual(0);
     expect(noSsrIndex).toBe(-1);
     expect(stylesheets.filter((css) => css.includes("--css-order:base"))).toHaveLength(1);
-    expect(baseLastIndex).toBeLessThan(resetIndex);
-    expect(baseLastIndex).toBeLessThan(dynamicOverrideIndex);
+    // Compare cascade positions: one stylesheet may hold several modules.
+    const cascade = stylesheets.join("\n");
+    const baseLast = cascade.lastIndexOf("--css-order:base");
+    expect(baseLast).toBeLessThan(cascade.indexOf("--css-order:reset"));
+    expect(baseLast).toBeLessThan(cascade.indexOf("--dynamic-css-order:override"));
   });
 });

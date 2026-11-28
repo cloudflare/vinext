@@ -24,7 +24,10 @@ export function renderVinextBuiltUrl(
   // splitting React/RSC singleton state across duplicate module graphs.
   const workerPath = `${ASSET_PREFIX_URL_DIR}/workers/`;
   const belongsToWorkerGraph = filename.includes(workerPath) || hostId?.includes(workerPath);
-  return hostType === "js" && !belongsToWorkerGraph
+  // Stylesheets that a dynamic import loads keep the query: the browser loader
+  // skips one that the server already linked only when the URLs match.
+  const isStylesheet = filename.endsWith(".css");
+  return hostType === "js" && !belongsToWorkerGraph && !isStylesheet
     ? url
     : appendDeploymentIdQuery(url, deploymentId);
 }

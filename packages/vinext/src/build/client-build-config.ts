@@ -449,6 +449,685 @@ export function createClientCodeSplittingConfig(
 }
 
 /**
+ * Collect the modules that root the Pages Router "pages-app" chunk: `_app`'s
+ * static imports, short of the modules the first vinext group takes ahead of
+ * it ("framework", "vinext" and "react-dom-server"). Every page loads `_app`,
+ * so splitting its imports only adds requests: a module that `_app` and some
+ * pages both import would otherwise get a shared chunk of its own. Next.js
+ * keeps `pages/_app` unsplit for the same reason. `_app`'s next/navigation
+ * hooks load on every page too, so they join it rather than load on their own.
+ *
+ * Rolldown adds what these modules use to the chunk (following only the
+ * re-exports of a side-effect-free barrel that are used), while `_app` itself
+ * keeps its own chunk: the client entry imports it, and the Pages manifests
+ * look it up by its source path. An import that statically leads back to
+ * `_app` or to an app module the client entry loads before it
+ * (instrumentation-client and what that loads) stays out: Rolldown would pull
+ * that module into the group too, and the entry would then load the whole
+ * group before `_app`. Modules the first group takes with its own (vinext's
+ * runtime helpers) don't count. A page that one of `_app`'s imports imports
+ * joins the group, as it joins `pages/_app` in Next.js.
+ */
+export function collectPagesAppChunkRoots(
+  appId: string,
+  moduleIds: Iterable<string>,
+  getModuleInfo: (id: string) => {
+    readonly isEntry: boolean;
+    readonly importedIds: readonly string[];
+    readonly importers: readonly string[];
+    readonly dynamicImporters: readonly string[];
+  } | null,
+  clientManualChunks: (id: string) => string | undefined,
+): Set<string> {
+  // Modules the first group doesn't name may join the "pages-app" chunk.
+  const joinsGroup = (id: string) => {
+    const chunkName = clientManualChunks(id);
+    return (
+      chunkName === undefined ||
+      chunkName === "vinext-navigation" ||
+      chunkName === "vinext-app-router"
+    );
+  };
+
+  // Every module that `ids` load statically, `ids` included.
+  const closure = (ids: string[]) => {
+    const modules = new Set<string>();
+
+    while (ids.length > 0) {
+      const id = ids.pop()!;
+      if (modules.has(id)) continue;
+
+      modules.add(id);
+      ids.push(...(getModuleInfo(id)?.importedIds ?? []));
+    }
+
+    return modules;
+  };
+
+  // Seed the modules that must stay out: `_app`, and what the client entry
+  // loads beyond the first group's own modules, statically or with `import()`.
+  const leadsToEntry = new Set([appId]);
+  const entries: string[] = [];
+  const firstGroupModules: string[] = [];
+  const dynamicTargets: string[] = [];
+
+  for (const id of moduleIds) {
+    const info = getModuleInfo(id);
+    // `_app` is an entry chunk too, which loads with every page.
+    if (info?.isEntry && id !== appId) entries.push(id);
+
+    if (!joinsGroup(id)) firstGroupModules.push(id);
+    else if (info?.dynamicImporters.length) dynamicTargets.push(id);
+  }
+
+  const firstGroupTakes = closure(firstGroupModules);
+  const entryModules = closure([...entries]);
+  for (const id of entryModules) {
+    if (joinsGroup(id) && !firstGroupTakes.has(id)) leadsToEntry.add(id);
+  }
+  // So do the `import()` targets of what it loads, like a component that
+  // instrumentation-client loads lazily, though not the pages it loads itself:
+  // every page loads `_app`'s imports with `_app`. One that `_app`'s imports
+  // reach statically loads with them anyway, and this graph is from before
+  // tree-shaking, which may drop an `import()` of a package's unused export.
+  for (const id of dynamicTargets) {
+    const info = getModuleInfo(id);
+    if (
+      info?.dynamicImporters.some(
+        (importer) => entryModules.has(importer) && !entries.includes(importer),
+      )
+    ) {
+      leadsToEntry.add(id);
+    }
+  }
+
+  // Anything that statically imports one of those leads to it too.
+  const pending = [...leadsToEntry];
+  while (pending.length > 0) {
+    for (const importer of getModuleInfo(pending.pop()!)?.importers ?? []) {
+      if (leadsToEntry.has(importer)) continue;
+
+      leadsToEntry.add(importer);
+      pending.push(importer);
+    }
+  }
+
+  const roots = new Set<string>();
+  for (const id of getModuleInfo(appId)?.importedIds ?? []) {
+    if (joinsGroup(id) && !leadsToEntry.has(id)) roots.add(id);
+  }
+
+  // Stylesheets that only `_app` imports stay in its chunk: a chunk of only
+  // stylesheets still gets a JavaScript file under strict execution order,
+  // which wraps even their empty modules, so every page would load it for
+  // nothing. One that a page imports too keeps the group, so it loads once,
+  // in `_app`'s import order.
+  const onlyAppStylesheets = [...roots].every(
+    (id) =>
+      isStylesheetModule(id) &&
+      (getModuleInfo(id)?.importers ?? []).every((importer) => importer === appId),
+  );
+  if (onlyAppStylesheets) return new Set();
+
+  return roots;
+}
+
+/**
+ * Pages Router code splitting: vinext's groups, with the "pages-app" chunk of
+ * {@link collectPagesAppChunkRoots} after the first one. The returned group
+ * reads `appRoots` when Rolldown chunks the bundle, so a plugin fills it in
+ * once the client module graph is known.
+ */
+export function createPagesClientCodeSplittingConfig(
+  base: ReturnType<typeof createClientCodeSplittingConfig>,
+  appRoots: ReadonlySet<string>,
+  // See collectSharedGroupModules.
+  sharedGroupModules: ReadonlyMap<string, string>,
+) {
+  const [first, ...rest] = base.groups;
+
+  const pagesAppGroup = {
+    name(moduleId: string) {
+      return appRoots.has(moduleId) ? "pages-app" : null;
+    },
+    // `_app` may import less than the default `minSize`.
+    minSize: 0,
+  };
+  const pagesSharedGroup = {
+    name(moduleId: string) {
+      return sharedGroupModules.get(moduleId) ?? null;
+    },
+    // What a group's module imports may load with other entries too. Inlining
+    // sets the options that Rolldown asks for to leave dependencies out.
+    includeDependenciesRecursively: false,
+    // The pages that load a module are counted before tree shaking, so the
+    // chunk is split by the entries that use each part of it after, and a
+    // part under the size is copied into them.
+    entriesAware: true,
+    minSize: PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
+  };
+
+  return {
+    pagesAppGroup,
+    codeSplitting: { ...base, groups: [first!, pagesAppGroup, pagesSharedGroup, ...rest] },
+  };
+}
+
+/**
+ * Next.js' webpack `splitChunks.minSize` for Pages Router builds: a module
+ * group shared by pages but smaller than this is copied into each of them
+ * rather than loaded as a chunk of its own.
+ */
+export const PAGES_INLINE_COMMON_CHUNK_MAX_SIZE = 20_000;
+
+export const STYLESHEET_MODULE_RE = /\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/;
+const NON_STYLESHEET_QUERY_RE = /[?&](?:inline|url|raw|transform-only)\b/;
+
+/**
+ * Whether `id` is a stylesheet whose CSS goes into its chunk's stylesheet,
+ * short of `?inline`, `?url` and `?raw` imports (and the `?transform-only`
+ * module behind a `?url` one).
+ */
+export function isStylesheetModule(id: string): boolean {
+  return STYLESHEET_MODULE_RE.test(id) && !NON_STYLESHEET_QUERY_RE.test(id);
+}
+
+/**
+ * Collect the stylesheets that must keep a chunk of their own: those that the
+ * same set of entries (the client entry, pages, `import()` targets) loads
+ * statically, when together they hold at least
+ * {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE} of CSS. Rolldown groups a common
+ * chunk's modules by that set, and webpack applies `minSize` to the CSS of
+ * each such group, so the CSS a set of pages shares gets one stylesheet once
+ * it's large and is otherwise copied into each page's stylesheet. Rolldown's
+ * own size check only counts the JavaScript a stylesheet compiles to.
+ *
+ * So do the stylesheets that a non-page `import()` target (`next/dynamic`)
+ * loads with other entries. Webpack leaves out of a dynamic chunk what the
+ * page importing it already has, but Rolldown has one chunk per `import()`
+ * target, and a copy there would link the CSS again after the page's own.
+ */
+export function collectUncopiedStylesheets(
+  stylesheetSizes: ReadonlyMap<string, number>,
+  { infos, entries, loadedBy }: PagesClientGraph,
+  // The client entry, which loads the pages.
+  pageLoaderId: string,
+): Set<string> {
+  const groups = new Map<string, { size: number; ids: string[] }>();
+  const uncopied = new Set<string>();
+
+  for (const [id, size] of stylesheetSizes) {
+    // Gone from the module graph since an earlier watch build.
+    if (!infos.has(id)) continue;
+
+    // Every entry that loads the stylesheet statically.
+    const indexes = loadedBy.get(id) ?? [];
+    const loadsDynamically = indexes.some((index) =>
+      infos.get(entries[index]!)!.dynamicImporters.some((importer) => importer !== pageLoaderId),
+    );
+
+    if (loadsDynamically && indexes.length > 1) {
+      uncopied.add(id);
+      continue;
+    }
+
+    const key = indexes.join(",");
+    const group = groups.get(key) ?? { size: 0, ids: [] };
+
+    group.size += size;
+    group.ids.push(id);
+    groups.set(key, group);
+  }
+
+  for (const group of groups.values()) {
+    if (group.size < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) continue;
+    for (const id of group.ids) uncopied.add(id);
+  }
+
+  return uncopied;
+}
+
+type PagesModuleInfo = {
+  readonly isEntry: boolean;
+  readonly importedIds: readonly string[];
+  readonly importers: readonly string[];
+  readonly dynamicImporters: readonly string[];
+};
+
+/** See {@link collectPagesClientGraph}. */
+export type PagesClientGraph = ReturnType<typeof collectPagesClientGraph>;
+
+/**
+ * The client graph's modules, its entries (the client entry, `_app`, pages,
+ * `import()` targets), and the entries that load each module statically, by
+ * index, in order. Rolldown groups the modules that no chunk group takes by
+ * the entries that load them, each set into a common chunk.
+ */
+export function collectPagesClientGraph(
+  moduleIds: Iterable<string>,
+  getModuleInfo: (id: string) => PagesModuleInfo | null,
+) {
+  const infos = new Map<string, PagesModuleInfo>();
+  for (const id of moduleIds) {
+    const info = getModuleInfo(id);
+    if (info) infos.set(id, info);
+  }
+
+  const entries = [...infos.keys()].filter((id) => {
+    const info = infos.get(id)!;
+    return info.isEntry || info.dynamicImporters.length > 0;
+  });
+
+  const loadedBy = new Map<string, number[]>();
+  entries.forEach((entry, index) => {
+    const pending = [entry];
+
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      const indexes = loadedBy.get(id) ?? [];
+      if (indexes.at(-1) === index) continue;
+
+      indexes.push(index);
+      loadedBy.set(id, indexes);
+      pending.push(...(infos.get(id)?.importedIds ?? []));
+    }
+  });
+
+  return { infos, entries, loadedBy };
+}
+
+/**
+ * Collect the modules that several entries load and no chunk group takes,
+ * grouped by the set of entries that loads them, for each set whose modules
+ * together reach {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE}: each with the name
+ * of a chunk for its set. Webpack's `splitChunks` gives such a set a chunk and
+ * leaves a smaller one in each page's chunk.
+ *
+ * Rolldown copies a small common chunk into the chunks that import it, not the
+ * pages: what a group's module imports from another set would be copied into
+ * the group's chunk, and a page that loads two such chunks would download it
+ * twice, or make a request for it where it keeps a file instead
+ * ({@link collectDoublyCopiedModules}). So a small module that imports one
+ * that no group takes, or a stylesheet, stays out of its set's group, and is
+ * copied into the pages along with what it imports, unless what stays out of
+ * the group reaches the size too. A stylesheet that only one group's modules
+ * import joins the group.
+ */
+export function collectSharedGroupModules(
+  { infos, entries, loadedBy }: PagesClientGraph,
+  options: {
+    /** The chunk group that takes the module, if one does. */
+    groupOf: (id: string) => string | undefined;
+    /** The module's size, as Rolldown measures it to decide what to copy. */
+    sizeOf: (id: string) => number;
+  },
+): Map<string, string> {
+  const entryIds = new Set(entries);
+  const sets = new Map<string, string>();
+  for (const id of infos.keys()) {
+    const indexes = loadedBy.get(id) ?? [];
+    if (
+      indexes.length < 2 ||
+      entryIds.has(id) ||
+      isStylesheetModule(id) ||
+      options.groupOf(id) !== undefined
+    ) {
+      continue;
+    }
+    sets.set(id, indexes.join(","));
+  }
+
+  const members = new Set(sets.keys());
+  const isSmall = (id: string) => options.sizeOf(id) < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE;
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const id of members) {
+      const importsCopiedModule = infos
+        .get(id)!
+        .importedIds.some(
+          (imported) => !members.has(imported) && options.groupOf(imported) === undefined,
+        );
+      if (importsCopiedModule && isSmall(id)) {
+        members.delete(id);
+        changed = true;
+      }
+    }
+
+    const sizes = new Map<string, number>();
+    for (const id of members) {
+      const set = sets.get(id)!;
+      sizes.set(set, (sizes.get(set) ?? 0) + options.sizeOf(id));
+    }
+    for (const id of members) {
+      if (sizes.get(sets.get(id)!)! < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) {
+        members.delete(id);
+        changed = true;
+      }
+    }
+  }
+
+  // Where what stays out of a group reaches the size too, Rolldown gives it a
+  // chunk of its own for the same pages instead of copying it: it joins the
+  // group.
+  const leftSizes = new Map<string, number>();
+  for (const [id, set] of sets) {
+    if (!members.has(id)) leftSizes.set(set, (leftSizes.get(set) ?? 0) + options.sizeOf(id));
+  }
+  const groupSets = new Set([...members].map((id) => sets.get(id)!));
+  for (const [id, set] of sets) {
+    if (groupSets.has(set) && (leftSizes.get(set) ?? 0) >= PAGES_INLINE_COMMON_CHUNK_MAX_SIZE) {
+      members.add(id);
+    }
+  }
+
+  const chunkNames = new Map<string, string>();
+  const groupModules = new Map<string, string>();
+  for (const id of members) {
+    const set = sets.get(id)!;
+    let chunkName = chunkNames.get(set);
+    if (chunkName === undefined) {
+      chunkName = `pages-shared-${chunkNames.size + 1}`;
+      chunkNames.set(set, chunkName);
+    }
+    groupModules.set(id, chunkName);
+  }
+  // A stylesheet that only one group's modules import goes with them.
+  for (const [id, { importers }] of infos) {
+    if (!isStylesheetModule(id) || importers.length === 0 || options.groupOf(id) !== undefined) {
+      continue;
+    }
+    const chunkName = groupModules.get(importers[0]!);
+    if (
+      chunkName !== undefined &&
+      importers.every((importer) => groupModules.get(importer) === chunkName)
+    ) {
+      groupModules.set(id, chunkName);
+    }
+  }
+
+  return groupModules;
+}
+
+/**
+ * Collect the small modules of the shared groups that two of the groups'
+ * modules import, directly or through small modules (a barrel that tree
+ * shaking removes). Tree shaking can split a group by the pages that use
+ * each of its modules and leave such a module a part under the group's
+ * `minSize`, which Rolldown would copy into each importer's part: a page that
+ * loads both would download it twice. These keep a file instead.
+ */
+export function collectSharedGroupDependencies(
+  { infos, entries }: PagesClientGraph,
+  groupModules: ReadonlyMap<string, string>,
+  sizeOf: (id: string) => number,
+): Set<string> {
+  const isSmall = (id: string) => sizeOf(id) < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE;
+  const groupImporters = (id: string) =>
+    infos.get(id)!.importers.filter((importer) => groupModules.has(importer));
+
+  const entryIds = new Set(entries);
+  const dependencies = new Set<string>();
+  for (const id of groupModules.keys()) {
+    if (!isSmall(id)) continue;
+    if (groupImporters(id).length >= 2) {
+      dependencies.add(id);
+      continue;
+    }
+
+    // The large modules that import it through small ones.
+    const largeImporters = new Set<string>();
+    const visited = new Set([id]);
+    const pending = [id];
+    while (pending.length > 0) {
+      for (const importer of infos.get(pending.pop()!)!.importers) {
+        if (visited.has(importer) || entryIds.has(importer)) continue;
+        visited.add(importer);
+        if (isSmall(importer)) pending.push(importer);
+        else if (groupModules.has(importer)) largeImporters.add(importer);
+      }
+    }
+    if (largeImporters.size >= 2) dependencies.add(id);
+  }
+  return dependencies;
+}
+
+/**
+ * Collect the modules of the common chunks that Rolldown would copy into two
+ * chunks that load together. Inlining copies a small common chunk into each
+ * chunk that imports it (into the chunks that a copied importer goes into), so
+ * a page that loads two of those downloads the module twice, and links a
+ * stylesheet's rules twice: the second copy follows the first chunk's own
+ * stylesheet and overrides it. Webpack and Turbopack give a page one copy of
+ * each module. These chunks keep a file of their own.
+ *
+ * Two chunks load together when an entry loads both, or when one of them loads
+ * with every page: an `isAlwaysLoaded` entry (`_app`) loads it. Rolldown
+ * leaves out the copies that load after one the client entry loads, as every
+ * other chunk does. That only counts where the client entry's imports
+ * survive: the output drops an unused import of a module `declaresSideEffects`
+ * reports (see createSideEffectsDeclarationCheck). The graph here is the one
+ * before tree-shaking, which can drop others too, so a stylesheet, whose
+ * second copy would change the cascade, keeps a file even then. Rolldown also
+ * leaves out an entry's copy where another chunk that gets one is the entry's
+ * static import (the entry loads it), which runs first.
+ */
+export function collectDoublyCopiedModules(
+  { infos, entries, loadedBy }: PagesClientGraph,
+  options: {
+    /** The chunk group that takes the module, if one does. */
+    groupOf: (id: string) => string | undefined;
+    isAlwaysLoaded: (entryId: string) => boolean;
+    /** The module's size, as Rolldown measures it to decide what to copy. */
+    sizeOf: (id: string) => number;
+    /** Modules that already keep their chunk a file. */
+    uncopied: ReadonlySet<string>;
+    declaresSideEffects?: (id: string) => boolean;
+    /** Whether the importer takes none of what the module exports once tree-shaken. */
+    importsNothingFrom?: (importer: string, id: string) => boolean;
+  },
+): Set<string> {
+  // Each module's chunk: its group's, its entry's, or the common chunk of the
+  // entries that load it, keyed by their indexes.
+  const entryIds = new Set(entries);
+  const chunks = new Map<string, string>();
+  const commonChunks = new Map<string, string[]>();
+  for (const id of infos.keys()) {
+    const group = options.groupOf(id);
+    const indexes = loadedBy.get(id) ?? [];
+    let chunk: string;
+
+    if (group !== undefined) chunk = `group:${group}`;
+    else if (entryIds.has(id)) chunk = `entry:${id}`;
+    else if (indexes.length === 1) chunk = `entry:${entries[indexes[0]!]}`;
+    else {
+      chunk = indexes.join(",");
+      const ids = commonChunks.get(chunk) ?? [];
+      ids.push(id);
+      commonChunks.set(chunk, ids);
+    }
+
+    chunks.set(id, chunk);
+  }
+
+  const alwaysLoaded = new Set<number>();
+  const entryIndexes = new Map<string, number>();
+  entries.forEach((entry, index) => {
+    if (options.isAlwaysLoaded(entry)) alwaysLoaded.add(index);
+    entryIndexes.set(`entry:${entry}`, index);
+  });
+
+  // The modules that a configured entry (the client entry) still loads once
+  // tree-shaking drops its unused imports.
+  const loadedFirst = new Set<string>();
+  const pendingFirst = entries.filter(
+    (id) => infos.get(id)!.isEntry && !options.isAlwaysLoaded(id),
+  );
+  while (pendingFirst.length > 0) {
+    const id = pendingFirst.pop()!;
+    if (loadedFirst.has(id)) continue;
+    loadedFirst.add(id);
+    for (const imported of infos.get(id)?.importedIds ?? []) {
+      if (!options.declaresSideEffects?.(imported)) pendingFirst.push(imported);
+    }
+  }
+
+  const copiedTwice = new Set<string>();
+  const chunkSizes = new Map<string, number>();
+  for (const [chunk, ids] of commonChunks) {
+    chunkSizes.set(
+      chunk,
+      ids.reduce((size, id) => size + options.sizeOf(id), 0),
+    );
+  }
+  // Whether Rolldown copies the common chunk into the chunks that import it.
+  const isCopied = (chunk: string) =>
+    chunkSizes.get(chunk)! < PAGES_INLINE_COMMON_CHUNK_MAX_SIZE &&
+    !commonChunks.get(chunk)!.some((id) => options.uncopied.has(id) || copiedTwice.has(id));
+
+  // A chunk that keeps a file changes where the copies it imports go.
+  for (let found = true; found;) {
+    found = false;
+
+    for (const [chunk, ids] of commonChunks) {
+      if (!isCopied(chunk)) continue;
+      const copied = ids.filter((id) => isStylesheetModule(id) || !loadedFirst.has(id));
+      if (copied.length === 0) continue;
+
+      // The entries that load each chunk that a copy of this one goes into.
+      const importerChunks = new Map<string, Set<number>>();
+      const visited = new Set([chunk]);
+      const pending = [...ids];
+      while (pending.length > 0) {
+        const id = pending.pop()!;
+        for (const importer of infos.get(id)!.importers) {
+          if (options.importsNothingFrom?.(importer, id)) continue;
+          const importerChunk = chunks.get(importer);
+          if (importerChunk === undefined || visited.has(importerChunk)) continue;
+
+          if (commonChunks.has(importerChunk) && isCopied(importerChunk)) {
+            visited.add(importerChunk);
+            pending.push(...commonChunks.get(importerChunk)!);
+            continue;
+          }
+
+          const indexes = importerChunks.get(importerChunk) ?? new Set();
+          for (const index of loadedBy.get(importer) ?? []) indexes.add(index);
+          importerChunks.set(importerChunk, indexes);
+        }
+      }
+
+      // An entry's copy, where a chunk it loads gets one too.
+      if (copied.every((id) => !isStylesheetModule(id))) {
+        for (const [importerChunk] of importerChunks) {
+          const index = entryIndexes.get(importerChunk);
+          if (index === undefined) continue;
+          const loadsOther = [...importerChunks].some(
+            ([other, indexes]) => !entryIndexes.has(other) && indexes.has(index),
+          );
+          if (loadsOther) importerChunks.delete(importerChunk);
+        }
+      }
+
+      const importerLoads = [...importerChunks.values()];
+
+      const loaded = new Set<number>();
+      let loadsWithEveryPage = false;
+      let loadTogether = false;
+      for (const indexes of importerLoads) {
+        for (const index of indexes) {
+          if (loaded.has(index)) loadTogether = true;
+          if (alwaysLoaded.has(index)) loadsWithEveryPage = true;
+        }
+        for (const index of indexes) loaded.add(index);
+      }
+
+      if (loadTogether || (loadsWithEveryPage && importerLoads.length > 1)) {
+        for (const id of copied) copiedTwice.add(id);
+        found = true;
+      }
+    }
+  }
+
+  return copiedTwice;
+}
+
+/** Rolldown 1.2.18 added `codeSplitting.experimentalInlineCommonChunks`. */
+export function supportsInlineCommonChunks(rolldownVersion: string): boolean {
+  const [release = "", prerelease] = rolldownVersion.split("-", 2);
+  const [major = 0, minor = 0, patch = 0] = release.split(".").map(Number);
+
+  if (major !== 1) return major > 1;
+  if (minor !== 2) return minor > 2;
+  return patch > 18 || (patch === 18 && prerelease === undefined);
+}
+
+type InlineCommonChunksOutput = {
+  readonly codeSplitting?: unknown;
+  readonly format?: string;
+  readonly preserveModules?: boolean;
+  readonly strictExecutionOrder?: boolean;
+};
+
+/**
+ * Copy small Pages Router common chunks into the chunks that import them, as
+ * Next.js' webpack (below {@link PAGES_INLINE_COMMON_CHUNK_MAX_SIZE}) and
+ * Turbopack (at any size) duplicate small modules that several pages share
+ * instead of loading each set of them as a separate tiny chunk. Rolldown keeps
+ * one instance of each copied module and only evaluates it when an importer
+ * needs it, as both bundlers do. A chunk holding one of `uncopiedModules`
+ * ({@link collectUncopiedStylesheets}, {@link collectDoublyCopiedModules})
+ * isn't copied.
+ *
+ * Returns the output options with inlining turned on, or undefined when the
+ * Rolldown version or other options (which Rolldown rejects in combination
+ * with it) rule it out, or when the output already configures it.
+ */
+export function withInlineCommonChunks<Output extends InlineCommonChunksOutput>(
+  output: Output,
+  options: {
+    preserveEntrySignatures?: unknown;
+    onDemandWrapping?: unknown;
+    rolldownVersion: string;
+    uncopiedModules: ReadonlySet<string>;
+  },
+): Output | undefined {
+  const codeSplitting = output.codeSplitting;
+
+  const isEsmOutput =
+    output.format === undefined ||
+    output.format === "es" ||
+    output.format === "esm" ||
+    output.format === "module";
+  const keepsEntrySignatures =
+    options.preserveEntrySignatures !== undefined && options.preserveEntrySignatures !== false;
+
+  if (
+    !supportsInlineCommonChunks(options.rolldownVersion) ||
+    !codeSplitting ||
+    typeof codeSplitting !== "object" ||
+    "experimentalInlineCommonChunks" in codeSplitting ||
+    !isEsmOutput ||
+    output.preserveModules === true ||
+    output.strictExecutionOrder === false ||
+    keepsEntrySignatures ||
+    options.onDemandWrapping === true
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...output,
+    codeSplitting: {
+      ...codeSplitting,
+      experimentalInlineCommonChunks: {
+        maxSize: PAGES_INLINE_COMMON_CHUNK_MAX_SIZE,
+        exclude: (id: string) => options.uncopiedModules.has(id),
+      },
+    },
+  };
+}
+
+/**
  * Matches React framework packages (and the RSC flight runtime) inside
  * `node_modules`. Used to split them into a dedicated "framework" chunk in the
  * RSC server build.

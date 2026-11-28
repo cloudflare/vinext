@@ -11,6 +11,11 @@ export type PagesClientAssets = {
   appClientReferenceChunks?: ClientReferenceChunks;
   ssrManifest?: Record<string, string[]>;
   /**
+   * Dev only: the id that Vite's client gives each `ssrManifest` stylesheet,
+   * which lets it adopt the server's link instead of injecting the CSS again.
+   */
+  stylesheetDevIds?: Record<string, string>;
+  /**
    * Shared Pages chunk files (framework, vinext runtime, client entry) keyed on
    * chunk names from this client build, in the SSR-manifest key-space.
    */

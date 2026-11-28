@@ -38,6 +38,8 @@ vinext warns about string patterns it can't serve correctly. Keep them:
 
 Function patterns are left to you to keep within these rules. Array-shaped client `output` isn't supported: Vite appends vinext's own client output to the array, which builds an extra bundle.
 
+Vite's `experimental.renderBuiltUrl` isn't supported. The server links assets under `basePath` or `assetPrefix`, with the deployment ID, whatever it returns, so client navigations can't find the stylesheet links it moves elsewhere. To serve assets from another path or host, set `assetPrefix` instead.
+
 ## React
 
 The Next.js App Router runs on a copy of React bundled inside the `next` package, so React updates reach your app when a new Next.js release ships. vinext uses the `react`, `react-dom`, and `react-server-dom-webpack` installed in your project instead. When React ships a fix, including a security fix, you can upgrade right away without waiting for a vinext release:

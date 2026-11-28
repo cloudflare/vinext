@@ -1148,6 +1148,24 @@ describe("createTickBufferedTransform inline CSS", () => {
     );
   });
 
+  it("inlines stylesheets whose links carry the deployment ID", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" href="/_next/static/app.css?dpl=dpl_123" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: {
+          "/_next/static/app.css": "p { color: yellow; }",
+        },
+      },
+    );
+
+    expect(out).not.toContain('rel="stylesheet"');
+    expect(out).toContain(
+      'data-href="/_next/static/app.css?dpl=dpl_123">p { color: yellow; }</style>',
+    );
+  });
+
   it("replaces stylesheet links when rel contains multiple tokens", async () => {
     const out = await runTransform(
       [
