@@ -50,7 +50,7 @@ import { renderToReadableStream } from "react-dom/server";
 import { logRequest, now } from "./request-log.js";
 import {
   createValidFileMatcher,
-  findFileWithExts,
+  findRouteFileWithExts,
   type ValidFileMatcher,
 } from "../routing/file-matcher.js";
 import {
@@ -700,7 +700,7 @@ export function createSSRHandler(
     moduleSource: createPagesDevModuleUrl(server.config.root, route.filePath, "/"),
     dataKind: classifyPageRoute?.(route) ?? "none",
   }));
-  const errorFile = findFileWithExts(pagesDir, "_error", matcher);
+  const errorFile = findRouteFileWithExts(pagesDir, "_error", matcher);
   pageLoaders.push({
     pattern: "/_error",
     moduleSource: errorFile
@@ -925,9 +925,9 @@ export function createSSRHandler(
         const { pageModule, AppComponent, appFilePath, DocumentComponent } =
           await traceFindPageComponents(route.pattern, async () => {
             const pageModule = await importModule(runner, route.filePath);
-            const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
+            const appFilePath = findRouteFileWithExts(pagesDir, "_app", matcher);
             const appModule = appFilePath ? await importModule(runner, appFilePath) : null;
-            const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
+            const docFilePath = findRouteFileWithExts(pagesDir, "_document", matcher);
             const docModule = docFilePath
               ? ((await runner.import(docFilePath)) as Record<string, unknown>)
               : null;
@@ -1945,16 +1945,16 @@ async function renderErrorPage(
     let candidateLoaded = false;
     let errorAssetPath: string | null = null;
     try {
-      errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
+      errorAssetPath = findRouteFileWithExts(pagesDir, candidate, matcher);
       if (!errorAssetPath && candidate !== "_error") continue;
 
       const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
       const { errorModule, AppComponent, appAssetPath, DocumentComponent } =
         await traceFindPageComponents(errorPage, async () => {
           const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
-          const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
+          const appAssetPath = findRouteFileWithExts(pagesDir, "_app", matcher);
           const appModule = appAssetPath ? await importModule(runner, appAssetPath) : null;
-          const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
+          const docFilePath = findRouteFileWithExts(pagesDir, "_document", matcher);
           const docModule = docFilePath ? await importModule(runner, docFilePath) : null;
           return {
             errorModule,

@@ -18,6 +18,10 @@ import {
   type AppRoute,
 } from "../packages/vinext/src/routing/app-router.js";
 import { toSlash } from "pathslash";
+import {
+  routeSourceOptimizeEntries,
+  scanWithExtensions,
+} from "../packages/vinext/src/routing/file-matcher.js";
 
 /** Expected canonical (forward-slash) path for router-output assertions. */
 function canonical(base: string, relativePath = ""): string {
@@ -109,6 +113,60 @@ describe("pagesRouter - route discovery", () => {
     expect(aboutIndex).not.toBe(-1);
     expect(postIndex).not.toBe(-1);
     expect(aboutIndex).toBeLessThan(postIndex);
+  });
+
+  // Ported from Next.js: test/e2e/404-page/404-page.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/404-page/404-page.test.ts
+  // Next.js never treats TypeScript declaration files as pages
+  // (build/route-discovery.ts createPagesMapping, and Turbopack's
+  // crates/next-core/src/pages_structure.rs).
+  it("ignores TypeScript declaration files", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    expect(routes.map((r) => r.pattern)).not.toContain("/declaration-file.d");
+    expect(routes.filter((r) => r.filePath.endsWith(".d.ts"))).toEqual([]);
+  });
+
+  // Webpack only skips declaration files when `ts` is a page extension
+  // (createPagesMapping), so an explicit `d.ts` page extension still routes them.
+  it("routes TypeScript declaration files when `ts` is not a page extension", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR, ["d.ts"]);
+
+    expect(routes.map((r) => r.pattern)).toContain("/declaration-file");
+  });
+
+  // Webpack's app loader resolves layout.d.ts through pageExtensions, so only
+  // page and route scans skip declaration files.
+  it("keeps declaration files in layout scans", async () => {
+    const appDir = path.resolve(
+      import.meta.dirname,
+      "fixtures/check-declaration-page-extensions/app",
+    );
+    const scan = async (stem: string, options?: { keepDeclarationFiles?: boolean }) => {
+      const files: string[] = [];
+      for await (const file of scanWithExtensions(
+        stem,
+        appDir,
+        ["ts", "d.ts"],
+        undefined,
+        options,
+      )) {
+        files.push(file);
+      }
+      return files.sort();
+    };
+
+    expect(await scan("**/page")).toEqual(["page.ts"]);
+    expect(await scan("**/layout", { keepDeclarationFiles: true })).toEqual(["layout.d.ts"]);
+  });
+
+  // The dependency scan can't parse every declaration file, so none of them
+  // are optimizer entries.
+  it("keeps declaration files out of optimizer entries", () => {
+    expect(routeSourceOptimizeEntries("pages")).toEqual([
+      "pages/**/*.{tsx,jsx,js}",
+      "pages/**/!(.*|*.d).ts",
+    ]);
   });
 
   it("ignores _app.tsx and _document.tsx", async () => {

@@ -12,6 +12,8 @@ import {
   formatReport,
   type CheckResult,
 } from "../packages/vinext/src/check.js";
+import { appRouter } from "../packages/vinext/src/routing/app-router.js";
+import { pagesRouter } from "../packages/vinext/src/routing/pages-router.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -2377,12 +2379,51 @@ describe("formatReport", () => {
 
 // ── Integration: running against fixtures ──────────────────────────────────
 
+// With `ts` as a page extension the route scanners skip declaration pages
+// (Next.js createPagesMapping), but layouts and boundary files like
+// layout.d.ts / loading.d.ts still resolve through the explicit `d.ts`
+// extension.
+describe("integration: declaration files with a d.ts page extension", () => {
+  const fixtureDir = path.resolve(
+    import.meta.dirname,
+    "./fixtures/check-declaration-page-extensions",
+  );
+
+  it("reports the App Router files runtime discovery uses", async () => {
+    const routes = await appRouter(path.join(fixtureDir, "app"), ["ts", "d.ts"]);
+    expect(routes.map((route) => route.pattern)).toEqual(["/"]);
+    expect(routes[0]!.loadingPath).toMatch(/loading\.d\.ts$/);
+    expect(routes[0]!.layouts).toEqual([expect.stringMatching(/layout\.d\.ts$/)]);
+    // Slot page probes skip declaration files like the page scanner.
+    expect(routes[0]!.parallelSlots.map((slot) => slot.pagePath)).toEqual([]);
+
+    const names = checkConventions(fixtureDir).map((item) => item.name);
+    expect(names).toContain("1 page(s)");
+    expect(names).toContain("1 layout(s)");
+    expect(names).toContain("1 loading boundary(ies)");
+  });
+});
+
 describe("integration: pages-basic fixture", () => {
   const fixtureDir = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 
   it("detects Pages Router conventions", () => {
     const items = checkConventions(fixtureDir);
     expect(items.find((i) => i.name === "Pages Router (pages/)")).toBeDefined();
+  });
+
+  it("counts the pages the Pages Router scanner discovers", async () => {
+    // pages/declaration-file.d.ts is not a page (Next.js 404-page e2e test).
+    // Same pageExtensions as the fixture's next.config.mjs.
+    const routes = await pagesRouter(path.join(fixtureDir, "pages"), [
+      "js",
+      "jsx",
+      "ts",
+      "tsx",
+      "mdx",
+    ]);
+    const items = checkConventions(fixtureDir);
+    expect(items.find((i) => i.name.endsWith(" page(s)"))?.name).toBe(`${routes.length} page(s)`);
   });
 
   it("detects config options from next.config.mjs", () => {

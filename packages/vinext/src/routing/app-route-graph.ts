@@ -8,7 +8,12 @@ import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
-import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
+import {
+  findFileWithExts,
+  findRouteFileWithExts,
+  scanWithExtensions,
+  type ValidFileMatcher,
+} from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
 import { createAppRouteGraphInterceptionId } from "./app-route-ids.js";
@@ -1076,11 +1081,14 @@ export async function buildAppRouteGraph(
   // contribute synthetic sub-routes (e.g. @parallel/[...catcher]/page.tsx →
   // /:catcher+), but the ghost itself is not added to the routes table.
   const ghostParentRoutes: AppRouteGraphRoute[] = [];
+  // Layouts resolve through `findFileWithExts` everywhere else (see
+  // `discoverLayouts`), so declaration files stay layout candidates here too.
   for await (const file of scanWithExtensions(
     "**/layout",
     appDir,
     scanMatcher.extensions,
     excludeDir,
+    { keepDeclarationFiles: true },
   )) {
     const dir = path.dirname(file);
     const routeDir = dir === "." ? appDir : path.join(appDir, dir);
@@ -3233,6 +3241,14 @@ function markerForInterceptionConvention(convention: string): string {
  */
 const findFileProbeCache = new WeakMap<ValidFileMatcher, Map<string, string | null>>();
 
+// Page and route probes skip declaration files like the scanners do; layouts
+// and boundary files keep them (see `scanWithExtensions`).
+function lookupFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
+  return name === "page" || name === "route"
+    ? findRouteFileWithExts(dir, name, matcher)
+    : findFileWithExts(dir, name, matcher);
+}
+
 /**
  * Find a file by name (without extension) in a directory, checking configured
  * pageExtensions. Memoizes through `findFileProbeCache` when the matcher has a
@@ -3242,7 +3258,7 @@ const findFileProbeCache = new WeakMap<ValidFileMatcher, Map<string, string | nu
  */
 function findFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
   const cache = findFileProbeCache.get(matcher);
-  if (!cache) return findFileWithExts(dir, name, matcher);
+  if (!cache) return lookupFile(dir, name, matcher);
 
   const key = `${dir}\0${name}`;
   // `findFileWithExts` returns `string | null`, so a stored miss reads back as
@@ -3251,7 +3267,7 @@ function findFile(dir: string, name: string, matcher: ValidFileMatcher): string 
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
 
-  const result = findFileWithExts(dir, name, matcher);
+  const result = lookupFile(dir, name, matcher);
   cache.set(key, result);
   return result;
 }

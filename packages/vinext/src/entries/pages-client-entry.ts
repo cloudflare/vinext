@@ -23,7 +23,7 @@ import type {
 } from "../client/vinext-next-data.js";
 import { toClientRedirects } from "../client/client-redirects.js";
 import { toClientRewrites } from "../client/client-rewrites.js";
-import { findFileWithExts } from "./pages-entry-helpers.js";
+import { findRouteFileWithExts } from "./pages-entry-helpers.js";
 import { toSlash } from "pathslash";
 import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
 import { resolveClientRuntimeModule } from "./runtime-entry-module.js";
@@ -85,8 +85,8 @@ export async function generateClientEntry(
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
-  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
-  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
+  const appFilePath = findRouteFileWithExts(pagesDir, "_app", fileMatcher);
+  const errorFilePath = findRouteFileWithExts(pagesDir, "_error", fileMatcher);
   const hasApp = appFilePath !== null;
   const appPrefetchRoutes = options.appPrefetchRoutes ?? [];
   const appRouteHandlers = options.appRouteHandlers ?? [];

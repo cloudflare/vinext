@@ -13,7 +13,7 @@ import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
-import { findFileWithExts } from "./pages-entry-helpers.js";
+import { findRouteFileWithExts } from "./pages-entry-helpers.js";
 import { hasExportedName } from "../build/report.js";
 import {
   DEV_PAGES_FONT_OWNERS_ID,
@@ -110,13 +110,13 @@ export async function generatePagesRequestEntry(
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
-  const documentPath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  const documentPath = findRouteFileWithExts(pagesDir, "_document", fileMatcher);
   // A custom Document can attach getInitialProps dynamically or through an
   // imported base class. Keep the request-independent stage conservative
   // instead of growing a second JavaScript analyzer for this cache optimization.
   const hasRequestAwareDocument = documentPath !== null;
   const appRunsInitialProps = await namesGetInitialProps(
-    findFileWithExts(pagesDir, "_app", fileMatcher),
+    findRouteFileWithExts(pagesDir, "_app", fileMatcher),
   );
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (route: Route) => {
@@ -356,7 +356,7 @@ export async function generateServerEntry(
 
   // Build the route table — include filePath for SSR manifest lookup
   const appRunsInitialProps = await namesGetInitialProps(
-    findFileWithExts(pagesDir, "_app", fileMatcher),
+    findRouteFileWithExts(pagesDir, "_app", fileMatcher),
   );
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (r: Route, i: number) => {
@@ -374,9 +374,9 @@ export async function generateServerEntry(
   );
 
   // Check for _app, _document, and _error.
-  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
-  const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
-  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
+  const appFilePath = findRouteFileWithExts(pagesDir, "_app", fileMatcher);
+  const docFilePath = findRouteFileWithExts(pagesDir, "_document", fileMatcher);
+  const errorFilePath = findRouteFileWithExts(pagesDir, "_error", fileMatcher);
   // Embed the resolved _app path (or null) so the runtime can look it up
   // in the SSR manifest and include any CSS/JS chunks `_app` brings in
   // (e.g. global stylesheets imported by `_app.tsx`) alongside the page's

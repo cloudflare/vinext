@@ -2319,9 +2319,13 @@ describe("App Router integration", () => {
     const rscGlob = (rscEntries as string[]).join(",");
     const ssrGlob = (ssrEntries as string[]).join(",");
     const clientGlob = (clientEntries as string[]).join(",");
-    expect(rscGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
-    expect(ssrGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
-    expect(clientGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+    // `.ts` leaves skip TypeScript declaration files, which are never route
+    // modules (Next.js build/route-discovery.ts).
+    for (const entries of [rscEntries, ssrEntries, clientEntries]) {
+      expect(entries).toEqual(
+        expect.arrayContaining(["app/**/*.{tsx,jsx,js}", "app/**/!(.*|*.d).ts"]),
+      );
+    }
     expect(rscGlob).toContain("instrumentation.ts");
     expect(rscGlob).toContain("instrumentation-client.ts");
     expect(ssrGlob).toContain("instrumentation.ts");
@@ -2329,9 +2333,13 @@ describe("App Router integration", () => {
     expect(clientGlob).toContain("instrumentation.ts");
     expect(clientGlob).toContain("instrumentation-client.ts");
     // Pages Router modules render in ssr and hydrate in client, never in rsc.
-    expect(ssrEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
-    expect(clientEntries).toContain("pages/**/*.{tsx,ts,jsx,js}");
-    expect(rscEntries).not.toContain("pages/**/*.{tsx,ts,jsx,js}");
+    for (const entries of [ssrEntries, clientEntries]) {
+      expect(entries).toEqual(
+        expect.arrayContaining(["pages/**/*.{tsx,jsx,js}", "pages/**/!(.*|*.d).ts"]),
+      );
+    }
+    expect(rscEntries).not.toContain("pages/**/*.{tsx,jsx,js}");
+    expect(rscEntries).not.toContain("pages/**/!(.*|*.d).ts");
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {

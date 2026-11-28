@@ -53,6 +53,16 @@ function compareByStatus(a: { status: Status }, b: { status: Status }): number {
 
 type AppRouterFileType = "page" | "layout" | "route" | "loading" | "error" | "not-found";
 
+/** `skipsDeclarationFiles` for check's dotted extension list. */
+function isSkippedDeclarationFile(file: string, dottedExts: string[]): boolean {
+  return file.endsWith(".d.ts") && dottedExts.includes(".ts");
+}
+
+// The conventions whose declaration files the route scanners skip
+// (`scanWithExtensions`). Layouts and boundary files (loading, error,
+// not-found) resolve through `findFileWithExts`, which keeps them.
+const SCANNED_APP_ROUTER_FILE_TYPES: ReadonlySet<AppRouterFileType> = new Set(["page", "route"]);
+
 /**
  * True if `relFile` (relative to the app directory) is an App Router file of
  * the given convention. Files inside private `_folder` segments are not routes.
@@ -62,6 +72,9 @@ function isAppRouterFile(relFile: string, type: AppRouterFileType, exts: string[
   const segments = relFile.split("/");
   const basename = segments.pop() ?? "";
   if (segments.some((segment) => segment.startsWith("_"))) return false;
+  if (SCANNED_APP_ROUTER_FILE_TYPES.has(type) && isSkippedDeclarationFile(basename, exts)) {
+    return false;
+  }
   return exts.some((ext) => basename === `${type}${ext}`);
 }
 
@@ -1377,7 +1390,10 @@ export function checkConventions(root: string): CheckItem[] {
     if (isGitignored(dir, true, rules)) return [];
     return findSourceFiles(dir, scanExts, rules);
   };
-  const isPageFile = (file: string) => pageExts.some((ext) => file.endsWith(ext));
+  // Like the route scanners (`skipsDeclarationFiles`), TypeScript declaration
+  // files are not pages when `ts` is a page extension.
+  const isPageFile = (file: string) =>
+    !isSkippedDeclarationFile(file, pageExts) && pageExts.some((ext) => file.endsWith(ext));
 
   // Like the plugin's auto-detection, look for app/ and pages/ in a single base
   // directory: the root when either is there, else src/. proxy/middleware live

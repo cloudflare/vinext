@@ -97,11 +97,6 @@ export function createValidFileMatcher(
   };
 }
 
-/** Check if a file exists with any configured page extension. */
-export function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): boolean {
-  return matcher.dottedExtensions.some((ext) => existsSync(basePath + ext));
-}
-
 /**
  * Find a file by basename and configured page extension in a directory.
  * Returns the first matching absolute path, or null if not found.
@@ -112,6 +107,26 @@ export function findFileWithExts(
   matcher: ValidFileMatcher,
 ): string | null {
   for (const ext of matcher.dottedExtensions) {
+    const filePath = path.join(dir, name + ext);
+    if (existsSync(filePath)) return filePath;
+  }
+  return null;
+}
+
+/**
+ * `findFileWithExts` for page and route files, including the Pages Router's
+ * `_app`, `_document`, `_error`, `404` and `500`: like `scanWithExtensions`, it
+ * skips declaration files when `ts` is a page extension (Next.js
+ * build/route-discovery.ts `createPagesMapping`).
+ */
+export function findRouteFileWithExts(
+  dir: string,
+  name: string,
+  matcher: ValidFileMatcher,
+): string | null {
+  const skipDeclarations = skipsDeclarationFiles(matcher.extensions);
+  for (const ext of matcher.dottedExtensions) {
+    if (skipDeclarations && ext.endsWith(".d.ts")) continue;
     const filePath = path.join(dir, name + ext);
     if (existsSync(filePath)) return filePath;
   }
@@ -169,23 +184,57 @@ export function normalizeViteResolveExtensions(extensions: readonly string[]): s
 }
 
 /**
+ * Whether TypeScript declaration files are skipped as route candidates for the
+ * given (normalized, undotted) page extensions.
+ *
+ * Next.js skips them in webpack only when `ts` is a page extension
+ * (`build/route-discovery.ts` `createPagesMapping`), and always in Turbopack
+ * (`pages_structure.rs` / `app_structure.rs`). vinext skips them where both
+ * bundlers do, so an explicit `pageExtensions: ["d.ts"]` still routes them.
+ */
+function skipsDeclarationFiles(extensions: readonly string[]): boolean {
+  return extensions.includes("ts");
+}
+
+/**
  * Use function-form exclude for Node < 22.14 compatibility.
  *
  * Yields forward-slash relative paths: node's glob emits native (backslash)
  * separators on Windows, so each match goes through `toSlash` — this is the
  * boundary where external fs output enters the canonical forward-slash space.
+ *
+ * TypeScript declaration files are not page or route files when `ts` is a page
+ * extension (see `skipsDeclarationFiles`). Layout scans keep them
+ * (`keepDeclarationFiles`): webpack's app loader resolves `layout.d.ts`
+ * through `pageExtensions`, so only Turbopack skips it.
  */
 export async function* scanWithExtensions(
   stem: string,
   cwd: string,
   extensions: readonly string[],
   exclude?: (name: string) => boolean,
+  options: { keepDeclarationFiles?: boolean } = {},
 ): AsyncGenerator<string> {
   const pattern = includeDotDirectoryMatches(buildExtensionGlob(stem, extensions));
+  const skipDeclarations = !options.keepDeclarationFiles && skipsDeclarationFiles(extensions);
   for await (const file of glob(pattern, {
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
+    if (skipDeclarations && file.endsWith(".d.ts")) continue;
     yield toSlash(file);
   }
+}
+
+// optimizeDeps.entries globs for the route source files under `dir`.
+//
+// The dependency scan can't parse every TypeScript declaration file as a
+// module, so `.ts` leaves skip `*.d.ts`, even the ones a declaration page
+// extension routes (those load on request; entries only seed the scan). A
+// negated `!**/*.d.ts` entry would also prune directories named
+// `*.d.ts`: tinyglobby expands ignores to their `/**` descendants. The leading
+// negative extglob bypasses picomatch's dotfile guard, so it rejects `.*`
+// basenames itself.
+export function routeSourceOptimizeEntries(dir: string): string[] {
+  return [`${dir}/**/*.{tsx,jsx,js}`, `${dir}/**/!(.*|*.d).ts`];
 }

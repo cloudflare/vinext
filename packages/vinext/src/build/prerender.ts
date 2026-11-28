@@ -39,7 +39,7 @@ import {
 import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "vinext/shims/cache-handler";
 import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
-import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
+import { createValidFileMatcher, findRouteFileWithExts } from "../routing/file-matcher.js";
 import {
   interceptionMarkerPatternParam,
   normalizeStaticPathname,
@@ -1388,8 +1388,8 @@ export async function prerenderPages({
     assertRenderServersHealthy();
 
     // ── Render 404 page ───────────────────────────────────────────────────
-    const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
-    const hasErrorPage = findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
+    const hasCustom404 = findRouteFileWithExts(pagesDir, "404", fileMatcher) !== null;
+    const hasErrorPage = findRouteFileWithExts(pagesDir, "_error", fileMatcher) !== null;
     for (const locale of config.i18n?.locales ?? [undefined]) {
       if (!hasCustom404 && !hasErrorPage) break;
       try {
