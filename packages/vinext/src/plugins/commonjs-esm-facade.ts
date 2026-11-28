@@ -1,10 +1,11 @@
 import MagicString from "magic-string";
 import type { ESTree, Plugin } from "vite";
 import { parseProgram } from "./ast-utils.js";
-
-// vite-plugin-commonjs appends its export facade between these markers.
-const EXPORT_FACADE_START = "/* [vite-plugin-commonjs] export-statement-S */";
-const EXPORT_FACADE_END = "/* [vite-plugin-commonjs] export-statement-E */";
+import {
+  commonJsPrependedBlocksEnd,
+  EXPORT_FACADE_END,
+  EXPORT_FACADE_START,
+} from "./commonjs-markers.js";
 
 // The word `export`, but not the plugin's `export-runtime-S/E` marker comments.
 const EXPORT_KEYWORD_RE = /\bexport\b(?!-)/;
@@ -60,7 +61,12 @@ function findEsmCommonJsExportFacade(output: string): [number, number] | undefin
   const end = output.indexOf(EXPORT_FACADE_END, start);
   if (end === -1) return undefined;
   const facadeEnd = end + EXPORT_FACADE_END.length;
-  return hasEsmExports(output.slice(0, start) + output.slice(facadeEnd))
+  // The blocks the plugin prepends hold only imports and its polyfill, never
+  // an export. Leaving them out keeps a hashbang behind them from making the
+  // module unparsable before `commonJsProloguePlugin` moves them after it.
+  return hasEsmExports(
+    output.slice(commonJsPrependedBlocksEnd(output), start) + output.slice(facadeEnd),
+  )
     ? [start, facadeEnd]
     : undefined;
 }
