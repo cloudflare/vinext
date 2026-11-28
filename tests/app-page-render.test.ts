@@ -2822,8 +2822,11 @@ describe("app page render lifecycle", () => {
     expect(response.status).toBe(200);
   });
 
-  // As in Next.js, whose prerender writes such a page with a 200.
-  it("prerenders a special error a Suspense boundary caught as the page's 200 document", async () => {
+  // As in Next.js, whose prerender writes such a page with the error's status,
+  // beside the layout and Suspense fallback it prerendered.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  it("prerenders a special error a Suspense boundary caught with its status", async () => {
     const common = createCommonOptions();
     const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
     let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
@@ -2832,11 +2835,11 @@ describe("app page render lifecycle", () => {
       ...common.options,
       isPrerender: true,
       loadSsrHandler: async () => ({
-        async handleSsr(_rscStream, _navContext, _fontData, _options) {
-          // Trigger the captured onError callback representing a component throw
-          if (capturedOnError) {
-            capturedOnError(notFoundError, null, null);
-          }
+        async handleSsr(_rscStream, _navContext, _fontData, options) {
+          // The page's notFound() reaches the RSC render's onError, and its
+          // Suspense boundary reaches the SSR render's.
+          capturedOnError?.(notFoundError, null, null);
+          options?.onSsrError?.(notFoundError);
           return {
             htmlStream: createStream(["<html>fallback</html>"]),
             metadataReady: Promise.resolve(),
@@ -2850,7 +2853,8 @@ describe("app page render lifecycle", () => {
       },
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
     await expect(response.text()).resolves.toBe("<html>fallback</html>");
     expect(common.renderPageSpecialError).not.toHaveBeenCalled();
   });
@@ -3009,6 +3013,112 @@ describe("ISR storage of a page's special error", () => {
     },
   );
 
+  // A static prerender renders its document whole, so a special error that
+  // a Suspense boundary caught sets its status, as in Next.js's build. A
+  // speculative prerender waits for its document too, unless it turns dynamic.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  it.each([
+    { name: "notFound()", error: notFoundError, status: 404, headers: {}, speculative: false },
+    {
+      name: "redirect()",
+      error: redirectError,
+      status: 307,
+      headers: { location: "/target" },
+      speculative: false,
+    },
+    { name: "notFound()", error: notFoundError, status: 404, headers: {}, speculative: true },
+  ])(
+    "prerenders a $name a Suspense boundary caught with its status (speculative: $speculative)",
+    async ({ error, status, headers, speculative }) => {
+      const common = createCommonOptions();
+
+      const { markers, response } = await recordPrerenderSpecialErrors(() =>
+        renderAppPageLifecycle({
+          ...common.options,
+          isPrerender: true,
+          isProduction: true,
+          isSpeculativePrerender: speculative,
+          loadSsrHandler: async () => ({
+            async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
+              ssrOptions?.onSsrError?.(error);
+              return createStream(["<html>layout and fallback</html>"]);
+            },
+          }),
+          renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+          revalidateSeconds: 60,
+        }),
+      );
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get("location")).toBe(headers.location ?? null);
+      expect(markers).toEqual([{ headers, status }]);
+      expect(response.headers.get("cache-control")).toContain("s-maxage=60");
+      await expect(response.text()).resolves.toBe("<html>layout and fallback</html>");
+      expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+    },
+  );
+
+  // As on a redirect that rejects the shell, middleware's own Location stays
+  // on the response, and the prerender writes the redirect's.
+  it("keeps middleware's Location on a prerender whose Suspense boundary caught a redirect()", async () => {
+    const common = createCommonOptions();
+
+    const { markers, response } = await recordPrerenderSpecialErrors(() =>
+      renderAppPageLifecycle({
+        ...common.options,
+        isPrerender: true,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
+            ssrOptions?.onSsrError?.(redirectError);
+            return createStream(["<html>layout and fallback</html>"]);
+          },
+        }),
+        middlewareContext: {
+          headers: new Headers({ location: "/middleware-location" }),
+          status: null,
+        },
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+        revalidateSeconds: 60,
+      }),
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/middleware-location");
+    expect(markers).toEqual([{ headers: { location: "/target" }, status: 307 }]);
+    await response.text();
+  });
+
+  it("prerenders a page that turns dynamic after a Suspense boundary caught its notFound() as a 200", async () => {
+    const common = createCommonOptions();
+    let dynamicUsed = false;
+
+    const { markers, response } = await recordPrerenderSpecialErrors(() =>
+      renderAppPageLifecycle({
+        ...common.options,
+        consumeDynamicUsage: () => dynamicUsed,
+        isPrerender: true,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
+            ssrOptions?.onSsrError?.(notFoundError);
+            dynamicUsed = true;
+            return createStream(["<html>layout and fallback</html>"]);
+          },
+        }),
+        peekDynamicUsage: () => dynamicUsed,
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+        revalidateSeconds: 60,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(markers).toEqual([]);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    await response.text();
+  });
+
   // The boundary renders as its document streams, so its tagged fetches and
   // cacheLife() are known only once the document has been read.
   it("prerenders a notFound() boundary's tags and cacheLife", async () => {
@@ -3091,47 +3201,61 @@ describe("ISR storage of a page's special error", () => {
     await response.text();
   });
 
-  // Below a loading boundary the shell renders, so Next.js streams and stores
-  // a 200 document with the digest, and the page's RSC payload beside it.
-  it("stores a special error a Suspense boundary caught before the shell as a 200", async () => {
-    const common = createCommonOptions();
-    let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
+  // Below a loading boundary the shell renders. Next.js renders a static page
+  // whole before it answers, and stores the document with the digest and the
+  // page's RSC payload beside it with the error's status. A streamed miss has
+  // sent its 200, but stores that status.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  it.each([
+    { name: "notFound()", error: notFoundError, status: 404, headers: undefined },
+    { name: "redirect()", error: redirectError, status: 307, headers: { location: "/target" } },
+  ])(
+    "stores a $name a Suspense boundary caught with its status",
+    async ({ error, status, headers }) => {
+      const common = createCommonOptions();
+      let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
 
-    const response = await renderAppPageLifecycle({
-      ...common.options,
-      isProduction: true,
-      loadSsrHandler: async () => ({
-        // The SSR handler captures the page's Flight payload for the store.
-        async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
-          capturedOnError?.(notFoundError, null, null);
-          if (ssrOptions?.capturedRscDataRef && ssrOptions.sideStream) {
-            ssrOptions.capturedRscDataRef.value = new Response(ssrOptions.sideStream).arrayBuffer();
-          }
-          return {
-            htmlStream: createStream(["<html>loading</html>"]),
-            metadataReady: Promise.resolve(),
-            capturedRscData: ssrOptions?.capturedRscDataRef?.value ?? null,
-          };
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          // The SSR handler captures the page's Flight payload for the store.
+          async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
+            capturedOnError?.(error, null, null);
+            ssrOptions?.onSsrError?.(error);
+            if (ssrOptions?.capturedRscDataRef && ssrOptions.sideStream) {
+              ssrOptions.capturedRscDataRef.value = new Response(
+                ssrOptions.sideStream,
+              ).arrayBuffer();
+            }
+            return {
+              htmlStream: createStream(["<html>loading</html>"]),
+              metadataReady: Promise.resolve(),
+              capturedRscData: ssrOptions?.capturedRscDataRef?.value ?? null,
+            };
+          },
+        }),
+        renderToReadableStream(_element, opts) {
+          capturedOnError = opts.onError;
+          return createStream(["page-flight-with-digest"]);
         },
-      }),
-      renderToReadableStream(_element, opts) {
-        capturedOnError = opts.onError;
-        return createStream(["page-flight-with-digest"]);
-      },
-      revalidateSeconds: 60,
-    });
+        revalidateSeconds: 60,
+      });
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
-    await expect(response.text()).resolves.toBe("<html>loading</html>");
-    await Promise.all(common.waitUntilPromises);
-    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
-    const policy = { cacheControl: { revalidate: 60 }, tags: ["_N_T_/posts/post"] };
-    expect(readStoredEntries(common.isrSet)).toEqual({
-      "html:/posts/post": { html: "<html>loading</html>", policy, status: 200 },
-      "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 200 },
-    });
-  });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+      await expect(response.text()).resolves.toBe("<html>loading</html>");
+      await Promise.all(common.waitUntilPromises);
+      expect(common.renderPageSpecialError).not.toHaveBeenCalled();
+      const policy = { cacheControl: { revalidate: 60 }, tags: ["_N_T_/posts/post"] };
+      expect(readStoredEntries(common.isrSet)).toEqual({
+        "html:/posts/post": { headers, html: "<html>loading</html>", policy, status },
+        "rsc:/posts/post": { headers, html: "", policy, rsc: "page-flight-with-digest", status },
+      });
+    },
+  );
 
   it("streams a special error a Suspense boundary caught on a force-dynamic page as a 200", async () => {
     const common = createCommonOptions();
@@ -3142,8 +3266,9 @@ describe("ISR storage of a page's special error", () => {
       isForceDynamic: true,
       isProduction: true,
       loadSsrHandler: async () => ({
-        async handleSsr() {
+        async handleSsr(_rscStream, _navigationContext, _fontData, ssrOptions) {
           capturedOnError?.(redirectError, null, null);
+          ssrOptions?.onSsrError?.(redirectError);
           return createStream(["<html>loading</html>"]);
         },
       }),
@@ -3607,23 +3732,28 @@ describe("ISR storage of a page's special error", () => {
       });
     });
 
-    it("stores a special error a Suspense boundary caught as a 200", async () => {
-      let cancelled = false;
+    // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+    it("stores a special error a Suspense boundary caught with its status", async () => {
       const { common, response } = await renderRscMiss({
         flightError: notFoundError,
-        handleSsr: async () =>
-          new ReadableStream<Uint8Array>({
-            cancel() {
-              cancelled = true;
+        handleSsr: async (...args) => {
+          const ssrOptions = args[3] as { onSsrError: (error: unknown) => unknown };
+          // The document renders whole: its Suspense boundary catches the
+          // error after the shell.
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              ssrOptions.onSsrError(notFoundError);
+              controller.close();
             },
-          }),
+          });
+        },
       });
 
       await response.text();
       await Promise.all(common.waitUntilPromises);
-      expect(cancelled).toBe(true);
       expect(readStoredEntries(common.isrSet)).toEqual({
-        "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 200 },
+        "rsc:/posts/post": { html: "", policy, rsc: "page-flight-with-digest", status: 404 },
       });
     });
 

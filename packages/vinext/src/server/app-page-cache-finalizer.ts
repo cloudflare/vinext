@@ -36,6 +36,7 @@ import {
   resolveAppPageRscResponseStatus,
   type AppPageRscRenderStatus,
 } from "./app-page-rsc-render-status.js";
+import type { AppPageStaticGenerationStatus } from "./app-page-static-generation-status.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -69,6 +70,11 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
   isStaticEligible: boolean;
   /** An RSC render's status, from its document's shell. */
   resolveRscRenderStatus?: () => Promise<AppPageRscRenderStatus>;
+  /**
+   * A document render's stored status, once its body is complete: that of the
+   * HTTP errors its Suspense boundaries caught, which a static render takes.
+   */
+  resolveStoredStatus?: () => AppPageStaticGenerationStatus | null;
   revalidateSeconds: number | null;
   /** Hands the CDN adapter the page's document to store beside the response. */
   captureAdmittedDocument?: (document: CdnAppPageDocument | null) => void;
@@ -105,6 +111,8 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
    */
   status?: number;
   headers?: Record<string, string>;
+  /** See FinalizeAppPageCacheabilityEvaluationOptions. Wins over `status`. */
+  resolveStoredStatus?: () => AppPageStaticGenerationStatus | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -286,7 +294,16 @@ function finalizeEvaluatedAppPageResponse(
           tags: options.getPageTags(),
         }
       : { cacheable: false, reason: "render did not produce a cache policy" };
-    const admitted = renderStatus ? applyRscRenderStatus(outcome, renderStatus) : outcome;
+    const storedStatus = renderStatus ? null : (options.resolveStoredStatus?.() ?? null);
+    const admitted = renderStatus
+      ? applyRscRenderStatus(outcome, renderStatus)
+      : storedStatus && outcome.cacheable
+        ? {
+            ...outcome,
+            status: storedStatus.status,
+            ...(storedStatus.headers ? { headers: storedStatus.headers } : {}),
+          }
+        : outcome;
     // Every query shares the document's entry too.
     settleAdmittedDocument(
       options.captureAdmittedDocument,
@@ -453,7 +470,12 @@ export function finalizeAppPageHtmlCacheResponse(
         state: observationState,
       });
       const linkHeader = options.linkHeader;
-      const status = options.status ?? 200;
+      // The body is complete, so the render has reported every error.
+      const storedStatus = options.resolveStoredStatus?.() ?? null;
+      const status = storedStatus?.status ?? options.status ?? 200;
+      const storedHeaders = storedStatus?.headers
+        ? { ...options.headers, ...storedStatus.headers }
+        : options.headers;
       // Every query shares these entries, so a render not proven to leave the
       // query unread is never stored.
       if (
@@ -471,7 +493,7 @@ export function finalizeAppPageHtmlCacheResponse(
             undefined,
             status,
             htmlRenderObservation,
-            linkHeader ? { ...options.headers, link: linkHeader } : options.headers,
+            linkHeader ? { ...storedHeaders, link: linkHeader } : storedHeaders,
           ),
           { cacheControl, tags: pageTags },
         ),
@@ -481,7 +503,7 @@ export function finalizeAppPageHtmlCacheResponse(
         writes.push(
           options.isrSet(
             rscKey,
-            buildAppPageCacheValue("", rscData, status, rscRenderObservation, options.headers),
+            buildAppPageCacheValue("", rscData, status, rscRenderObservation, storedHeaders),
             { cacheControl, tags: pageTags },
           ),
         );

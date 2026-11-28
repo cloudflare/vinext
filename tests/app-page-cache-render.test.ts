@@ -243,6 +243,45 @@ describe("renderAppPageCacheArtifacts", () => {
     expect(new TextDecoder().decode(result.rscData)).toBe("page-flight-with-digest");
   });
 
+  // A regeneration is a static render, so a special error that a Suspense
+  // boundary caught sets its status, beside the layout and fallback it rendered.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  it("regenerates a page whose Suspense boundary caught its redirect() with the redirect's status", async () => {
+    const redirectError = { digest: "NEXT_REDIRECT;replace;/target;307;" };
+    const result = await renderAppPageCacheArtifacts({
+      basePath: "/docs",
+      captureRscData: true,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.sideStream && options.capturedRscDataRef) {
+            options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+          }
+          options?.onSsrError?.(redirectError);
+          return createStream(["<html>layout and fallback</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result).toMatchObject({
+      headers: { location: "/docs/target" },
+      html: "<html>layout and fallback</html>",
+      status: 307,
+      usedDynamicApi: false,
+    });
+    expect(new TextDecoder().decode(result.rscData)).toBe("page-flight-with-digest");
+  });
+
   it("stores a special error's document that slot boundaries caught it in", async () => {
     const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
     const renderShellSpecialError = vi.fn(
@@ -317,6 +356,39 @@ describe("renderAppPageCacheArtifacts", () => {
         route: { pattern: "/posts/[slug]", routeSegments: [] },
       }),
     ).rejects.toBe(failure);
+  });
+
+  // A regeneration that turned dynamic, such as one PPR keeps, isn't a static
+  // render, so a notFound() a Suspense boundary caught after connection()
+  // leaves it a 200, as in Next.js.
+  // Ported from Next.js: test/e2e/prerendered-http-status-codes/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/prerendered-http-status-codes/index.test.ts
+  it("keeps the 200 of a regeneration that turned dynamic before a Suspense boundary caught its notFound()", async () => {
+    const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: false,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          markDynamicUsage();
+          options?.onSsrError?.(notFoundError);
+          return createStream(["<html>layout and fallback</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderToReadableStream: () => createStream(["flight-data"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result.usedDynamicApi).toBe(true);
+    expect(result.status).toBeUndefined();
+    expect(result.headers).toBeUndefined();
   });
 
   it("reports a regeneration that used a dynamic API", async () => {

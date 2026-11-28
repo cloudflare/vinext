@@ -14,12 +14,13 @@ import {
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
+import { createAppPageStaticGenerationStatusCapture } from "./app-page-static-generation-status.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 
 /**
  * The status of a finished RSC render, as Next.js's static generation decides
- * it from the document's shell. A special error that rejects the shell sets
- * it. One inside a Suspense boundary leaves the render a 200.
+ * it from the document's render: a special error that rejects the shell, or
+ * one a Suspense boundary catches, sets it.
  */
 export type AppPageRscRenderStatus =
   | {
@@ -70,10 +71,10 @@ const PAGE_STATUS: AppPageRscRenderStatus = { kind: "page" };
 
 /**
  * Resolve an RSC-only render's status once its Flight payload is complete.
- * Flight can't tell whether a special error sits inside a Suspense boundary, so
- * a render that threw one renders the document's shell from the same payload,
- * as Next.js's static generation renders HTML beside RSC. Its server
- * components don't run again. A render without a special error is a 200.
+ * Flight can't tell where a special error sits, so a render that threw one
+ * renders the document from the same payload, as Next.js's static generation
+ * renders HTML beside RSC. Its server components don't run again. A render
+ * without a special error is a 200.
  *
  * With `document`, every render renders its document from the payload, as
  * Next.js keeps a page's document and RSC payload in one entry.
@@ -184,6 +185,7 @@ async function renderAppPageRscRenderStatus(
     documentOptions?.clientTraceMetadata && documentOptions.clientTraceMetadata.length > 0
       ? crypto.randomUUID()
       : undefined;
+  const staticGenerationStatus = createAppPageStaticGenerationStatusCapture(options.basePath);
   let rendered: Awaited<ReturnType<AppPageSsrHandler["handleSsr"]>> | null;
   try {
     rendered = await unlessExpired(
@@ -200,7 +202,10 @@ async function renderAppPageRscRenderStatus(
               getInitialNavigationCacheMetadata: documentOptions.getInitialNavigationCacheMetadata,
               isCacheCandidate: true,
               mirrorNextFlight: documentOptions.mirrorNextFlight,
-              onSsrError: documentOptions.onSsrError,
+              onSsrError(error) {
+                staticGenerationStatus.capture(error);
+                return documentOptions.onSsrError(error);
+              },
               reactMaxHeadersLength: documentOptions.reactMaxHeadersLength,
               signal,
             }
@@ -208,7 +213,10 @@ async function renderAppPageRscRenderStatus(
               isStaticGeneration: true,
               // The RSC render already reported its errors, and this document
               // is discarded.
-              onSsrError: () => undefined,
+              onSsrError(error) {
+                staticGenerationStatus.capture(error);
+                return undefined;
+              },
             }),
       }),
       signal,
@@ -238,12 +246,10 @@ async function renderAppPageRscRenderStatus(
   }
   if (rendered === null) return expiredDocumentStatus(options);
   const htmlStream = isAppSsrRenderResult(rendered) ? rendered.htmlStream : rendered;
-  if (!documentOptions) {
-    void htmlStream.cancel().catch(() => {});
-    return PAGE_STATUS;
-  }
   let html: string | null;
   try {
+    // Without a document to store, the document still renders whole, as the
+    // render threw a special error a Suspense boundary may have caught.
     html = await readDocumentHtml(htmlStream, signal);
   } catch {
     // A document that fails after its shell isn't stored, as an HTML
@@ -254,6 +260,12 @@ async function renderAppPageRscRenderStatus(
   // A client page that read its searchParams while the document rendered
   // makes the document dynamic, as it does an HTML request's.
   if (isRenderDynamicLatched()) return PAGE_STATUS;
+  // A special error a Suspense boundary caught sets the static render's
+  // status. As for one that rejects the shell, the RSC miss stores its payload
+  // alone and leaves the document to an HTML request.
+  const caughtStatus = staticGenerationStatus.get();
+  if (caughtStatus) return { kind: "special-error", ...caughtStatus };
+  if (!documentOptions) return PAGE_STATUS;
   const linkHeader = buildAppPageLinkHeader(
     isAppSsrRenderResult(rendered) ? rendered.linkHeader : undefined,
     buildAppPageFontLinkHeader(fontData.preloads),

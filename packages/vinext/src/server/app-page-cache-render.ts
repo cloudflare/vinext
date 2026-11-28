@@ -26,6 +26,7 @@ import {
   isAppSsrRenderResult,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
+import { createAppPageStaticGenerationStatusCapture } from "./app-page-static-generation-status.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
@@ -136,6 +137,15 @@ async function renderAppPageCacheArtifactsImpl(
   const ssrHandler = await options.loadSsrHandler();
   let htmlResult: Awaited<ReturnType<AppPageSsrHandler["handleSsr"]>> | null = null;
   let specialErrorDocument: AppPageCacheSpecialErrorDocument | null = null;
+  // A regeneration that stays static sets its status from the HTTP errors its
+  // document's Suspense boundaries catch, as Next.js's static generation does.
+  const staticGenerationStatus = createAppPageStaticGenerationStatusCapture(options.basePath);
+  const reportSsrError = (error: unknown): unknown => {
+    staticGenerationStatus.capture(error);
+    if (!options.onSsrError) return undefined;
+    recordAppPageRenderError(renderSpan, error);
+    return options.onSsrError(error);
+  };
   try {
     htmlResult = await ssrHandler.handleSsr(
       rscCapture.ssrStream,
@@ -160,16 +170,8 @@ async function renderAppPageCacheArtifactsImpl(
         resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
         onSsrError:
           options.onSsrError && options.isCapturedRscError
-            ? createAppPageSsrErrorHandler((error) => {
-                recordAppPageRenderError(renderSpan, error);
-                return options.onSsrError?.(error);
-              }, options.isCapturedRscError)
-            : options.onSsrError
-              ? (error) => {
-                  recordAppPageRenderError(renderSpan, error);
-                  return options.onSsrError?.(error);
-                }
-              : undefined,
+            ? createAppPageSsrErrorHandler(reportSsrError, options.isCapturedRscError)
+            : reportSsrError,
         ...(rscCapture.sideStream
           ? {
               sideStream: rscCapture.sideStream,
@@ -235,6 +237,10 @@ async function renderAppPageCacheArtifactsImpl(
   // SSR runs in a child scope, so a client page's searchParams read there
   // reaches only the render's dynamic latch.
   const usedDynamicApi = consumeDynamicUsage() || isRenderDynamicLatched();
+  // A render that turned dynamic isn't a static one, so it keeps its 200.
+  const caughtStatus =
+    htmlResult && !specialErrorDocument && !usedDynamicApi ? staticGenerationStatus.get() : null;
+  if (caughtStatus) specialErrorDocument = { ...caughtStatus, html, linkHeader };
 
   const htmlRenderObservation = createAppPageRenderObservation({
     boundaryOutcome: { kind: "success" },

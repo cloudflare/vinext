@@ -31,6 +31,10 @@ import {
 } from "./app-page-execution.js";
 import { createAppPageRscRenderStatusResolver } from "./app-page-rsc-render-status.js";
 import {
+  createAppPageStaticGenerationStatusCapture,
+  type AppPageStaticGenerationStatus,
+} from "./app-page-static-generation-status.js";
+import {
   applyClientStaleTimeHeader,
   applyEdgeRuntimeHeader,
   buildAppPageHtmlResponse,
@@ -1192,6 +1196,12 @@ async function renderAppPageLifecycleImpl(
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
   let shellSpecialError: AppPageSpecialError | null = null;
+  // The HTTP errors the document's render reports, which set the status of a
+  // static render, as Next.js's static generation does. A PPR fallback shell's
+  // aborted render is not one.
+  const staticGenerationStatus = createAppPageStaticGenerationStatusCapture(options.basePath);
+  const resolveStaticGenerationStatus = () =>
+    options.pprFallbackShellSignal === undefined ? staticGenerationStatus.get() : null;
 
   const resolveHtmlCacheWrite = (dynamicUsedDuringRender: boolean) => {
     const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({
@@ -1230,6 +1240,7 @@ async function renderAppPageLifecycleImpl(
       headers?: Record<string, string>;
       htmlResponsePolicy: ReturnType<typeof resolveAppPageHtmlResponsePolicy>;
       linkHeader: string | null;
+      resolveStoredStatus?: () => AppPageStaticGenerationStatus | null;
       status?: number;
     },
   ): Response =>
@@ -1289,6 +1300,7 @@ async function renderAppPageLifecycleImpl(
         revalidateSeconds,
       }),
       linkHeader: write.linkHeader,
+      resolveStoredStatus: write.resolveStoredStatus,
       status: write.status,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
@@ -1485,6 +1497,7 @@ async function renderAppPageLifecycleImpl(
       );
       const onSsrError: AppPageBoundaryOnError = (error, requestInfo, errorContext) => {
         if (renderSpan) recordAppPageRenderError(renderSpan, error);
+        staticGenerationStatus.capture(error);
         return baseOnSsrError(error, requestInfo, errorContext);
       };
       return renderAppPageHtmlStream({
@@ -1629,9 +1642,9 @@ async function renderAppPageLifecycleImpl(
   }
 
   // A special error that a Suspense boundary, such as a loading.tsx, caught
-  // didn't reject the shell. As in Next.js, the document streams as a 200
-  // with the digest, which the client's boundary renders, in dev, dynamic and
-  // ISR renders alike, and an ISR render is stored with that status.
+  // didn't reject the shell. The document streams with the digest, which the
+  // client's boundary renders. A dev or dynamic render stays a 200, but a
+  // static one takes the error's status, as in Next.js (see below).
   // Eagerly read values that must be captured before the stream is consumed.
   let dynamicUsedDuringRender = consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
@@ -1672,6 +1685,40 @@ async function renderAppPageLifecycleImpl(
   }
   dynamicUsedDuringRender = dynamicUsedDuringRender || consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
+
+  // A static render that rendered its document whole before answering, a
+  // prerender or an adapter's regeneration or warm-up, answers with the status
+  // of the HTTP errors its Suspense boundaries caught, beside the layout and
+  // fallback it rendered, as Next.js's static generation does. A request that
+  // streams its document has sent its 200, but stores the status (see
+  // `finalizeHtmlCacheWrite`).
+  const completedStaticStatus =
+    (shouldWaitForAllReady || stopSpeculativeMetadataWaitOnDynamicUsage !== undefined) &&
+    !dynamicUsedDuringRender &&
+    !htmlRender.shellErrorRecovered &&
+    resolveEarlyResponseCacheControl(options) === null
+      ? resolveStaticGenerationStatus()
+      : null;
+  const htmlMiddlewareContext: AppPageMiddlewareContext = completedStaticStatus
+    ? { headers: options.middlewareContext.headers, status: completedStaticStatus.status }
+    : options.middlewareContext;
+  // As on a redirect that rejects the shell, the error owns the status, but
+  // middleware's own `Location` stays on the response. The entries store the
+  // redirect's.
+  const applyCompletedStaticStatusHeaders = (response: Response): Response => {
+    for (const [name, value] of Object.entries(completedStaticStatus?.headers ?? {})) {
+      if (options.middlewareContext.headers?.has(name)) continue;
+      response.headers.set(name, value);
+    }
+    return response;
+  };
+  if (completedStaticStatus && options.isPrerender === true) {
+    // prerender.ts writes the page with its status and `location`.
+    getRequestExecutionContext()?.recordPrerenderSpecialError?.({
+      headers: completedStaticStatus.headers ?? {},
+      status: completedStaticStatus.status,
+    });
+  }
 
   const draftCookie = options.getDraftModeCookieHeader();
   let dynamicUsedBeforeContextCleanup = dynamicUsedDuringRender;
@@ -1721,16 +1768,18 @@ async function renderAppPageLifecycleImpl(
   }
 
   if (shouldWriteHtmlCache) {
-    const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
-      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
-      draftCookie,
-      linkHeader,
-      isEdgeRuntime: options.isEdgeRuntime,
-      middlewareContext: options.middlewareContext,
-      policy: htmlResponsePolicy,
-      requestCacheLife: requestCacheLifeForPrerender,
-      timing: htmlResponseTiming,
-    });
+    const isrResponse = applyCompletedStaticStatusHeaders(
+      buildAppPageHtmlResponse(safeHtmlStream, {
+        cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
+        draftCookie,
+        linkHeader,
+        isEdgeRuntime: options.isEdgeRuntime,
+        middlewareContext: htmlMiddlewareContext,
+        policy: htmlResponsePolicy,
+        requestCacheLife: requestCacheLifeForPrerender,
+        timing: htmlResponseTiming,
+      }),
+    );
 
     if (options.isPrerender === true) {
       return isrResponse;
@@ -1740,19 +1789,22 @@ async function renderAppPageLifecycleImpl(
       capturedDynamicUsageBeforeContextCleanup: () => dynamicUsedBeforeContextCleanup,
       htmlResponsePolicy,
       linkHeader: linkHeader ?? null,
+      resolveStoredStatus: resolveStaticGenerationStatus,
     });
   }
 
-  const response = buildAppPageHtmlResponse(safeHtmlStream, {
-    cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
-    draftCookie,
-    linkHeader,
-    isEdgeRuntime: options.isEdgeRuntime,
-    middlewareContext: options.middlewareContext,
-    policy: htmlResponsePolicy,
-    requestCacheLife: requestCacheLifeForPrerender,
-    timing: htmlResponseTiming,
-  });
+  const response = applyCompletedStaticStatusHeaders(
+    buildAppPageHtmlResponse(safeHtmlStream, {
+      cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
+      draftCookie,
+      linkHeader,
+      isEdgeRuntime: options.isEdgeRuntime,
+      middlewareContext: htmlMiddlewareContext,
+      policy: htmlResponsePolicy,
+      requestCacheLife: requestCacheLifeForPrerender,
+      timing: htmlResponseTiming,
+    }),
+  );
   return finalizeAppPageCacheabilityEvaluationResponse(response, {
     capturedDynamicUsageBeforeContextCleanup() {
       return dynamicUsedBeforeContextCleanup;
@@ -1767,6 +1819,7 @@ async function renderAppPageLifecycleImpl(
     },
     expireSeconds,
     isStaticEligible: options.isStaticEligible,
+    resolveStoredStatus: resolveStaticGenerationStatus,
     revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
       isDynamicError: options.isDynamicError,
       isForceStatic: options.isForceStatic,

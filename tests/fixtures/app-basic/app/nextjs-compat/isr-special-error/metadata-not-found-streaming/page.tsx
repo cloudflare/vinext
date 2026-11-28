@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
 
 // An ISR page whose generateMetadata() calls notFound(). Most user agents
-// stream metadata, so the error doesn't reject the shell, and Next.js stores
-// the 200 document with the digest.
+// stream metadata, so the error doesn't reject the shell, and Next.js's static
+// generation stores the document with the digest as a 404.
 export const revalidate = 60;
 
 export async function generateMetadata() {
