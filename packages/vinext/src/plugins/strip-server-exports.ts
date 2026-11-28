@@ -229,7 +229,7 @@ function walkAstWithAncestors(
 }
 
 function renderImportDeclaration(
-  code: string,
+  slice: (start: number, end: number) => string,
   statement: PositionedNode,
   removed: Set<PositionedNode>,
 ): string {
@@ -244,21 +244,21 @@ function renderImportDeclaration(
   );
   const namedSpecifiers = kept.filter((specifier) => specifier.type === "ImportSpecifier");
   const clauses: string[] = [];
-  if (defaultSpecifier) clauses.push(code.slice(defaultSpecifier.start, defaultSpecifier.end));
+  if (defaultSpecifier) clauses.push(slice(defaultSpecifier.start, defaultSpecifier.end));
   if (namespaceSpecifier) {
-    clauses.push(code.slice(namespaceSpecifier.start, namespaceSpecifier.end));
+    clauses.push(slice(namespaceSpecifier.start, namespaceSpecifier.end));
   }
   if (namedSpecifiers.length > 0) {
     clauses.push(
-      `{ ${namedSpecifiers.map((specifier) => code.slice(specifier.start, specifier.end)).join(", ")} }`,
+      `{ ${namedSpecifiers.map((specifier) => slice(specifier.start, specifier.end)).join(", ")} }`,
     );
   }
 
-  return `import ${clauses.join(", ")} from ${code.slice(statement.source.start, statement.end)}`;
+  return `import ${clauses.join(", ")} from ${slice(statement.source.start, statement.end)}`;
 }
 
 function renderExportDeclaration(
-  code: string,
+  slice: (start: number, end: number) => string,
   statement: PositionedNode,
   removed: Set<PositionedNode>,
 ): string {
@@ -266,8 +266,8 @@ function renderExportDeclaration(
     (specifier) => !removed.has(specifier),
   );
   if (kept.length === 0) return "";
-  return `export { ${kept.map((specifier) => code.slice(specifier.start, specifier.end)).join(", ")} }${
-    statement.source ? ` from ${code.slice(statement.source.start, statement.end)}` : ";"
+  return `export { ${kept.map((specifier) => slice(specifier.start, specifier.end)).join(", ")} }${
+    statement.source ? ` from ${slice(statement.source.start, statement.end)}` : ";"
   }`;
 }
 
@@ -282,7 +282,7 @@ function renderBindingPattern(
   removedNames: ReadonlySet<string>,
 ): string | null {
   if (pattern.type === "Identifier") {
-    return removedNames.has(pattern.name) ? null : pattern.name;
+    return removedNames.has(pattern.name) ? null : slice(pattern.start, pattern.end);
   }
   if (pattern.type === "MemberExpression") {
     const root = assignmentTargetIdentifiers(pattern)[0];
@@ -443,6 +443,83 @@ type StripServerExportsResult = {
  * - crates/next-custom-transforms/src/transforms/strip_page_exports.rs
  */
 export function stripServerExports(code: string): StripServerExportsResult | null {
+  const edits = serverExportEdits(code);
+  if (!edits) return null;
+  const string = new MagicString(code);
+  for (const edit of edits) string.overwrite(edit.start, edit.end, edit.replacement);
+  // The MagicString already tracks every overwrite, so emit its sourcemap
+  // instead of dropping it — removing whole statements shifts line numbers for
+  // the rest of the module, which would otherwise break client-build debugging.
+  return magicStringTransformResult(string);
+}
+
+/**
+ * The ranges of `code` that `stripServerExports` removes. The source a rewrite
+ * copies into its replacement is left out, and so is text around each copy
+ * that matches the replacement's own (e.g. `import {` and `} from`).
+ */
+export function serverExportRewrittenRanges(
+  code: string,
+): Array<{ start: number; end: number }> | null {
+  const edits = serverExportEdits(code);
+  if (!edits) return null;
+  return edits.flatMap((edit) => {
+    // Pair each gap between copies with the replacement text between them;
+    // copies the replacement reorders leave their gaps unpaired. Copies are
+    // recorded in render order (an object pattern renders a property's value
+    // before its key), so walk them in source order.
+    const copies = [...edit.copies].sort((left, right) => left.start - right.start);
+    const gaps: Array<{ start: number; end: number; replacement: string }> = [];
+    let cursor = edit.start;
+    let replacementCursor: number | null = 0;
+    for (const copy of copies) {
+      const position: number =
+        replacementCursor === null || copy.start < cursor
+          ? -1
+          : edit.replacement.indexOf(code.slice(copy.start, copy.end), replacementCursor);
+      gaps.push({
+        start: cursor,
+        end: copy.start,
+        replacement:
+          position === -1 || replacementCursor === null
+            ? ""
+            : edit.replacement.slice(replacementCursor, position),
+      });
+      replacementCursor = position === -1 ? null : position + copy.end - copy.start;
+      cursor = Math.max(cursor, copy.end);
+    }
+    gaps.push({
+      start: cursor,
+      end: edit.end,
+      replacement: replacementCursor === null ? "" : edit.replacement.slice(replacementCursor),
+    });
+
+    return gaps.flatMap(({ start, end, replacement }) => {
+      let prefix = 0;
+      const shortest = Math.min(end - start, replacement.length);
+      while (prefix < shortest && code[start + prefix] === replacement[prefix]) prefix++;
+      let suffix = 0;
+      while (
+        suffix < shortest - prefix &&
+        code[end - 1 - suffix] === replacement[replacement.length - 1 - suffix]
+      ) {
+        suffix++;
+      }
+      return start + prefix < end - suffix ? [{ start: start + prefix, end: end - suffix }] : [];
+    });
+  });
+}
+
+type RenderedEdit = {
+  start: number;
+  end: number;
+  replacement: string;
+  /** Ranges of the source copied verbatim into `replacement`. */
+  copies: Array<{ start: number; end: number }>;
+};
+
+// The outermost edits, in source order, with their replacements rendered.
+function serverExportEdits(code: string): RenderedEdit[] | null {
   if (!hasServerExportCandidate(code) && !hasExportAllCandidate(code)) {
     return null;
   }
@@ -497,6 +574,12 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       ...redeclarations.filter((redeclaration) => redeclaration.name === name),
     ];
   };
+  // Copies of kept source in the edit being rendered.
+  let copies: Array<{ start: number; end: number }> = [];
+  const copy = (start: number, end: number): string => {
+    if (start < end) copies.push({ start, end });
+    return code.slice(start, end);
+  };
   const renderEdit = (edit: Edit): string =>
     typeof edit.replacement === "function" ? edit.replacement() : edit.replacement;
   // Copies kept source with the outermost edits inside it applied. Callers
@@ -514,10 +597,10 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     let cursor = start;
     for (const edit of nested) {
       if (edit.start < cursor) continue;
-      rendered += code.slice(cursor, edit.start) + renderEdit(edit);
+      rendered += copy(cursor, edit.start) + renderEdit(edit);
       cursor = edit.end;
     }
-    return rendered + code.slice(cursor, end);
+    return rendered + copy(cursor, end);
   };
   const bindingPositions = new Set<number>();
   const references = new Map<string, number[]>();
@@ -1030,7 +1113,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     edits.push({
       start: statement.start,
       end: statement.end,
-      replacement: renderExportDeclaration(code, statement, removed),
+      replacement: () => renderExportDeclaration(copy, statement, removed),
     });
   }
   for (const [declaration, removed] of variableRemovals) {
@@ -1071,26 +1154,25 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     edits.push({
       start: statement.start,
       end: statement.end,
-      replacement: renderImportDeclaration(code, statement, removed),
+      replacement: () => renderImportDeclaration(copy, statement, removed),
     });
   }
 
   if (edits.length === 0) return null;
 
-  const string = new MagicString(code);
   const uniqueEdits = [
     ...new Map(edits.map((edit) => [`${edit.start}:${edit.end}`, edit])).values(),
   ].sort((left, right) => left.start - right.start || right.end - left.end);
   // Nested assignments can sit inside a range that is already being removed or
   // re-rendered; the outermost edit wins and renders any nested edits itself.
+  const outermost: RenderedEdit[] = [];
   let lastEnd = Number.NEGATIVE_INFINITY;
   for (const edit of uniqueEdits) {
     if (edit.start < lastEnd) continue;
-    string.overwrite(edit.start, edit.end, renderEdit(edit));
+    copies = [];
+    const replacement = renderEdit(edit);
+    outermost.push({ start: edit.start, end: edit.end, replacement, copies });
     lastEnd = edit.end;
   }
-  // The MagicString already tracks every overwrite, so emit its sourcemap
-  // instead of dropping it — removing whole statements shifts line numbers for
-  // the rest of the module, which would otherwise break client-build debugging.
-  return magicStringTransformResult(string);
+  return outermost;
 }
