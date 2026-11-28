@@ -19,6 +19,10 @@ import {
 } from "../benchmarks/perf/nextjs-input-fingerprint.mts";
 import { DEFAULT_PAIRED_ROUNDS, pairedRevisionOrder } from "../benchmarks/perf/pairing.mts";
 
+// Windows can't spawn the mock `gh`, an extensionless Node script. The
+// validator only runs in perf-publish.yml, on ubuntu.
+const itWithMockGh = it.skipIf(process.platform === "win32");
+
 describe("paired performance benchmarks", () => {
   it("profiles the project Vite CLI through native Node on macOS", () => {
     const script = readFileSync(
@@ -723,7 +727,7 @@ describe("paired performance benchmarks", () => {
     expect(comment).toContain("mixed paired/historical baselines");
   });
 
-  it("accepts legacy PR artifacts without skipped implementation metadata", () => {
+  itWithMockGh("accepts legacy PR artifacts without skipped implementation metadata", () => {
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
     const measuredAt = "2026-06-18T12:00:00.000Z";
@@ -747,7 +751,7 @@ describe("paired performance benchmarks", () => {
     });
   });
 
-  it("accepts dispatched PR artifacts that skip unchanged Next.js", () => {
+  itWithMockGh("accepts dispatched PR artifacts that skip unchanged Next.js", () => {
     const workflowSha = "c".repeat(40);
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
@@ -789,7 +793,7 @@ describe("paired performance benchmarks", () => {
     });
   });
 
-  it("accepts dispatched main artifacts after main advances", () => {
+  itWithMockGh("accepts dispatched main artifacts after main advances", () => {
     const workflowSha = "c".repeat(40);
     // The validator fetches main from a disposable repository's local origin,
     // so it reaches neither the network nor this checkout's history.
@@ -821,7 +825,7 @@ describe("paired performance benchmarks", () => {
     );
   });
 
-  it("rejects dispatched artifacts from workflow refs outside main", () => {
+  itWithMockGh("rejects dispatched artifacts from workflow refs outside main", () => {
     const workflowSha = "c".repeat(40);
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
@@ -841,7 +845,7 @@ describe("paired performance benchmarks", () => {
     ).toThrow("Dispatched workflow ref is not the default branch");
   });
 
-  it("validates skipped Next.js against the synthetic merge commit", () => {
+  itWithMockGh("validates skipped Next.js against the synthetic merge commit", () => {
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
     const mergeSha = "c".repeat(40);
@@ -883,7 +887,7 @@ describe("paired performance benchmarks", () => {
     });
   });
 
-  it("filters remote tree responses before validating skipped Next.js inputs", () => {
+  itWithMockGh("filters remote tree responses before validating skipped Next.js inputs", () => {
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
     const mergeSha = "c".repeat(40);
@@ -944,7 +948,7 @@ describe("paired performance benchmarks", () => {
     }
   });
 
-  it("rejects skipped Next.js when a benchmark runtime input changed", () => {
+  itWithMockGh("rejects skipped Next.js when a benchmark runtime input changed", () => {
     const workflowSha = "c".repeat(40);
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
@@ -986,7 +990,7 @@ describe("paired performance benchmarks", () => {
     ).toThrow();
   });
 
-  it("requires paired profiles to declare their single profiling round", () => {
+  itWithMockGh("requires paired profiles to declare their single profiling round", () => {
     const headSha = "a".repeat(40);
     const baseSha = "b".repeat(40);
     const measuredAt = "2026-06-18T12:00:00.000Z";
