@@ -28,7 +28,7 @@ describe("performance traces", () => {
     const inputPath = join(directory, "samples.jsonl");
     const outputPath = join(directory, "results.json");
     const profilesDirectory = join(directory, "profiles");
-    const benchmarkId = "dev-start:vinext";
+    const benchmarkId = "vinext-dev-start";
     const profileDirectory = join(profilesDirectory, benchmarkId);
     await mkdir(profileDirectory, { recursive: true });
     await execFileAsync("git", ["init", "--quiet"], { cwd: directory });
