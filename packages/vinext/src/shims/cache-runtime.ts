@@ -688,6 +688,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
     }
 
+    // Static parameter generators can invoke an action returned by a cached
+    // function. Resolve it through the build's RSC loader instead of leaving a
+    // forwarding-only reference that cannot be called on the server.
+    const resolveServerReferences =
+      workUnitAsyncStorage.getStore()?.type === "generate-static-params";
     return trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
       const codec = await getRscModule();
       const clientReferences = codec.createClientTemporaryReferenceSet();
@@ -706,7 +711,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               ...options,
               temporaryReferences: clientReferences,
             },
-            context,
+            resolveServerReferences ? undefined : context,
           ),
       };
       const keySeed = getUseCacheKeySeed();
