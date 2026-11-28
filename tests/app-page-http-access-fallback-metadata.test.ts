@@ -5,6 +5,7 @@ import {
   resolveHttpAccessFallbackMetadata,
   resolveHttpAccessFallbackViewport,
 } from "../packages/vinext/src/server/app-page-http-access-fallback-metadata.js";
+import { unauthorized } from "../packages/vinext/src/shims/navigation-errors.js";
 
 describe("HTTP-access fallback metadata planning", () => {
   it.each([
@@ -221,6 +222,49 @@ describe("HTTP-access fallback metadata planning", () => {
       title: "Not found",
     });
     expect(boundaryParents).toEqual(["Root description"]);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/unauthorized/default/unauthorized-default.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/unauthorized/default/unauthorized-default.test.ts
+  // ("should be able to navigate to page with calling unauthorized in metadata").
+  // The default boundary has no generateMetadata(), so it never reads the
+  // parent that the layout's failure rejected. That parent must not surface
+  // as an unhandled rejection, which crashes a prerender worker.
+  it("doesn't leak the parent of a source that never reads it", async () => {
+    const unhandledRejections: unknown[] = [];
+    const captureUnhandledRejection = (error: unknown) => {
+      unhandledRejections.push(error);
+    };
+    process.on("unhandledRejection", captureUnhandledRejection);
+
+    try {
+      const metadataPromise = resolveHttpAccessFallbackMetadata<Record<string, unknown>>({
+        boundaryModule: { default: () => null },
+        boundaryParams: {},
+        errorConvention: "unauthorized",
+        layoutModules: [
+          {},
+          {
+            async generateMetadata() {
+              unauthorized();
+            },
+          },
+        ],
+        layoutTreePositions: [0, 1],
+        metadataRoutes: [],
+        params: {},
+        routePath: "/metadata-layout-unauthorized",
+        routeSegments: ["metadata-layout-unauthorized"],
+      });
+
+      await expect(metadataPromise).rejects.toMatchObject({
+        digest: "NEXT_HTTP_ERROR_FALLBACK;401",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", captureUnhandledRejection);
+    }
   });
 
   describe("the not-found head a route falls back to", () => {
