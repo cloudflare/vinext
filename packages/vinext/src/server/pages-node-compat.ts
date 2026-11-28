@@ -401,8 +401,9 @@ class PagesResponseStream extends Writable {
   }
 
   json(data: unknown): void {
+    // Like Next.js's sendJson(), go through send() so 204/304 handling applies.
     this.resHeaders["content-type"] = "application/json; charset=utf-8";
-    this.end(JSON.stringify(data));
+    this.send(JSON.stringify(data));
   }
 
   send(data: unknown): void {

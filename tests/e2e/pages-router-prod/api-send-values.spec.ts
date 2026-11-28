@@ -32,4 +32,18 @@ test.describe("Pages API res.send() scalar values", () => {
       expect(res.headers()["content-type"]).toBe("application/json; charset=utf-8");
     });
   }
+
+  // Next.js's sendData() drops the body headers for a value sent on a 204/304,
+  // and res.json() goes through it too.
+  for (const method of ["send", "json"]) {
+    test(`res.${method}(42) on a 204 drops the body headers`, async ({ request }) => {
+      const res = await request.get(
+        `${BASE}/api/send-value?value=number&status=204&type=text/custom&method=${method}`,
+      );
+      expect(res.status()).toBe(204);
+      expect(await res.text()).toBe("");
+      expect(res.headers()["content-type"]).toBeUndefined();
+      expect(res.headers()["content-length"]).toBeUndefined();
+    });
+  }
 });
