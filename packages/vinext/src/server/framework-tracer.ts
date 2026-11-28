@@ -4,16 +4,22 @@ type FrameworkSpanAttributeValue = string | number | boolean;
 
 type FrameworkSpanDescriptor = {
   attributes?: Readonly<Record<string, FrameworkSpanAttributeValue | undefined>>;
+  /** Backdated end time (epoch milliseconds), for work that already happened. */
+  endTime?: number;
   kind?: "client" | "internal" | "server";
   name?: string;
   recordErrors?: boolean;
+  /** Backdated start time (epoch milliseconds), for work that already happened. */
+  startTime?: number;
   type: string;
 };
 
 export type ResolvedFrameworkSpanDescriptor = {
   attributes: Readonly<Record<string, FrameworkSpanAttributeValue>>;
+  endTime?: number;
   kind: "client" | "internal" | "server";
   name: string;
+  startTime?: number;
   type: string;
 };
 
@@ -64,12 +70,15 @@ function resolveDescriptor(descriptor: FrameworkSpanDescriptor): ResolvedFramewo
   for (const [key, value] of Object.entries(descriptor.attributes ?? {})) {
     if (value !== undefined) attributes[key] = value;
   }
-  return {
+  const resolved: ResolvedFrameworkSpanDescriptor = {
     attributes,
     kind: descriptor.kind ?? "internal",
     name,
     type: descriptor.type,
   };
+  if (descriptor.startTime !== undefined) resolved.startTime = descriptor.startTime;
+  if (descriptor.endTime !== undefined) resolved.endTime = descriptor.endTime;
+  return resolved;
 }
 
 function errorType(error: unknown): string {

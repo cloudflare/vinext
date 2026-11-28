@@ -41,7 +41,10 @@ import path from "pathslash";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
-import { ensureInstrumentationRegistered } from "./instrumentation-runtime.js";
+import {
+  ensureInstrumentationRegistered,
+  traceInstrumentationModuleLoadError,
+} from "./instrumentation-runtime.js";
 /**
  * Minimal duck-typed interface for the module runner passed to
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
@@ -162,8 +165,21 @@ export async function runInstrumentation(
   runner: ModuleImporter,
   instrumentationPath: string,
 ): Promise<void> {
-  const mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
-  await ensureInstrumentationRegistered(mod, instrumentationPath);
+  const startTime = performance.timeOrigin + performance.now();
+  let mod: Record<string, unknown>;
+  try {
+    mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
+  } catch (error) {
+    traceInstrumentationModuleLoadError(
+      { startTime, endTime: performance.timeOrigin + performance.now() },
+      error,
+    );
+    throw error;
+  }
+  await ensureInstrumentationRegistered(mod, instrumentationPath, {
+    startTime,
+    endTime: performance.timeOrigin + performance.now(),
+  });
 }
 
 /**
