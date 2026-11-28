@@ -29,7 +29,7 @@ it.each([
   { scheduler: "setImmediate", execArgv: [] },
   { scheduler: "a timer", execArgv: ["--import", TIMER_SCHEDULER] },
 ])(
-  "prerenders the static shell of a cacheComponents fallback shell when tasks run on $scheduler",
+  "prerenders the cacheComponents fallback shell and static HTML when tasks run on $scheduler",
   async ({ execArgv }) => {
     const root = await createIsolatedFixture(
       FIXTURE_DIR,
@@ -56,6 +56,17 @@ it.each([
       expect(html).toContain('<h1 id="shell">static shell</h1>');
       expect(html).toContain('<p id="slug-loading">loading</p>');
       expect(html).not.toContain('<p id="slug">');
+
+      // Ported from Next.js: test/production/app-dir/ppr-use-server-inserted-html/
+      // https://github.com/vercel/next.js/blob/9774f32cfd7a207788520a140db363b003d65e15/test/production/app-dir/ppr-use-server-inserted-html/ppr-use-server-inserted-html.test.ts
+      const staticFile = files.find((file) =>
+        file.endsWith(path.join("en", "server-inserted-html.html")),
+      );
+      expect(staticFile).toBeDefined();
+      const staticHtml = fs.readFileSync(path.join(root, staticFile!), "utf8");
+      expect(staticHtml).toContain('<main id="static-page">');
+      expect(staticHtml.match(/<style[^>]*\bid="static-inserted-html"/g)).toHaveLength(1);
+      expect(staticHtml.match(/<style[^>]*\bid="late-inserted-html"/g)).toHaveLength(1);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
