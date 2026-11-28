@@ -651,6 +651,315 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  it("traces App route module loading and preparation like Next.js", async () => {
+    const handler = createHandler({ ensureRouteLoaded: vi.fn() });
+    capturedNotFoundSpans.length = 0;
+    captureNotFoundSpans = true;
+    try {
+      const response = await handler(new Request("https://example.test/docs/about"), null, false);
+      expect(response.status).toBe(200);
+      await response.text();
+    } finally {
+      captureNotFoundSpans = false;
+      activeCapturedSpan = undefined;
+    }
+
+    expect(
+      capturedNotFoundSpans
+        .filter(({ descriptor }) =>
+          [
+            "LoadComponents.loadRouteModule",
+            "NextNodeServer.findPageComponents",
+            "RouteModule.prepare",
+          ].includes(descriptor.type),
+        )
+        .map(({ descriptor, parentType }) => [descriptor.name, descriptor.type, parentType]),
+    ).toEqual([
+      ["resolve page components", "NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+      ["load route module", "LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["prepare route module", "RouteModule.prepare", "BaseServer.handleRequest"],
+    ]);
+  });
+
+  it("traces App route module loading and preparation in the split response stage", async () => {
+    const handler = createHandler({ ensureRouteLoaded: vi.fn() });
+    capturedNotFoundSpans.length = 0;
+    captureNotFoundSpans = true;
+    try {
+      const response = await handler.handleResponseStage(
+        new Request("https://example.test/docs/about"),
+        null,
+        {
+          kind: "app-page",
+          buildId: "build-id",
+          cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
+          bypassInterceptionContextCache: false,
+          cachePathname: "/about",
+          canUseCanonicalLoadingShell: false,
+          canonicalPathname: "/about",
+          cleanPathname: "/about",
+          draftModeCookie: null,
+          interceptionContext: null,
+          interceptionId: null,
+          isRscRequest: false,
+          matchKind: "resolved",
+          middlewareCookieOverlay: null,
+          mountedSlotsHeader: null,
+          params: {},
+          protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+          requestOrigin: "https://example.test",
+          renderMode: "navigation",
+          resolvedUrl: "/about",
+          routePattern: "/about",
+          routePathname: "/about",
+          scriptNonce: null,
+        },
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    } finally {
+      captureNotFoundSpans = false;
+      activeCapturedSpan = undefined;
+    }
+
+    // The split stage runs beneath the request span of the stage that
+    // dispatched it, so its spans have no parent here.
+    expect(
+      capturedNotFoundSpans
+        .filter(({ descriptor }) =>
+          [
+            "LoadComponents.loadRouteModule",
+            "NextNodeServer.findPageComponents",
+            "RouteModule.prepare",
+          ].includes(descriptor.type),
+        )
+        .map(({ descriptor, parentType }) => [descriptor.type, parentType]),
+    ).toEqual([
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", undefined],
+    ]);
+  });
+
+  async function captureRouteModuleSpans(run: () => Promise<void>) {
+    capturedNotFoundSpans.length = 0;
+    captureNotFoundSpans = true;
+    try {
+      await run();
+    } finally {
+      captureNotFoundSpans = false;
+      activeCapturedSpan = undefined;
+    }
+    return capturedNotFoundSpans
+      .filter(({ descriptor }) =>
+        [
+          "LoadComponents.loadRouteModule",
+          "NextNodeServer.findPageComponents",
+          "RouteModule.prepare",
+        ].includes(descriptor.type),
+      )
+      .map(({ descriptor, parentType }) => [descriptor.type, parentType]);
+  }
+
+  it("prepares a route tree prefetch's route module once", async () => {
+    const handler = createHandler({ ensureRouteLoaded: vi.fn() });
+    const headers = createRscRequestHeaders();
+    headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+    const rscUrl = await createRscRequestUrl("/docs/about", headers);
+    const spans = await captureRouteModuleSpans(async () => {
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    });
+
+    expect(spans).toEqual([
+      ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", "BaseServer.handleRequest"],
+    ]);
+  });
+
+  it("looks up and prepares a Server Action's route without loading its modules first", async () => {
+    const order: string[] = [];
+    const ensureRouteLoaded = vi.fn(() => {
+      order.push("load");
+    });
+    const handler = createHandler({
+      ensureRouteLoaded,
+      handleServerActionRequest: async () => {
+        order.push("action");
+        return new Response("action");
+      },
+    });
+    const spans = await captureRouteModuleSpans(async () => {
+      const response = await handler(
+        new Request("https://example.test/docs/about", {
+          method: "POST",
+          headers: { "next-action": "action-id", "content-type": "text/plain" },
+        }),
+        null,
+        false,
+      );
+      expect(await response.text()).toBe("action");
+    });
+
+    // Like Next.js, the page's modules stay unloaded until a render needs
+    // them, so a forwarded action never runs them.
+    expect(order).toEqual(["action"]);
+    expect(spans).toEqual([
+      ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", "BaseServer.handleRequest"],
+    ]);
+  });
+
+  it.each([
+    ["answers", async () => new Response("progressive-action"), false],
+    [
+      "returns form state",
+      async () => ({
+        draftCookie: null,
+        formState: null,
+        kind: "form-state" as const,
+        pendingCookies: [],
+        revalidationKind: 0,
+      }),
+      true,
+    ],
+  ])(
+    "looks up and prepares a progressive Server Action's route once when it %s",
+    async (_outcome, handleProgressiveActionRequest, rendersPage) => {
+      const order: string[] = [];
+      const handler = createHandler({
+        ensureRouteLoaded: vi.fn(() => {
+          order.push("load");
+        }),
+        handleProgressiveActionRequest: async () => {
+          order.push("action");
+          return handleProgressiveActionRequest();
+        },
+      });
+      const spans = await captureRouteModuleSpans(async () => {
+        const response = await handler(
+          new Request("https://example.test/docs/about", {
+            method: "POST",
+            headers: { "content-type": "multipart/form-data; boundary=vinext" },
+          }),
+          null,
+          false,
+        );
+        await response.text();
+      });
+
+      // The page's modules load only for the render that follows a
+      // form-state result, never before a (possibly forwarded) action.
+      expect(order).toEqual(rendersPage ? ["action", "load"] : ["action"]);
+      expect(spans).toEqual([
+        ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+        ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+        ["RouteModule.prepare", "BaseServer.handleRequest"],
+      ]);
+    },
+  );
+
+  it.each([
+    [
+      "header-based",
+      { "next-action": "action-id", "content-type": "text/plain" },
+      { handleServerActionRequest: undefined },
+    ],
+    [
+      "progressive",
+      { "content-type": "multipart/form-data; boundary=vinext" },
+      { handleProgressiveActionRequest: undefined },
+    ],
+  ])(
+    "looks up and prepares the page of a %s Server Action in a build without Server Actions",
+    async (_kind, headers, noActions) => {
+      const ensureRouteLoaded = vi.fn();
+      const handler = createHandler({ ensureRouteLoaded, ...noActions });
+      const spans = await captureRouteModuleSpans(async () => {
+        const response = await handler(
+          new Request("https://example.test/docs/about", { method: "POST", headers }),
+          null,
+          false,
+        );
+        expect(response.status).toBe(404);
+        await response.text();
+      });
+
+      // An invalid action never imports the page.
+      expect(ensureRouteLoaded).not.toHaveBeenCalled();
+      expect(spans).toEqual([
+        ["NextNodeServer.findPageComponents", "BaseServer.handleRequest"],
+        ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+        ["RouteModule.prepare", "BaseServer.handleRequest"],
+      ]);
+    },
+  );
+
+  // Next.js's edge route handler template (build/templates/edge-app-route.ts)
+  // doesn't prepare its route module; its Node one does.
+  it.each([
+    { name: "Node", runtime: undefined, prepares: true },
+    { name: "edge", runtime: "edge", prepares: false },
+  ])(
+    "prepares a $name route handler's route module like Next.js",
+    async ({ runtime, prepares }) => {
+      const route = createPageRoute({
+        page: null,
+        pattern: "/api/inspect",
+        routeHandler: { GET: () => new Response("route"), runtime },
+        routeSegments: ["api", "inspect"],
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedRouteHandler: async () => new Response("route"),
+        ensureRouteLoaded: vi.fn(),
+        matchRoute: (pathname: string) =>
+          pathname === "/api/inspect" ? { params: {}, route } : null,
+      });
+      const spans = await captureRouteModuleSpans(async () => {
+        const response = await handler(new Request("https://example.test/docs/api/inspect"), null);
+        expect(await response.text()).toBe("route");
+      });
+
+      expect(spans.some(([type]) => type === "RouteModule.prepare")).toBe(prepares);
+    },
+  );
+
+  it("leaves preparing the route module to the response stage it dispatches", async () => {
+    const responseHandler = createHandler({ ensureRouteLoaded: vi.fn() });
+    // The request stage holds no route modules.
+    const requestHandler = createHandler({ configHeaders: [] });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>((stageRequest, props) =>
+      responseHandler.handleResponseStage(stageRequest, null, props),
+    );
+    const spans = await captureRouteModuleSpans(async () => {
+      const response = await requestHandler(
+        new Request("https://example.test/docs/about"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    });
+
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(spans.map(([type]) => type)).toEqual([
+      "NextNodeServer.findPageComponents",
+      "LoadComponents.loadRouteModule",
+      "RouteModule.prepare",
+    ]);
+  });
+
   it("establishes the Cache Components request work unit in the split response stage", async () => {
     let workUnitType: string | undefined;
     const handler = createHandler({
@@ -5464,6 +5773,36 @@ describe("createAppRscHandler", () => {
       expect(dispatchMatchedPage).not.toHaveBeenCalled();
     });
 
+    it("prepares a rejected route-tree prefetch's route module before admitting its params", async () => {
+      const handler = createHandler({
+        configHeaders,
+        configRewrites: unclaimedFallbackRewrites,
+        ensureRouteLoaded: vi.fn(),
+        isDynamicParamsMiss: async () => true,
+        matchRoute,
+        renderNotFound: async () => new Response("not found", { status: 404 }),
+      });
+      const headers = createRscRequestHeaders();
+      headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+      headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+      const url = await createRscRequestUrl("/docs/products/rejected", headers);
+
+      const spans = await captureRouteModuleSpans(async () => {
+        const response = await handler(
+          new Request(`https://example.test${url}`, { headers }),
+          null,
+        );
+        expect(response.status).toBe(404);
+        await response.text();
+      });
+
+      expect(spans.map(([type]) => type)).toEqual([
+        "NextNodeServer.findPageComponents",
+        "LoadComponents.loadRouteModule",
+        "RouteModule.prepare",
+      ]);
+    });
+
     it("keeps a rejected route-tree prefetch's generator cacheForRequest values out of its 404", async () => {
       const readRequestData = vi.fn(() => ({}));
       const cachedRequestData = cacheForRequest(readRequestData);
@@ -5626,6 +5965,37 @@ describe("createAppRscHandler", () => {
         expect(body).not.toContain('"products"');
         expect(isDynamicParamsMiss).toHaveBeenCalledTimes(2);
         expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      });
+
+      it("prepares the fallback route that claims a rejected route-tree prefetch", async () => {
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites,
+          ensureRouteLoaded: vi.fn(),
+          isDynamicParamsMiss: async (missRoute: TestRoute) => missRoute === localizedRoute,
+          matchRequestRoute: matchFallbackRoutes,
+          matchRoute: matchFallbackRoutes,
+        });
+        const headers = createRscRequestHeaders();
+        headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+        const url = await createRscRequestUrl("/docs/fr/products/rejected", headers);
+
+        const spans = await captureRouteModuleSpans(async () => {
+          const tree = await handler(new Request(`https://example.test${url}`, { headers }), null);
+          expect(tree.status).toBe(200);
+          await tree.text();
+        });
+
+        // The rejected route, then the fallback route that answers.
+        expect(spans.map(([type]) => type)).toEqual([
+          "NextNodeServer.findPageComponents",
+          "LoadComponents.loadRouteModule",
+          "RouteModule.prepare",
+          "NextNodeServer.findPageComponents",
+          "LoadComponents.loadRouteModule",
+          "RouteModule.prepare",
+        ]);
       });
 
       it("resumes routing after the dispatch rejects the params", async () => {

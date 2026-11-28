@@ -4,6 +4,8 @@ import {
   createPagesDataSpanDescriptor,
   createPagesDocumentSpanDescriptor,
   createFindPageComponentsSpanDescriptor,
+  createLoadRouteModuleSpanDescriptor,
+  createPrepareRouteModuleSpanDescriptor,
   tracePagesDocumentStream,
 } from "../packages/vinext/src/server/pages-execution-tracing.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
@@ -62,6 +64,19 @@ describe("Pages execution tracing", () => {
       attributes: { "next.route": "/products/[slug]" },
       name: "resolve page components",
       type: "NextNodeServer.findPageComponents",
+    });
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  it("matches the Next.js route module loading and preparation span descriptors", () => {
+    expect(createLoadRouteModuleSpanDescriptor()).toEqual({
+      name: "load route module",
+      type: "LoadComponents.loadRouteModule",
+    });
+    expect(createPrepareRouteModuleSpanDescriptor()).toEqual({
+      name: "prepare route module",
+      type: "RouteModule.prepare",
     });
   });
 

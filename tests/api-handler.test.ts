@@ -31,12 +31,14 @@ import type {
 const recordedDevApiHandlerErrors: unknown[] = [];
 let recordedDevApiHandlerErrorStatus = false;
 let captureDevApiHandlerErrors = false;
+let capturedDevApiSpanTypes: string[] | null = null;
 registerFrameworkTracingIntegration({
   id: "api-handler-dev-error-status-test",
   enterSpan<T>(
     descriptor: ResolvedFrameworkSpanDescriptor,
     callback: (span: FrameworkTracingBackendSpan) => T,
   ): T {
+    capturedDevApiSpanTypes?.push(descriptor.type);
     if (!captureDevApiHandlerErrors || descriptor.type !== "Node.runHandler") {
       return callback({ setAttribute() {} });
     }
@@ -1589,6 +1591,26 @@ describe("handleApiRoute", () => {
       expect(handled).toBe(true);
       expect(res._statusCode).toBe(500);
       expect(res._body).toBe("Internal Server Error");
+    });
+
+    // Next.js's Node API template (build/templates/pages-api.ts) prepares the
+    // route module before each handler call.
+    it("prepares the route module of a Node API route like Next.js", async () => {
+      const server = mockServer({
+        default(_req: unknown, res: { status(code: number): { end(): void } }) {
+          res.status(200).end();
+        },
+      });
+      const req = mockReq("GET", "/api/users");
+      const res = mockRes();
+      capturedDevApiSpanTypes = [];
+      try {
+        await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+      } finally {
+        const types = capturedDevApiSpanTypes;
+        capturedDevApiSpanTypes = null;
+        expect(types).toEqual(["RouteModule.prepare", "Node.runHandler"]);
+      }
     });
 
     // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts

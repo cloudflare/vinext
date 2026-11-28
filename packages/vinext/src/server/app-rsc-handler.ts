@@ -11,7 +11,7 @@ import {
   normalizePathnameForRouteMatchStrict,
 } from "../routing/utils.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
-import { traceFindPageComponents } from "./pages-execution-tracing.js";
+import { tracePrepareRouteModule, traceRouteModuleLoad } from "./pages-execution-tracing.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
   getActiveDraftModeState,
@@ -2623,6 +2623,44 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const isFinalRouteMatch = isInterceptionMatch || requestsLiteralRoutePattern;
   const preActionMatchIsFinal =
     preActionMatch !== null && (isFinalRouteMatch || !preActionMatch.route.isDynamic);
+  // Next.js prepares the matched route module once, at the start of its
+  // handler (`RouteModule.prepare`), before handling a Server Action or a
+  // prefetch. Routing that resumes after a miss prepares the route it lands on.
+  let preparedRoute: TRoute | null = null;
+  const prepareRouteModule = <T>(route: TRoute, callback: () => T): T => {
+    if (preparedRoute === route) return callback();
+    preparedRoute = route;
+    return tracePrepareRouteModule(callback);
+  };
+  // The route whose modules this request already resolved, so the page render
+  // that follows a form-state action doesn't resolve them again.
+  let loadedRoute: TRoute | null = null;
+  const loadRouteModule = async (route: TRoute) => {
+    if (!options.ensureRouteLoaded) return;
+    if (loadedRoute === route) {
+      await options.ensureRouteLoaded(route);
+      return;
+    }
+    loadedRoute = route;
+    await traceRouteModuleLoad(route.pattern, () => options.ensureRouteLoaded!(route));
+  };
+  // Next.js's `loadRouteModule` resolves only the route's generated entry
+  // before an action is handled or forwarded; the page's own modules stay lazy
+  // until it renders. vinext already holds that entry (the matched route), so
+  // an action traces the lookup and leaves loading the page's modules to the
+  // render that needs them, which a forwarded action never reaches.
+  const prepareActionRoute = (routeMatch: AppRscRouteMatch<TRoute> | null) => {
+    if (!routeMatch) return;
+    const actionRoute = routeMatch.route;
+    if (options.ensureRouteLoaded && loadedRoute !== actionRoute) {
+      loadedRoute = actionRoute;
+      traceRouteModuleLoad(actionRoute.pattern, () => undefined);
+    }
+    // The action and the page it renders see the route's root params.
+    prepareRouteModule(actionRoute, () =>
+      setRootParams(pickRootParams(routeMatch.params, actionRoute.rootParamNames)),
+    );
+  };
   let serverActionHandled = false;
   const handleServerAction = async (
     routeMatch: AppRscRouteMatch<TRoute> | null,
@@ -2630,6 +2668,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible || !isPostRequest || !actionId) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
+    prepareActionRoute(routeMatch);
     if (!options.handleServerActionRequest) {
       return markServerActionResponse(
         respondServerActionNotFound(actionId, options.clearRequestContext),
@@ -2671,6 +2710,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ): Promise<Response | ProgressiveActionFormStateResult | null> => {
     if (!filesystemRouteEligible || !isProgressiveActionRequest) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
+    prepareActionRoute(routeMatch);
     if (!options.handleProgressiveActionRequest) {
       return unrenderedRouteMatch?.route.__loadPage &&
         !unrenderedRouteMatch.route.__loadRouteHandler
@@ -3257,11 +3297,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : rewriteCachePathname(canonicalPathname, cleanPathname);
     // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
     // branch and any downstream synchronous module reads.
-    if (options.ensureRouteLoaded) {
-      await traceFindPageComponents(route.pattern, () => options.ensureRouteLoaded!(route));
-    }
-    const resolvedSearchParams = getResolvedSearchParams();
+    await loadRouteModule(route);
     const isRouteTreePrefetch = isRouteTreePrefetchRequest(request) && !route.routeHandler;
+    // A tree prefetch answers from the matched route alone, so reading its
+    // query is all it prepares, before its params are admitted.
+    const resolvedSearchParams = isRouteTreePrefetch
+      ? prepareRouteModule(route, getResolvedSearchParams)
+      : getResolvedSearchParams();
     // Next.js rejects a dynamicParams = false miss while routing, outside draft
     // mode, so a fallback rewrite can claim the URL's route tree. Without one
     // that could, vinext doesn't run the route's generators for each prefetched
@@ -3285,6 +3327,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return new Response(null, { status: 404 });
     }
     setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
+    const matchedResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     if (isRouteTreePrefetch) {
       const response = await createRouteTreePrefetchResponse(route, {
         buildId: options.buildId,
@@ -3315,7 +3358,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : cleanPathnameIsRequestPathname
         ? requestPathname || "/"
         : cleanPathname || "/";
-    const matchedResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     let runtimeFallbackShells: AppPagePprFallbackCacheShell[] = [];
     if (
       options.createPprFallbackShells &&
@@ -3333,13 +3375,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         params,
       );
     }
-    options.setNavigationContext({
-      pathname: canonicalPathname,
-      searchParams: resolvedSearchParams,
-      params: renderParams,
-    });
-    const rootParams = pickRootParams(renderParams, route.rootParamNames);
-    setRootParams(rootParams);
+    const setMatchedRouteContext = () => {
+      options.setNavigationContext({
+        pathname: canonicalPathname,
+        searchParams: resolvedSearchParams,
+        params: renderParams,
+      });
+      const matchedRootParams = pickRootParams(renderParams, route.rootParamNames);
+      setRootParams(matchedRootParams);
+      return matchedRootParams;
+    };
+    // A response stage prepares the route module it renders. Next.js's edge
+    // route handler template doesn't prepare its route module.
+    const rootParams =
+      matchedResponseStage || (route.routeHandler && isEdgeRouteHandler(route.routeHandler))
+        ? setMatchedRouteContext()
+        : prepareRouteModule(route, setMatchedRouteContext);
 
     if (route.routeHandler) {
       // Next.js edge route handlers run through web/adapter.ts, which strips

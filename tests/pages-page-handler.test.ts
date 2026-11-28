@@ -46,6 +46,7 @@ import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -173,6 +174,163 @@ describe("shouldEmitPagesClientTraceMetadata", () => {
     const app = Object.assign(() => null, { getInitialProps: async () => ({}) });
     expect(shouldEmitPagesClientTraceMetadata(makePageModule({ default: page }), null)).toBe(true);
     expect(shouldEmitPagesClientTraceMetadata(makePageModule(), app)).toBe(true);
+  });
+});
+
+let captureRouteModuleSpans = false;
+const capturedRouteModuleSpans: Array<[string, string | undefined]> = [];
+const capturedRouteModuleSpanErrors: Array<[string, string | undefined]> = [];
+let activeRouteModuleSpanType: string | undefined;
+registerFrameworkTracingIntegration({
+  id: "pages-page-handler-route-module-test",
+  enterSpan(descriptor, callback) {
+    if (!captureRouteModuleSpans) return callback({ setAttribute() {} });
+    const parentType = activeRouteModuleSpanType;
+    capturedRouteModuleSpans.push([descriptor.type, parentType]);
+    activeRouteModuleSpanType = descriptor.type;
+    try {
+      return callback({
+        setAttribute() {},
+        recordException() {},
+        setErrorStatus(message) {
+          capturedRouteModuleSpanErrors.push([descriptor.type, message]);
+        },
+      });
+    } finally {
+      activeRouteModuleSpanType = parentType;
+    }
+  },
+});
+
+describe("createPagesPageHandler — route module spans", () => {
+  // Ported from Next.js: test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/otel-middleware-trace/otel-middleware-trace.test.ts
+  it("traces loading the page module and preparing the route like Next.js", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [makeRoute("/", makePageModule())] }),
+    );
+    capturedRouteModuleSpans.length = 0;
+    captureRouteModuleSpans = true;
+    try {
+      const response = await handler(makeRequest(), "/", null, null, null);
+      expect(response.status).toBe(200);
+      await response.text();
+    } finally {
+      captureRouteModuleSpans = false;
+    }
+
+    expect(
+      capturedRouteModuleSpans.filter(([type]) =>
+        [
+          "LoadComponents.loadRouteModule",
+          "NextNodeServer.findPageComponents",
+          "RouteModule.prepare",
+        ].includes(type),
+      ),
+    ).toEqual([
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["RouteModule.prepare", undefined],
+    ]);
+  });
+});
+
+describe("createPagesPageHandler — coalesced route module spans", () => {
+  it("resolves and prepares the page once for each request sharing an on-demand revalidation", async () => {
+    let releaseRender!: () => void;
+    const renderGate = new Promise<void>((resolve) => {
+      releaseRender = resolve;
+    });
+    const getStaticProps = vi.fn(async () => {
+      await renderGate;
+      return { props: {}, revalidate: 60 };
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/coalesced-spans", makePageModule({ getStaticProps }))],
+      }),
+    );
+    const revalidate = () =>
+      handler(
+        new Request("http://localhost/coalesced-spans", {
+          headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+        }),
+        "/coalesced-spans",
+        null,
+        null,
+        null,
+      );
+    capturedRouteModuleSpans.length = 0;
+    captureRouteModuleSpans = true;
+    try {
+      const responses = Promise.all([revalidate(), revalidate()]);
+      await vi.waitFor(() => expect(getStaticProps).toHaveBeenCalledOnce());
+      releaseRender();
+      for (const response of await responses) {
+        expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+        await response.text();
+      }
+    } finally {
+      captureRouteModuleSpans = false;
+    }
+
+    expect(getStaticProps).toHaveBeenCalledOnce();
+    const count = (type: string) =>
+      capturedRouteModuleSpans.filter(([spanType]) => spanType === type).length;
+    expect({
+      findPageComponents: count("NextNodeServer.findPageComponents"),
+      loadRouteModule: count("LoadComponents.loadRouteModule"),
+      prepare: count("RouteModule.prepare"),
+    }).toEqual({ findPageComponents: 2, loadRouteModule: 2, prepare: 2 });
+  });
+});
+
+describe("createPagesPageHandler — missing /500 lookup span", () => {
+  it("resolves the missing /500 page beneath its own route module load like Next.js", async () => {
+    const errorRoute = makeRoute("/_error", makePageModule());
+    const failingRoute = makeRoute(
+      "/boom",
+      makePageModule({
+        getServerSideProps: async () => {
+          throw new Error("gssp failure");
+        },
+      }),
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [failingRoute, errorRoute], errorPageRoute: errorRoute }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    capturedRouteModuleSpans.length = 0;
+    capturedRouteModuleSpanErrors.length = 0;
+    captureRouteModuleSpans = true;
+    try {
+      const response = await handler(makeRequest("/boom"), "/boom", null, null, null);
+      expect(response.status).toBe(500);
+      await response.text();
+    } finally {
+      captureRouteModuleSpans = false;
+      consoleError.mockRestore();
+    }
+
+    // The failing page, the missing /500 page, then _error, each resolved
+    // beneath its own route module load.
+    const lookups = capturedRouteModuleSpans.filter(([type]) =>
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"].includes(type),
+    );
+    expect(lookups).toEqual([
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+      ["NextNodeServer.findPageComponents", undefined],
+      ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"],
+    ]);
+    // Only the missing /500 page's load fails; its lookup falls through.
+    expect(
+      capturedRouteModuleSpanErrors.filter(([type]) =>
+        ["LoadComponents.loadRouteModule", "NextNodeServer.findPageComponents"].includes(type),
+      ),
+    ).toEqual([["LoadComponents.loadRouteModule", "Cannot find module for page: /500"]]);
   });
 });
 

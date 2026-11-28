@@ -40,7 +40,7 @@ import {
   type PagesReqResRequest,
   type PagesReqResResponse,
 } from "./pages-node-compat.js";
-import { tracePagesApiHandler } from "./pages-execution-tracing.js";
+import { tracePagesApiHandler, tracePrepareRouteModule } from "./pages-execution-tracing.js";
 import { logRequestError } from "./request-error-log.js";
 
 /**
@@ -505,7 +505,11 @@ export async function handleApiRoute(
 
     // Parse query from URL + route params. Path params win over same-key search
     // params so a query string cannot change the dynamic route value.
-    const query = mergeRouteParamsIntoQuery(parseQueryString(url), params);
+    // Like Next.js's Node API template, which prepares the route module (its
+    // query and params) before every handler call; edge API routes skip it.
+    const query = tracePrepareRouteModule(() =>
+      mergeRouteParamsIntoQuery(parseQueryString(url), params),
+    );
 
     // Honour `export const config = { api: { bodyParser: ... } }` on the
     // route module. When the handler opts out (`bodyParser: false`) we must

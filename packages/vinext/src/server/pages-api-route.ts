@@ -31,7 +31,7 @@ import {
 import { NextRequest } from "vinext/shims/server";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { hasCdnResponsePolicy } from "./cache-control.js";
-import { tracePagesApiHandler } from "./pages-execution-tracing.js";
+import { tracePagesApiHandler, tracePrepareRouteModule } from "./pages-execution-tracing.js";
 import { isWebSocketUpgradeResponse } from "./websocket-upgrade-response.js";
 
 type PagesApiRouteConfig = {
@@ -225,7 +225,9 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     }
     const handler = route.module.default;
 
-    const query = buildPagesApiQuery(options.url, params);
+    // Next.js's Node API template prepares the route module (its query and
+    // params) before every handler call; edge API routes skip it.
+    const query = tracePrepareRouteModule(() => buildPagesApiQuery(options.url, params));
 
     // Honour `export const config = { api: { bodyParser: ... } }` on the
     // route module. When the handler opts out (`bodyParser: false`) we must
