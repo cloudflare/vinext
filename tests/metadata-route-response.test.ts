@@ -24,6 +24,7 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
 import {
   CACHEABILITY_REQUEST_STATE,
@@ -300,6 +301,69 @@ describe("handleMetadataRouteRequest", () => {
     }
     await expect(discover(() => getPrerenderableMetadataRoutePaths([routes[0]!]))).rejects.toThrow(
       "used a request API such as `headers()`",
+    );
+  });
+
+  it("fails discovery when a generator reads a root param", async () => {
+    // Next.js runs these generators through the generateStaticParams its
+    // metadata loader adds, in a generate-static-params work unit with no
+    // parent params (server/request/root-params.ts, E1142).
+    const readLang = async () => {
+      await getRootParam("lang");
+      return [{ id: "a", slug: "a" }];
+    };
+    const route = (
+      servedUrl: string,
+      type: string,
+      module: Record<string, unknown>,
+      patternParts?: string[],
+    ): MetadataFileRoute => ({
+      type,
+      isDynamic: true,
+      filePath: `/tmp/app${servedUrl}.tsx`,
+      routePrefix: "",
+      routeSegments: [],
+      servedUrl,
+      contentType: type === "sitemap" ? "application/xml" : "image/png",
+      module,
+      ...(patternParts ? { patternParts } : {}),
+    });
+    const image = async () => new Response("image");
+    const sitemap = route("/sitemap.xml", "sitemap", {
+      default: markUseCache(async () => []),
+      generateSitemaps: readLang,
+    });
+    // A generated metadata route is named as Next.js names its route handler
+    // (lib/metadata/get-metadata-route.ts normalizeMetadataPageToRoute).
+    const listed: [MetadataFileRoute, string][] = [
+      [sitemap, "/sitemap/[__metadata_id__]"],
+      [
+        route("/gallery/opengraph-image", "opengraph-image", {
+          default: image,
+          generateImageMetadata: readLang,
+        }),
+        "/gallery/opengraph-image/[__metadata_id__]",
+      ],
+      [
+        route(
+          "/blog/[slug]/opengraph-image",
+          "opengraph-image",
+          { default: image, generateStaticParams: readLang },
+          ["blog", ":slug", "opengraph-image"],
+        ),
+        "/blog/[slug]/opengraph-image",
+      ],
+    ];
+    const unprovided = (routeName: string) =>
+      `Route ${routeName} used \`import('next/root-params').lang()\` inside \`generateStaticParams\`, but the \`lang\` parameter was not provided`;
+
+    for (const [metadataRoute, routeName] of listed) {
+      await expect(
+        getWarmableMetadataRoutes([metadataRoute], { enumerateDynamicPaths: true }),
+      ).rejects.toThrow(unprovided(routeName));
+    }
+    await expect(getPrerenderableMetadataRoutePaths([sitemap])).rejects.toThrow(
+      unprovided("/sitemap/[__metadata_id__]"),
     );
   });
 

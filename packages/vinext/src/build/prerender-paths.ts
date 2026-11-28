@@ -768,7 +768,13 @@ async function collectAppPaths(options: {
   let requireNonEmptyStaticParams = false;
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
     get(_target, pattern: string) {
-      return async ({ params }: { params: Record<string, string | string[]> }) => {
+      return async ({
+        params,
+        route,
+      }: {
+        params: Record<string, string | string[]>;
+        route?: string;
+      }) => {
         if (!options.baseUrl) return null;
         // Under Cache Components every empty result is rejected below, so a
         // composed resolver must not pass parents through one.
@@ -783,6 +789,9 @@ async function collectAppPaths(options: {
             if (Object.keys(params).length > 0) {
               search.set("parentParams", parentParamsJson);
             }
+            // A shared layout's results serve every route under it, so its
+            // root param errors name the first route that asks.
+            if (route !== undefined) search.set("route", route);
             if (rejectEmptyResults) search.set("rejectEmptyResults", "1");
             const text = await fetchDiscoveryEndpoint(
               `${options.baseUrl}/__vinext/prerender/static-params?${search}`,

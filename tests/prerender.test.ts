@@ -8,7 +8,7 @@
  * Both `prerenderPages()` and `prerenderApp()` are tested against the
  * `pages-basic` and `app-basic` fixtures respectively.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import fs from "node:fs";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
@@ -3493,11 +3493,12 @@ describe("resolveParentParams", () => {
     // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
     const child = mockRoute("/:lang/:locale/other/:slug", { layoutPrefixes: ["/:lang/:locale"] });
+    const layoutGenerateStaticParams = vi.fn(async () => [
+      { lang: "en", locale: "us" },
+      { lang: "es", locale: "es" },
+    ]);
     const staticParamsMap: StaticParamsMap = {
-      "layouts:[lang]/[locale]": async () => [
-        { lang: "en", locale: "us" },
-        { lang: "es", locale: "es" },
-      ],
+      "layouts:[lang]/[locale]": layoutGenerateStaticParams,
     };
 
     const result = await resolveParentParams(child, staticParamsMap);
@@ -3506,6 +3507,11 @@ describe("resolveParentParams", () => {
       { lang: "en", locale: "us" },
       { lang: "es", locale: "es" },
     ]);
+    // The layout's root param errors name the route being built.
+    expect(layoutGenerateStaticParams).toHaveBeenCalledWith({
+      params: {},
+      route: "/:lang/:locale/other/:slug",
+    });
   });
 
   it("resolves parent params from layouts, never from a sibling page at the same prefix", async () => {

@@ -122,4 +122,25 @@ describe('"use cache" root-param entry generation', () => {
     await expect(invoke()).resolves.toBe("en");
     expect(calls).toBe(1);
   });
+
+  it("reads root params a generateStaticParams scope lacks inside a nested cache", async () => {
+    // Next.js's `cache` work unit takes its root params from the generator's
+    // scope and reads them without the generate-static-params check.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { getRootParam, runWithGenerateStaticParamsRootParams } =
+      await import("../packages/vinext/src/shims/root-params.js");
+
+    const cached = registerCachedFunction(
+      async () => String(await getRootParam("lang")),
+      "test:generate-static-params-root-param-cache",
+    );
+
+    await expect(
+      runWithGenerateStaticParamsRootParams("/[lang]", {}, ["lang"], () => cached()),
+    ).resolves.toBe("undefined");
+    await expect(
+      runWithGenerateStaticParamsRootParams("/[lang]", {}, ["lang"], () => getRootParam("lang")),
+    ).rejects.toThrow("the `lang` parameter was not provided by a parent `generateStaticParams`");
+  });
 });

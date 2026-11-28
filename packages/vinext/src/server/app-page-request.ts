@@ -12,12 +12,17 @@ import { getAppPageSegmentParamName } from "./app-page-params.js";
 import {
   interceptionMarkerPatternParam,
   matchRoutePattern,
+  patternToNextRoute,
   withoutInterceptionMarker,
 } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { removeTrailingSlash } from "../utils/base-path.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
-import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
+import {
+  pickRootParams,
+  runWithGenerateStaticParamsRootParams,
+  type RootParams,
+} from "vinext/shims/root-params";
 import { isUnknownRecord } from "../utils/record.js";
 import { isRouteSegmentFetchCache } from "./app-segment-config.js";
 import {
@@ -85,6 +90,8 @@ export type ValidateAppPageDynamicParamsOptions = {
    * params as its root params, as in Next.js's generator walk.
    */
   rootParamNames?: readonly string[];
+  /** The route a root param error names. */
+  routePattern?: string;
   /** The fetchCache the generators start from, when the caller sets one. */
   initialFetchCache?: FetchCacheMode | null;
   /**
@@ -574,6 +581,9 @@ function remapStaticParamsToRouteParams(
   );
 }
 
+/** The route's root param names, and the route their errors name. */
+type GenerateStaticParamsRootParams = { names: readonly string[]; route: string };
+
 // Next.js runs each generateStaticParams with its parent params as the root
 // params, whatever the request's are.
 // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
@@ -581,18 +591,22 @@ function callGenerateStaticParams(
   source: GenerateStaticParamsSource,
   params: AppPageParams,
   parentParams: Record<string, unknown>,
-  rootParamNames: readonly string[] | undefined,
+  rootParams: GenerateStaticParamsRootParams,
 ): Promise<unknown> {
   const call = async () => runWithFetchDedupe(() => source.generateStaticParams({ params }));
-  if (!rootParamNames) return call();
-  return runWithRootParamsScope(pickRootParams(parentParams as RootParams, rootParamNames), call);
+  return runWithGenerateStaticParamsRootParams(
+    rootParams.route,
+    parentParams,
+    rootParams.names,
+    call,
+  );
 }
 
 async function generateIndependentStaticParams(
   sources: readonly GenerateStaticParamsSource[],
   primaryParams: readonly Record<string, unknown>[] | null,
   requestParams: AppPageParams,
-  rootParamNames: readonly string[] | undefined,
+  rootParams: GenerateStaticParamsRootParams,
 ): Promise<{ staticParams: Record<string, unknown>[]; validated: boolean }> {
   let rows = (primaryParams ?? []).map((params) => ({ params, branchParams: {} }));
   let hasParentParams = rows.length > 0;
@@ -613,7 +627,7 @@ async function generateIndependentStaticParams(
         source,
         { ...pickRouteParams(sourceParams, source.parentParamNames), ...branchParams },
         parent.params,
-        rootParamNames,
+        rootParams,
       );
       if (!Array.isArray(result)) {
         if (hasParentParams) nextRows.push(parent);
@@ -677,7 +691,7 @@ function applySourceFetchCache(source: GenerateStaticParamsSource): void {
 async function generateChainedStaticParams(
   sources: readonly GenerateStaticParamsSource[],
   requestParams: AppPageParams | null,
-  rootParamNames: readonly string[] | undefined,
+  rootParams: GenerateStaticParamsRootParams,
   // The mode each pass starts from, when the caller sets one.
   initialFetchCache: FetchCacheMode | null | undefined,
   // A rerun over every combination reuses the results each generator already
@@ -724,7 +738,7 @@ async function generateChainedStaticParams(
           source,
           parent.params as AppPageParams,
           parent.params,
-          rootParamNames,
+          rootParams,
         );
         sourceResults.set(parent.lineage, result);
       }
@@ -755,7 +769,7 @@ async function generateChainedStaticParams(
   // rewrites a parent param can produce the request from a skipped parent.
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
   if (needsEveryCombination)
-    return generateChainedStaticParams(sources, null, rootParamNames, initialFetchCache, results);
+    return generateChainedStaticParams(sources, null, rootParams, initialFetchCache, results);
   return generatedRows.map((row) => row.params);
 }
 
@@ -816,6 +830,12 @@ export async function checkAppPageDynamicParams(
     rows.length > 0 &&
     rows.every((row) => (everyParamNames ?? []).every((name) => Object.hasOwn(row, name)));
 
+  // Next.js runs every generator in a generate-static-params work unit, so
+  // a root param getter fails there even for a route without root params.
+  const rootParams: GenerateStaticParamsRootParams = {
+    names: options.rootParamNames ?? [],
+    route: patternToNextRoute(options.routePattern ?? ""),
+  };
   const chainedSources = generateStaticParamsSources.filter((source) => source.chained);
   const hasIndependentSources = generateStaticParamsSources.some((source) => !source.chained);
   let chainedStaticParams: Record<string, unknown>[] | null = null;
@@ -834,7 +854,7 @@ export async function checkAppPageDynamicParams(
     chainedStaticParams = await generateChainedStaticParams(
       chainedSources,
       hasIndependentSources ? null : options.params,
-      options.rootParamNames,
+      rootParams,
       options.initialFetchCache,
       chainedResults,
       everyParamNames !== undefined && !hasIndependentSources,
@@ -858,7 +878,7 @@ export async function checkAppPageDynamicParams(
       const everyRow = await generateChainedStaticParams(
         chainedSources,
         null,
-        options.rootParamNames,
+        rootParams,
         options.initialFetchCache,
         chainedResults,
       );
@@ -893,7 +913,7 @@ export async function checkAppPageDynamicParams(
       sources,
       chainedStaticParams,
       options.params,
-      options.rootParamNames,
+      rootParams,
     );
     if (!result.validated) continue;
     independentRowSets.push(result.staticParams);
@@ -966,6 +986,8 @@ type ValidateAppPageRouteDynamicParamsOptions = {
   revalidateSeconds?: number | null;
   rootParamNames?: readonly string[];
   routePattern: string;
+  /** The route a root param error names, when not `routePattern`: an interception's own. */
+  staticParamsRoutePattern?: string;
   routeSegments?: readonly string[];
 };
 
@@ -1072,6 +1094,7 @@ export function checkAppPageRouteDynamicParams(
     isDynamicRoute: options.isDynamicRoute,
     params: options.params,
     rootParamNames: options.rootParamNames,
+    routePattern: options.staticParamsRoutePattern ?? options.routePattern,
   });
 }
 

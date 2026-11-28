@@ -1,4 +1,10 @@
-import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
+import {
+  pickRootParams,
+  runWithGenerateStaticParamsRootParams,
+  runWithRootParamsScope,
+  type RootParams,
+} from "vinext/shims/root-params";
+import { patternToNextRoute } from "../routing/route-pattern.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
@@ -13,6 +19,11 @@ type GenerateStaticParamsFunction = (input: { params: RootParams }) => unknown;
 type AppPrerenderStaticParamsResolverInput = {
   params: RootParams;
   rejectEmptyResults?: boolean;
+  /**
+   * The route being built, as a vinext pattern. A root param error names it,
+   * as Next.js names its work store's route.
+   */
+  route?: string;
 };
 
 type AppPrerenderStaticParamsResolver = (input: AppPrerenderStaticParamsResolverInput) => unknown;
@@ -81,9 +92,6 @@ export function createAppPrerenderStaticParamsResolver(
   );
   if (usableSources.length === 0) return null;
 
-  const filterRootParams = (params: RootParams): RootParams =>
-    pickRootParams(params, rootParamNames ?? []);
-
   // Resolve lazy page modules once, on first invocation (prerender time), and
   // memoize the combined function list. Dedup concurrent callers. Resolution
   // preserves `sources` order: each source maps to its eager function or its
@@ -117,6 +125,10 @@ export function createAppPrerenderStaticParamsResolver(
 
   return async (input) => {
     const fns = await resolveFns();
+    // Each generator sees as root params only those its parent params provide.
+    const route = patternToNextRoute(input.route ?? "");
+    const runWithParentRootParams = <T>(parentParams: RootParams, fn: () => Promise<T>) =>
+      runWithGenerateStaticParamsRootParams(route, parentParams, rootParamNames ?? [], fn);
     // No generateStaticParams export anywhere for this pattern. Return null (not
     // []) so the prerender driver treats it as "no static params" — skipping
     // the route, or erroring under `output: export` — exactly as it did when an
@@ -128,8 +140,7 @@ export function createAppPrerenderStaticParamsResolver(
       // Wrap the single source in the same non-array/non-object guards as the
       // multi-source composition path so the contract is uniform regardless of
       // how many sources were composed.
-      const picked = filterRootParams(input.params);
-      return runWithRootParamsScope(picked, async () => {
+      return runWithParentRootParams(input.params, async () => {
         const result = await single({ params: input.params });
         if (!Array.isArray(result)) {
           return invalidGenerateStaticParamsResult("generateStaticParams must return an array");
@@ -155,9 +166,7 @@ export function createAppPrerenderStaticParamsResolver(
       const hasParentSets = paramSets.length > 0;
 
       for (const parentParams of hasParentSets ? paramSets : [{}]) {
-        const rootScope = filterRootParams(parentParams);
-
-        const result = await runWithRootParamsScope(rootScope, async () =>
+        const result = await runWithParentRootParams(parentParams, async () =>
           generateStaticParams({ params: parentParams }),
         );
 
@@ -192,6 +201,8 @@ type CallAppPrerenderStaticParamsOptions = {
   params: RootParams;
   pattern: string;
   rejectEmptyResults?: boolean;
+  /** The route being built, when the pattern is a shared layout's key. */
+  route?: string;
   rootParamNamesByPattern: Record<string, readonly string[] | undefined>;
 };
 
@@ -199,11 +210,12 @@ export async function callAppPrerenderStaticParams(
   options: CallAppPrerenderStaticParamsOptions,
 ): Promise<unknown> {
   const picked = pickRootParams(options.params, options.rootParamNamesByPattern[options.pattern]);
+  const route = options.route ?? options.pattern;
   return runWithRootParamsScope(picked, () =>
     options.fn(
       options.rejectEmptyResults
-        ? { params: options.params, rejectEmptyResults: true }
-        : { params: options.params },
+        ? { params: options.params, rejectEmptyResults: true, route }
+        : { params: options.params, route },
     ),
   );
 }

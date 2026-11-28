@@ -785,14 +785,21 @@ describe("app route handler dispatch", () => {
       });
     });
 
+    // Next.js runs a route handler's generator in a generate-static-params
+    // work unit with no root params, so a root param getter fails there.
     it("runs generateStaticParams without the request's root params", async () => {
+      let rootParamError: unknown;
       const result = await runWithRequestContext(
         createRequestContext({ rootParams: { lang: "fr" } }),
         async () => {
           const closed = dispatchClosedRoute({
             async generateStaticParams() {
-              const lang = await getRootParam("lang");
-              return lang ? [{ lang }] : [];
+              try {
+                return [{ lang: await getRootParam("lang") }];
+              } catch (error) {
+                rootParamError = error;
+                return [];
+              }
             },
             params: { lang: "fr" },
             pathname: "/fr/data",
@@ -802,6 +809,9 @@ describe("app route handler dispatch", () => {
         },
       );
       expect(result).toEqual({ status: 404, handlerCalls: [] });
+      expect(String(rootParamError)).toContain(
+        "Route /[lang]/data used `import('next/root-params').lang()` inside `generateStaticParams`, but the `lang` parameter was not provided",
+      );
     });
 
     it("keeps generateStaticParams' fetch state out of the request", async () => {

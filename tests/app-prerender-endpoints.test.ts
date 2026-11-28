@@ -45,8 +45,11 @@ describe("App prerender endpoint helpers", () => {
     const layoutGenerateStaticParams = vi.fn(() => [{ lang: "en", locale: "us" }]);
     const pageGenerateStaticParams = vi.fn(async ({ params }) => {
       const rootLang = await getRootParam("lang");
-      const rootLocale = await getRootParam("locale");
-      return [{ rootLang, rootLocale, slug: `${params.lang}-post` }];
+      // `locale` is not a root param here, so it is not in the scope.
+      expect(() => getRootParam("locale")).toThrow(
+        "the `locale` parameter was not provided by a parent `generateStaticParams`",
+      );
+      return [{ rootLang, slug: `${params.lang}-post` }];
     });
     const resolveStaticParams = createAppPrerenderStaticParamsResolver(
       [layoutGenerateStaticParams, pageGenerateStaticParams],
@@ -54,7 +57,7 @@ describe("App prerender endpoint helpers", () => {
     );
 
     await expect(resolveStaticParams?.({ params: {} })).resolves.toEqual([
-      { lang: "en", locale: "us", rootLang: "en", rootLocale: undefined, slug: "en-post" },
+      { lang: "en", locale: "us", rootLang: "en", slug: "en-post" },
     ]);
     expect(pageGenerateStaticParams).toHaveBeenCalledWith({
       params: { lang: "en", locale: "us" },
@@ -65,7 +68,9 @@ describe("App prerender endpoint helpers", () => {
     const first = vi.fn(async ({ params }) => {
       expect(params).toEqual({ lang: "en", category: "docs" });
       expect(await getRootParam("lang")).toBe("en");
-      expect(await getRootParam("category")).toBeUndefined();
+      expect(() => getRootParam("category")).toThrow(
+        "the `category` parameter was not provided by a parent `generateStaticParams`",
+      );
       return [{ slug: `${params.category}-post` }];
     });
 
@@ -109,6 +114,43 @@ describe("App prerender endpoint helpers", () => {
     expect(response?.status).toBe(500);
     await expect(response?.json()).resolves.toEqual({
       error: "Error: generateStaticParams must return an array of objects",
+    });
+  });
+
+  // Next.js names its work store's route, the page being built, in a root
+  // param error (server/request/root-params.ts), not the layout's segment.
+  it("names the requested route in a shared layout's root param error", async () => {
+    const response = await handleAppPrerenderEndpoint(
+      new Request(
+        "http://localhost/__vinext/prerender/static-params?" +
+          new URLSearchParams({
+            pattern: "layouts:[lang]/[locale]",
+            route: "/:lang/:locale/other/:slug",
+          }),
+      ),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        rootParamNamesByPattern: { "/:lang/:locale": ["lang", "locale"] },
+        staticParamsMap: {
+          "layouts:[lang]/[locale]": createAppPrerenderStaticParamsResolver(
+            [
+              async () => {
+                await getRootParam("lang");
+                return [{ lang: "en", locale: "us" }];
+              },
+            ],
+            ["lang", "locale"],
+          ),
+        },
+      },
+    );
+
+    expect(response?.status).toBe(500);
+    await expect(response?.json()).resolves.toEqual({
+      error: expect.stringContaining(
+        "Route /[lang]/[locale]/other/[slug] used `import('next/root-params').lang()` inside `generateStaticParams`",
+      ),
     });
   });
 
@@ -262,7 +304,10 @@ describe("App prerender endpoint helpers", () => {
       },
     );
 
-    expect(generateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
+    expect(generateStaticParams).toHaveBeenCalledWith({
+      params: { category: "docs" },
+      route: "/blog/:slug",
+    });
     expect(response?.status).toBe(200);
     expect(response?.headers.get("cache-control")).toBe("no-store");
     await expect(response?.json()).resolves.toEqual([{ category: "docs", slug: "hello" }]);
@@ -310,7 +355,7 @@ describe("App prerender endpoint helpers", () => {
       },
     );
 
-    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {}, route: "/blog/:slug" });
     expect(response?.status).toBe(200);
   });
 
@@ -464,7 +509,10 @@ describe("App prerender endpoint helpers", () => {
         staticParamsMap: { "/:locale/:slug": generateStaticParams },
       },
     );
-    expect(generateStaticParams).toHaveBeenCalledWith({ params: { locale: undefined } });
+    expect(generateStaticParams).toHaveBeenCalledWith({
+      params: { locale: undefined },
+      route: "/:locale/:slug",
+    });
     expect(generateStaticParams.mock.calls[0]?.[0]).toHaveProperty("params.locale");
   });
 

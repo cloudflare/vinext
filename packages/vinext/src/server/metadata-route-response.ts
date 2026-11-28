@@ -320,7 +320,7 @@ export async function getPrerenderableMetadataRoutePaths(
     }
 
     const generateSitemaps = functions.generateSitemaps;
-    const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
+    const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}), true);
     for (const path of generatedSitemapPaths(route, sitemaps)) {
       paths.push({
         path,
@@ -341,12 +341,21 @@ export async function getPrerenderableMetadataRoutePaths(
 function runMetadataRouteGenerator<T>(
   route: MetadataRuntimeRoute,
   fn: () => Promise<T>,
+  generatesIds = false,
 ): Promise<T> {
+  const pattern = metadataRouteCacheabilityPattern(route);
   return runStaticParamsGeneration(
     route.module ?? {},
-    metadataRouteCacheabilityPattern(route),
+    pattern,
     route.routeSegments ?? [],
     fn,
+    // Next.js serves a route whose generateSitemaps or generateImageMetadata
+    // makes ids as a route handler below the metadata route's page, which its
+    // errors name: /sitemap.xml as /sitemap/[__metadata_id__]
+    // (lib/metadata/get-metadata-route.ts normalizeMetadataPageToRoute).
+    generatesIds
+      ? `${route.type === "sitemap" ? pattern.replace(/\.xml$/, "") : pattern}/[__metadata_id__]`
+      : pattern,
   );
 }
 
@@ -438,14 +447,20 @@ export async function getWarmableMetadataRoutes(
     if (route.type === "sitemap" && functions.generateSitemaps) {
       if (route.patternParts) continue;
       const generateSitemaps = functions.generateSitemaps;
-      const sitemaps = await runMetadataRouteGenerator(route, async () => generateSitemaps({}));
+      const sitemaps = await runMetadataRouteGenerator(
+        route,
+        async () => generateSitemaps({}),
+        true,
+      );
       routes.push({ ...base, paths: generatedSitemapPaths(route, sitemaps) });
     } else if (functions.generateImageMetadata) {
       if (route.patternParts) continue;
       // Next.js's generated generateStaticParams passes its plain params.
       const generateImageMetadata = functions.generateImageMetadata;
-      const imageMetadata = await runMetadataRouteGenerator(route, async () =>
-        generateImageMetadata({ params: {} }),
+      const imageMetadata = await runMetadataRouteGenerator(
+        route,
+        async () => generateImageMetadata({ params: {} }),
+        true,
       );
       routes.push({ ...base, paths: generatedImagePaths(route, imageMetadata) });
     } else if (route.patternParts) {
@@ -1243,6 +1258,7 @@ async function renderMetadataRouteRequest(
         ),
         params: validationParams,
         requiredParamNames: routePatternParamNames(route.patternParts ?? []),
+        routePattern: metadataRouteCacheabilityPattern(route),
       });
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }

@@ -16,7 +16,11 @@ import {
   runOutsideWorkStoreScope,
 } from "vinext/shims/internal/work-store-scope";
 
-type GenerateStaticParams = (args: { params: RootParams; rejectEmptyResults?: boolean }) => unknown;
+type GenerateStaticParams = (args: {
+  params: RootParams;
+  rejectEmptyResults?: boolean;
+  route?: string;
+}) => unknown;
 
 export type AppPrerenderStaticParamsMap = Record<string, GenerateStaticParams | null | undefined>;
 export type AppPrerenderRootParamNamesMap = Record<string, readonly string[] | undefined>;
@@ -123,6 +127,7 @@ async function handleStaticParamsEndpoint(
         params,
         pattern,
         rejectEmptyResults: url.searchParams.get("rejectEmptyResults") === "1",
+        route: url.searchParams.get("route") ?? undefined,
         rootParamNamesByPattern: options.rootParamNamesByPattern ?? {},
       }),
     );

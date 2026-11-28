@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 
 describe("createAppPrerenderStaticParamsResolver", () => {
   it("returns null when there are no sources at all", () => {
@@ -113,6 +114,117 @@ describe("createAppPrerenderStaticParamsResolver", () => {
     const nonPlainEntry = createAppPrerenderStaticParamsResolver([() => [new Date(0)]]);
     await expect(nonPlainEntry!({ params: {} })).rejects.toThrow(
       "generateStaticParams must return an array of objects",
+    );
+  });
+});
+
+// Ported from Next.js server/request/root-params.ts (the `generate-static-params`
+// work unit) and build/static-paths/app.ts `callGenerateStaticParams`: a
+// generator sees only the root params its parent generators provided, and
+// reading another one fails the build. Mirrors the deploy-suite fixture
+// app-root-params-getters/generate-static-params-error, whose [lang]/[locale]
+// layout calls lang() inside its own generateStaticParams.
+describe("createAppPrerenderStaticParamsResolver root params", () => {
+  const unprovidedLang =
+    "Route /[lang]/[locale] used `import('next/root-params').lang()` inside `generateStaticParams`, but the `lang` parameter was not provided by a parent `generateStaticParams`.";
+
+  it("rejects when the first of several generators reads a root param no parent provided", async () => {
+    const langLocaleLayout = async () => {
+      await getRootParam("lang");
+      return [{ lang: "en", locale: "us" }];
+    };
+    const page = () => [];
+    const resolver = createAppPrerenderStaticParamsResolver(
+      [langLocaleLayout, page],
+      ["lang", "locale"],
+    );
+
+    await expect(resolver!({ params: {}, route: "/:lang/:locale" })).rejects.toThrow(
+      unprovidedLang,
+    );
+  });
+
+  it("rejects when a single generator reads a root param no parent provided", async () => {
+    const langLocaleLayout = async () => {
+      await getRootParam("lang");
+      return [{ lang: "en", locale: "us" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([langLocaleLayout], ["lang", "locale"]);
+
+    await expect(resolver!({ params: {}, route: "/:lang/:locale" })).rejects.toThrow(
+      unprovidedLang,
+    );
+  });
+
+  it("gives a nested generator the root params its parents provided", async () => {
+    const seen: unknown[] = [];
+    const langLayout = () => [{ lang: "en" }];
+    const localeLayout = async () => {
+      seen.push(await getRootParam("lang"));
+      return [{ locale: "us" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver(
+      [langLayout, localeLayout],
+      ["lang", "locale"],
+    );
+
+    await expect(resolver!({ params: {}, route: "/:lang/:locale" })).resolves.toEqual([
+      { lang: "en", locale: "us" },
+    ]);
+    expect(seen).toEqual(["en"]);
+  });
+
+  it("names the route being built, not the shared layout's prefix", async () => {
+    const langLocaleLayout = async () => {
+      await getRootParam("lang");
+      return [{ lang: "en", locale: "us" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([langLocaleLayout], ["lang", "locale"]);
+
+    await expect(resolver!({ params: {}, route: "/:lang/:locale/other/:slug" })).rejects.toThrow(
+      "Route /[lang]/[locale]/other/[slug] used `import('next/root-params').lang()` inside `generateStaticParams`",
+    );
+  });
+
+  it("names an intercepting route in Next.js route syntax", async () => {
+    const page = async () => {
+      await getRootParam("lang");
+      return [{ id: "1" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([page], []);
+
+    await expect(resolver!({ params: {}, route: "/feed/(.):id/:rest+/:opt*" })).rejects.toThrow(
+      "Route /feed/(.)[id]/[...rest]/[[...opt]] used `import('next/root-params').lang()` inside `generateStaticParams`",
+    );
+  });
+
+  it("treats a root param named like an Object.prototype member as provided", async () => {
+    // Next.js checks `key in parentParams` and `paramName in rootParams` on
+    // plain objects, so an inherited name such as `constructor` passes both
+    // checks, even in the generator of the segment that provides it.
+    const constructorLayout = async () => {
+      await getRootParam("constructor");
+      return [{ constructor: "a" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([constructorLayout], ["constructor"]);
+
+    await expect(resolver!({ params: {}, route: "/:constructor" })).resolves.toEqual([
+      { constructor: "a" },
+    ]);
+  });
+
+  it("rejects a root param getter on a route without root params", async () => {
+    // `next/root-params` exports the getters of every root, so another
+    // root's `lang()` can run here. Next.js's work unit then has no root
+    // params at all.
+    const page = async () => {
+      await getRootParam("lang");
+      return [{ slug: "post" }];
+    };
+    const resolver = createAppPrerenderStaticParamsResolver([page], []);
+
+    await expect(resolver!({ params: {}, route: "/blog/:slug" })).rejects.toThrow(
+      "Route /blog/[slug] used `import('next/root-params').lang()` inside `generateStaticParams`, but the `lang` parameter was not provided",
     );
   });
 });
