@@ -10,7 +10,7 @@
  * that do `new AsyncLocalStorage()` without an import fail with
  *   ReferenceError: AsyncLocalStorage is not defined.
  */
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { AsyncLocalStorage as NodeAsyncLocalStorage } from "node:async_hooks";
 
 import { installServerGlobals } from "../packages/vinext/src/server/server-globals.js";
@@ -162,6 +162,105 @@ describe("edge runtime globals", () => {
     for (const [i, response] of responses.entries()) {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({ id: ids[i] });
+    }
+  });
+});
+
+type TaskLike = { run: <T>(fn: () => T) => T };
+
+describe("console.createTask fallback", () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(console, "createTask");
+
+  afterEach(() => {
+    if (originalDescriptor) {
+      Object.defineProperty(console, "createTask", originalDescriptor);
+    } else {
+      Reflect.deleteProperty(console, "createTask");
+    }
+  });
+
+  it("removes a createTask implementation that throws when called", () => {
+    // workerd exposes console.createTask but throws "not implemented" on call.
+    Object.defineProperty(console, "createTask", {
+      configurable: true,
+      writable: true,
+      value: () => {
+        throw new Error("not implemented");
+      },
+    });
+
+    installServerGlobals();
+
+    expect((console as unknown as { createTask?: unknown }).createTask).toBeUndefined();
+    // React uses this truthiness check and its own no-op fallback.
+    const createTask = console.createTask ? console.createTask : () => null;
+    expect(createTask("render")).toBeNull();
+
+    // Reinstalling globals must not add the unsupported API back.
+    installServerGlobals();
+    expect((console as unknown as { createTask?: unknown }).createTask).toBeUndefined();
+  });
+
+  it("leaves a working createTask implementation untouched", () => {
+    const working = (): TaskLike => ({ run: (fn) => fn() });
+    Object.defineProperty(console, "createTask", {
+      configurable: true,
+      writable: true,
+      value: working,
+    });
+
+    installServerGlobals();
+
+    expect((console as { createTask: unknown }).createTask).toBe(working);
+  });
+
+  it("removes a truthy non-function that would fool React's feature check", () => {
+    Object.defineProperty(console, "createTask", {
+      configurable: true,
+      writable: true,
+      value: {},
+    });
+
+    installServerGlobals();
+
+    expect((console as unknown as { createTask?: unknown }).createTask).toBeUndefined();
+  });
+
+  it("removes a task implementation that does not run the callback", () => {
+    Object.defineProperty(console, "createTask", {
+      configurable: true,
+      writable: true,
+      value: () => ({ run: () => undefined }),
+    });
+
+    installServerGlobals();
+
+    expect((console as unknown as { createTask?: unknown }).createTask).toBeUndefined();
+  });
+
+  it("removes a throwing accessor", () => {
+    Object.defineProperty(console, "createTask", {
+      configurable: true,
+      get() {
+        throw new Error("not implemented");
+      },
+    });
+
+    installServerGlobals();
+
+    expect((console as unknown as { createTask?: unknown }).createTask).toBeUndefined();
+  });
+
+  it("does not add createTask when the runtime does not expose it", () => {
+    const consoleWithoutCreateTask = console as unknown as Record<string, unknown>;
+    const saved = consoleWithoutCreateTask["createTask"];
+    delete consoleWithoutCreateTask["createTask"];
+
+    try {
+      installServerGlobals();
+      expect("createTask" in (console as object)).toBe(false);
+    } finally {
+      consoleWithoutCreateTask["createTask"] = saved;
     }
   });
 });
