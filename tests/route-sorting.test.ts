@@ -12,9 +12,10 @@
  * extraction, query stripping, trailing slash, catch-all, @slot filtering) are
  * tested in routing.test.ts — not duplicated here.
  */
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import path from "node:path";
 import os from "node:os";
+import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import {
   pagesRouter,
@@ -477,7 +478,10 @@ describe("App Router route sorting (additional)", () => {
     }
   });
 
-  it("rejects grouped slot sub-pages that resolve to the same URL path within one slot", async () => {
+  // Next.js 16.4.6 builds this tree with both bundlers. Turbopack, the
+  // default, renders the first route group by name ((a)); webpack builds it
+  // but fails the request with a client reference manifest invariant.
+  it("uses the first route group by name for grouped slot sub-pages at one URL within one slot", async () => {
     const tmpRoot = await makeTempDir("vinext-app-slot-route-group-conflict-");
     const appDir = path.join(tmpRoot, "app");
 
@@ -513,8 +517,30 @@ describe("App Router route sorting (additional)", () => {
         "export default function Page() { return null; }",
       );
 
+      // List @team's folders in reverse, so (b) comes first unless the scan
+      // sorts them.
+      const readdirSync = nodeFs.readdirSync;
+      const readdirSpy = vi.spyOn(nodeFs, "readdirSync").mockImplementation(((
+        dir: nodeFs.PathLike,
+        options?: unknown,
+      ) => {
+        const entries = readdirSync(dir, options as never) as unknown[];
+        return path.basename(String(dir)) === "@team" ? [...entries].reverse() : entries;
+      }) as typeof nodeFs.readdirSync);
+
       invalidateAppRouteCache();
-      await expect(appRouter(appDir)).rejects.toThrow(/same path.*\/dashboard\/members/);
+      let routes: Awaited<ReturnType<typeof appRouter>>;
+      try {
+        routes = await appRouter(appDir);
+      } finally {
+        readdirSpy.mockRestore();
+      }
+      const membersRoute = routes.find((route) => route.pattern === "/dashboard/members");
+
+      expect(membersRoute).toBeDefined();
+      expect(membersRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
+        canonical(path.join("@team", "(a)", "members")),
+      );
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();

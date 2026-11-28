@@ -582,6 +582,126 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/parallel-routes-and-interception ("should match parallel routes")
+  // https://github.com/vercel/next.js/tree/v16.4.6/test/e2e/app-dir/parallel-routes-and-interception/app/parallel
+  // test/e2e/app-dir/parallel-routes-pruned-matchers ("keeps a complete nested parallel route matcher")
+  // https://github.com/vercel/next.js/tree/v16.4.6/test/e2e/app-dir/parallel-routes-pruned-matchers/app/nested-parallel
+  describe("pages under a slot's nested slots", () => {
+    // A page inside a slot's own nested slot (e.g. @foo/nested/@a/page.tsx)
+    // fills that nested slot. It is not a second page for the outer slot at
+    // the same URL, so it can't conflict with the outer slot's own page.
+    const appDir = path.resolve(import.meta.dirname, "fixtures/app-nested-slot-pages/app");
+
+    it("keeps the slot's own page when a nested slot page resolves to the same URL", async () => {
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const nested = findRoute(graph.routes, "/parallel/nested");
+      expect(nested.pagePath).toBe(canonical(appDir, "parallel/nested/page.tsx"));
+      expect(nested.parallelSlots.find((slot) => slot.name === "foo")?.pagePath).toBe(
+        canonical(appDir, "parallel/@foo/nested/page.tsx"),
+      );
+
+      // @outer/@inner/specific/page.tsx and @outer/specific/page.tsx both
+      // resolve to /nested-parallel/specific.
+      const specific = findRoute(graph.routes, "/nested-parallel/specific");
+      expect(specific.pagePath).toBe(canonical(appDir, "nested-parallel/specific/page.tsx"));
+    });
+
+    it("gives a synthetic slot sub-route the slot's own page over a nested slot page", async () => {
+      // nested-parallel-default has no specific/page.tsx, so
+      // /nested-parallel-default/specific is built from the @outer slot's
+      // pages. `@inner` sorts before `specific` in the directory listing.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const specific = findRoute(graph.routes, "/nested-parallel-default/specific");
+      expect(specific.pagePath).toBe(canonical(appDir, "nested-parallel-default/default.tsx"));
+      expect(specific.parallelSlots.find((slot) => slot.name === "outer")?.pagePath).toBe(
+        canonical(appDir, "nested-parallel-default/@outer/specific/page.tsx"),
+      );
+    });
+
+    it("lets a slot's @children page replace its direct page at the same URL", async () => {
+      // Next.js 16.4.6 Turbopack renders @team/members/@children/page.tsx for
+      // /children-slot-override/members (and, with strict route matching,
+      // fails the build because @team/members/page.tsx is then unreachable).
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const members = findRoute(graph.routes, "/children-slot-override/members");
+      expect(members.parallelSlots.find((slot) => slot.name === "team")?.pagePath).toBe(
+        canonical(appDir, "children-slot-override/@team/members/@children/page.tsx"),
+      );
+
+      // The route's segments end with the slot's own depth, which segment
+      // config uses to place the slot's layouts (dynamicParams on
+      // @team/[id]/layout.tsx belongs to the route's [id] segment).
+      const dynamic = findRoute(graph.routes, "/children-slot-override/:id");
+      const dynamicTeam = dynamic.parallelSlots.find((slot) => slot.name === "team");
+      expect(dynamicTeam?.pagePath).toBe(
+        canonical(appDir, "children-slot-override/@team/[id]/@children/page.tsx"),
+      );
+      expect(dynamicTeam?.routeSegments).toEqual(["[id]", "(__SLOT__)"]);
+      expect(dynamicTeam?.configLayoutTreePositions).toEqual([1]);
+      expect(dynamic.routeSegments).toEqual(["children-slot-override", "[id]", "@children"]);
+
+      // Same when /members is a real page (and the owner has no default.tsx).
+      const realMembers = findRoute(graph.routes, "/children-slot-override-page/members");
+      expect(realMembers.pagePath).toBe(
+        canonical(appDir, "children-slot-override-page/members/page.tsx"),
+      );
+      const realMembersTeam = realMembers.parallelSlots.find((slot) => slot.name === "team");
+      expect(realMembersTeam?.pagePath).toBe(
+        canonical(appDir, "children-slot-override-page/@team/members/@children/page.tsx"),
+      );
+      // useSelectedLayoutSegments("team") in Next.js 16.4.6 Turbopack shows the
+      // @children directory as its virtual (__SLOT__) segment, never as @children.
+      expect(realMembersTeam?.routeSegments).toEqual(["members", "(__SLOT__)"]);
+    });
+
+    it("keeps every slot at a synthetic route's depth", async () => {
+      // @alpha/[id] reaches :id first, @beta/[id]/@children is one folder
+      // deeper. Segment config places @beta/[id]/layout.tsx (dynamicParams =
+      // false) by the depth of beta's segments, so they match the route's.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const dynamic = findRoute(graph.routes, "/children-slot-siblings/:id");
+      const slot = (name: string) => dynamic.parallelSlots.find((entry) => entry.name === name);
+      expect(dynamic.routeSegments).toEqual(["children-slot-siblings", "[id]"]);
+      expect(slot("alpha")?.routeSegments).toEqual(["[id]"]);
+      expect(slot("beta")?.pagePath).toBe(
+        canonical(appDir, "children-slot-siblings/@beta/[id]/@children/page.tsx"),
+      );
+      expect(slot("beta")?.routeSegments).toEqual(["[id]"]);
+    });
+
+    it("keeps a slot's direct page over an @children page inside a route group", async () => {
+      // Next.js 16.4.6 renders @team/admins/page.tsx for /children-slot-override-page/admins
+      // with both Turbopack and webpack: a route group's subtree never replaces
+      // the page before it, even when it holds an @children page.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const admins = findRoute(graph.routes, "/children-slot-override-page/admins");
+      const team = admins.parallelSlots.find((slot) => slot.name === "team");
+      expect(team?.pagePath).toBe(
+        canonical(appDir, "children-slot-override-page/@team/admins/page.tsx"),
+      );
+      expect(team?.routeSegments).toEqual(["admins"]);
+    });
+
+    it("shows a mirrored @children slot page as the (__SLOT__) segment", async () => {
+      // The layout-only owner has no page, so the slot page comes from the
+      // pattern-compatible mirror @team/[id]/@children/page.tsx.
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      const members = findRoute(graph.routes, "/children-slot-mirror/members");
+      const team = members.parallelSlots.find((slot) => slot.name === "team");
+      expect(team?.pagePath).toBe(
+        canonical(appDir, "children-slot-mirror/@team/[id]/@children/page.tsx"),
+      );
+      expect(team?.routeSegments).toEqual(["[id]", "(__SLOT__)"]);
+    });
+  });
+
   // Regression for https://github.com/cloudflare/vinext/issues/1535
   // Ported from Next.js: test/e2e/app-dir/parallel-routes-catchall/
   // ("should match correctly when defining an explicit slot but no page").
