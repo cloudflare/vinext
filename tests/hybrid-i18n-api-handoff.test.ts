@@ -13,7 +13,7 @@ describe("hybrid i18n API handoff", () => {
   // Ported from Next.js: test/e2e/i18n-api-support/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-api-support/index.test.ts
   it.each(["development", "production"] as const)(
-    "does not turn locale normalization into an App API rewrite in %s",
+    "distinguishes inferred and explicit locales when handing off to the App Router in %s",
     async (mode) => {
       const fixtureRoot = await createIsolatedFixture(
         FIXTURE_DIR,
@@ -61,6 +61,33 @@ describe("hybrid i18n API handoff", () => {
 
         const localePrefixed = await fetch(`${baseUrl}/fr/api/direct`);
         expect(localePrefixed.status).toBe(404);
+
+        // Ported from Next.js: test/e2e/app-dir/i18n-app-pages-domain-routing/i18n-app-pages-domain-routing.test.ts
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/i18n-app-pages-domain-routing/i18n-app-pages-domain-routing.test.ts
+        for (const rewrite of ["before", "after", "fallback", "chain"]) {
+          const inferred = await fetch(`${baseUrl}/${rewrite}/item`);
+          expect(inferred.status, rewrite).toBe(200);
+          await expect(inferred.text(), rewrite).resolves.toContain(
+            '<p id="plain-rewrite">item</p>',
+          );
+
+          const explicit = await fetch(`${baseUrl}/fr/${rewrite}/item`);
+          expect(explicit.status, rewrite).toBe(200);
+          await expect(explicit.text(), rewrite).resolves.toContain(
+            '<p id="localized-rewrite">fr:item</p>',
+          );
+        }
+
+        for (const [pathname, locale] of [
+          ["/pages-rewrite", "en"],
+          ["/fr/pages-rewrite", "fr"],
+        ]) {
+          const response = await fetch(`${baseUrl}${pathname}`);
+          expect(response.status, pathname).toBe(200);
+          await expect(response.text(), pathname).resolves.toContain(
+            `<main data-locale="${locale}">Hybrid i18n API handoff fixture</main>`,
+          );
+        }
 
         if (mode === "production") {
           // Next.js answers the locale-detection redirect before it stages

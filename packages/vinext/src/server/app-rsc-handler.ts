@@ -919,27 +919,23 @@ async function applyRewrite(
     middlewareContext: AppRscMiddlewareContext;
     request: Request;
     requestContext: RequestContext;
-    rewrites: NextRewrite[];
-    /** Raw pathname identity used for config source matching and capture substitution. */
-    paramsPathname?: string;
+    rewrite: NextRewrite;
     /** Whether a staged response stage exists, so an external proxy answers in the uncached request stage. */
     staged: boolean;
     validateExternalRewriteRequest: () => Promise<Response | null>;
   },
-  cleanPathname: string,
-  recordCacheability = true,
+  sourcePathname: string,
 ): Promise<Response | string | null> {
-  if (!HAS_CONFIG_REWRITES || !options.rewrites.length) return null;
+  if (!HAS_CONFIG_REWRITES) return null;
 
-  const sourcePathname = options.paramsPathname ?? cleanPathname;
   const configMatchers = await import("../config/config-matchers.js");
   const rewritten = configMatchers.matchRewrite(
     sourcePathname,
-    options.rewrites,
+    [options.rewrite],
     options.requestContext,
     options.basePathState,
-    options.paramsPathname,
-    recordCacheability ? markConditionalRewriteCacheability : undefined,
+    sourcePathname,
+    options.staged ? undefined : markConditionalRewriteCacheability,
   );
   if (!rewritten) return null;
 
@@ -1874,43 +1870,59 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // file. A rewrite's destination decides this, not the request.
   if (didMiddlewareRewrite) filesystemRouteEligible = resolvedPathnameHasBasePath;
 
-  // Rewrites (beforeFiles, afterFiles, fallback) use `matchPathname` from
-  // above to splice in the default locale before matching. Route matching
-  // itself continues to use the un-prefixed `cleanPathname` because App
-  // Router files live under `app/...` with no locale segment. See issue
-  // #1336 item 4 / pages-i18n.normalizeDefaultLocalePathname.
-  for (const rewrite of options.configRewrites.beforeFiles) {
-    const beforeFilesRewrite = await applyRewrite(
+  let rewriteLocaleWasInferred = false;
+  const applyConfigRewrite = async (rewrite: NextRewrite) => {
+    const sourcePathname = cleanPathnameIsRequestPathname
+      ? requestPathname
+      : rewriteLocaleWasInferred
+        ? pathnameForResolvedUrl(resolvedUrl)
+        : cleanPathname;
+    const matchSource = matchPathname(sourcePathname);
+    const rewritten = await applyRewrite(
       {
         basePathState: currentBasePathState(),
         clearRequestContext: options.clearRequestContext,
         middlewareContext,
         // External RSC rewrites must forward the validated `_rsc` token so the
         // destination server can validate the request without the original URL.
-        request: request,
+        request,
         requestContext: requestContextForResolvedUrl(
           postMiddlewareRequestContext,
           resolvedUrl,
           url,
         ),
-        paramsPathname: matchPathname(
-          cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
-        ),
-        rewrites: [rewrite],
+        rewrite,
         staged: dispatchResponseStage !== undefined,
         validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
       },
-      matchPathname(cleanPathname),
-      dispatchResponseStage === undefined,
+      matchSource,
     );
-    if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
-    if (beforeFilesRewrite) {
-      resolvedUrl = mergeRewriteQuery(resolvedUrl, beforeFilesRewrite);
-      cleanPathname = pathnameForResolvedUrl(resolvedUrl);
+    if (typeof rewritten === "string") {
+      resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+      const destination = pathnameForResolvedUrl(resolvedUrl);
+      // Keep the routed URL for Pages i18n and later config matches. App files
+      // match the literal destination, without the default locale injected by
+      // the generated rewrite's :nextInternalLocale parameter.
+      const inferredLocale =
+        (rewriteLocaleWasInferred || sourcePathname !== matchSource) &&
+        rewrite.locale !== false &&
+        rewrite.destination.split("/", 2)[1] === ":nextInternalLocale"
+          ? matchSource.split("/", 2)[1]
+          : undefined;
+      const localePrefix = inferredLocale ? `/${inferredLocale}` : "";
+      rewriteLocaleWasInferred = hasBasePath(destination, localePrefix);
+      cleanPathname = rewriteLocaleWasInferred
+        ? stripBasePath(destination, localePrefix)
+        : destination;
       cleanPathnameIsRequestPathname = false;
       resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
       filesystemRouteEligible = resolvedPathnameHasBasePath;
     }
+    return rewritten;
+  };
+  for (const rewrite of options.configRewrites.beforeFiles) {
+    const result = await applyConfigRewrite(rewrite);
+    if (result instanceof Response) return result;
   }
 
   const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
@@ -2897,39 +2909,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   if (!isFinalRouteMatch && (!match || match.route.isDynamic)) {
     for (const rewrite of options.configRewrites.afterFiles) {
-      const afterFilesRewrite = await applyRewrite(
-        {
-          basePathState: currentBasePathState(),
-          clearRequestContext: options.clearRequestContext,
-          middlewareContext,
-          // External RSC rewrites must forward the validated `_rsc` token.
-          request: request,
-          requestContext: requestContextForResolvedUrl(
-            postMiddlewareRequestContext,
-            resolvedUrl,
-            url,
-          ),
-          paramsPathname: matchPathname(
-            cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
-          ),
-          rewrites: [rewrite],
-          staged: dispatchResponseStage !== undefined,
-          validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
-        },
-        matchPathname(cleanPathname),
-        dispatchResponseStage === undefined,
-      );
+      const afterFilesRewrite = await applyConfigRewrite(rewrite);
       if (afterFilesRewrite instanceof Response) {
         invalidateInterceptionCacheProof();
         return afterFilesRewrite;
       }
       if (!afterFilesRewrite) continue;
-      resolvedUrl = mergeRewriteQuery(resolvedUrl, afterFilesRewrite);
-      cleanPathname = pathnameForResolvedUrl(resolvedUrl);
-      cleanPathnameIsRequestPathname = false;
       invalidateInterceptionCacheProof();
-      resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
-      filesystemRouteEligible = resolvedPathnameHasBasePath;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
       const rewrittenImageEndpointResponse = await serveImageEndpointIfMatched();
@@ -2990,40 +2976,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         rewriteIndex++
       ) {
         const rewrite = options.configRewrites.fallback[rewriteIndex];
-        const fallbackRewrite = await applyRewrite(
-          {
-            basePathState: currentBasePathState(),
-            clearRequestContext: options.clearRequestContext,
-            middlewareContext,
-            // External RSC rewrites must forward the validated `_rsc` token.
-            request: request,
-            requestContext: requestContextForResolvedUrl(
-              postMiddlewareRequestContext,
-              resolvedUrl,
-              url,
-            ),
-            paramsPathname: matchPathname(
-              cleanPathnameIsRequestPathname ? requestPathname : cleanPathname,
-            ),
-            rewrites: [rewrite],
-            staged: dispatchResponseStage !== undefined,
-            validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
-          },
-          matchPathname(cleanPathname),
-          dispatchResponseStage === undefined,
-        );
+        const fallbackRewrite = await applyConfigRewrite(rewrite);
         if (fallbackRewrite instanceof Response) {
           invalidateInterceptionCacheProof();
           return fallbackRewrite;
         }
         if (!fallbackRewrite) continue;
         nextFallbackRewriteIndex = rewriteIndex + 1;
-        resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
-        cleanPathname = pathnameForResolvedUrl(resolvedUrl);
-        cleanPathnameIsRequestPathname = false;
         invalidateInterceptionCacheProof();
-        resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
-        filesystemRouteEligible = resolvedPathnameHasBasePath;
         const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
         if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
         const rewrittenImageEndpointResponse = await serveImageEndpointIfMatched();

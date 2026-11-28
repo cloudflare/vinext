@@ -1,3 +1,5 @@
+import { useRouter } from "next/router";
+
 export default function Home() {
-  return <main>Hybrid i18n API handoff fixture</main>;
+  return <main data-locale={useRouter().locale}>Hybrid i18n API handoff fixture</main>;
 }
