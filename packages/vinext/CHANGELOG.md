@@ -1,5 +1,17 @@
 # vinext
 
+## 1.4.8
+
+### Bug Fixes
+
+- **Prerender:** accept undefined optional catch-all params in static path discovery (#4891)
+- **Tracing:** stop a fully buffered response from keeping its request alive on workerd (#4944)
+- **Fetch Cache:** release a request's deduped fetch responses when its response closes (#4941)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.4.7
 
 ### Bug Fixes
@@ -18,7 +30,7 @@
 - render the target directly when a rewrite serves an intercepting source as a page without the intercept (#4802)
 - head an intercepted render by the metadata files of the intercepting page's own path (#4801)
 - keep a layout's parallel slots in the document of a page's notFound(), forbidden() and unauthorized() (#4800)
-- intercept from an unmatched URL's not-found page only where /_not-found matches the source (#4799)
+- intercept from an unmatched URL's not-found page only where /\_not-found matches the source (#4799)
 - return softly to an intercepted entry whose committed tree the client still holds (#4798)
 - keep the layouts a refresh renders for an intercepted route (#4797)
 - render the whole intercepting route from a sibling page without the slot (#4796)
