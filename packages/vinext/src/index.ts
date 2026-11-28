@@ -406,6 +406,14 @@ import {
 } from "./plugins/require-condition-resolution.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
+import { createServiceWorkerPlugin } from "./plugins/service-worker.js";
+import {
+  appendHeadersRule,
+  SERVICE_WORKER_CACHE_CONTROL,
+  serviceWorkerAllowedHeader,
+  serviceWorkerHeadersRule,
+  serviceWorkerOutputDir,
+} from "./utils/service-worker.js";
 import {
   consumerEnvironmentConditionFilter,
   getTypeofWindowReplacement,
@@ -1959,6 +1967,7 @@ type NitroSetupContext = {
     exportConditions?: string[];
     ignore?: string[];
     publicAssets?: { dir: string; baseURL?: string; fallthrough?: boolean; maxAge?: number }[];
+    routeRules?: Record<string, { headers?: Record<string, string> }>;
     traceDeps?: string[];
   };
   hooks: { callHook(name: string, ...args: unknown[]): Promise<unknown> };
@@ -9071,6 +9080,24 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
+          // Nitro's static handler serves compiled service workers in a build.
+          // Give them Next.js's headers through a route rule (as Nitro does for
+          // its own public asset cache headers): revalidated on every use, and
+          // allowed to register at `basePath`, above their own directory. In
+          // dev, vinext's middleware serves them with these headers itself.
+          if (!nitro.options.dev) {
+            const serviceWorkerRoute = `/${serviceWorkerOutputDir(nextConfig.basePath)}**`;
+            const routeRules = (nitro.options.routeRules ??= {});
+            routeRules[serviceWorkerRoute] = {
+              ...routeRules[serviceWorkerRoute],
+              headers: {
+                ...routeRules[serviceWorkerRoute]?.headers,
+                "cache-control": SERVICE_WORKER_CACHE_CONTROL,
+                "service-worker-allowed": serviceWorkerAllowedHeader(nextConfig.basePath),
+              },
+            };
+          }
+
           // Saves each request's raw target before h3 can rewrite req.url. The
           // dev server checks the raw target itself.
           if (!nitro.options.dev) {
@@ -9437,6 +9464,17 @@ export const loadServerActionClient = ${
           // Without this, Cloudflare serves them with max-age=0 which forces
           // unnecessary revalidation on every page load.
           const headersPath = path.join(clientDir, "_headers");
+          // Service workers keep a stable URL across builds, so like Next.js
+          // they are revalidated on every use instead of cached immutably, and
+          // register at `basePath` (above their own directory), which needs
+          // `Service-Worker-Allowed`. The rule follows every other one, so its
+          // `!` detach drops a broader rule's Cache-Control. A user `_headers`
+          // gets it appended, as registration fails without it.
+          const serviceWorkerRule = fs.existsSync(
+            path.join(clientDir, serviceWorkerOutputDir(nextConfig.basePath)),
+          )
+            ? serviceWorkerHeadersRule(nextConfig.basePath)
+            : "";
           if (!fs.existsSync(headersPath)) {
             const assetsDir = envConfig.build?.assetsDir ?? ASSET_PREFIX_URL_DIR;
             const headersContent = [
@@ -9446,7 +9484,11 @@ export const loadServerActionClient = ${
               "",
             ].join("\n");
             fs.mkdirSync(clientDir, { recursive: true });
-            fs.writeFileSync(headersPath, headersContent);
+            fs.writeFileSync(headersPath, headersContent + serviceWorkerRule);
+          } else if (serviceWorkerRule) {
+            const userHeaders = fs.readFileSync(headersPath, "utf8");
+            const merged = appendHeadersRule(userHeaders, serviceWorkerRule);
+            if (merged !== userHeaders) fs.writeFileSync(headersPath, merged);
           }
 
           // Keep Vite build metadata (the `.vite/` manifests) out of the
@@ -9464,6 +9506,9 @@ export const loadServerActionClient = ${
     // Handle `import x from '*.wasm?module'` — see
     // src/plugins/wasm-module-import.ts. Fixes #1351.
     createWasmModuleImportPlugin(),
+    // `navigator.serviceWorker.register(new URL(..., import.meta.url))` —
+    // see src/plugins/service-worker.ts.
+    createServiceWorkerPlugin({ getBasePath: () => nextConfig?.basePath ?? "" }),
     createOgHarfbuzzPlugin(),
     {
       // @vercel/og WASM patch — universal (workerd + Node.js)
