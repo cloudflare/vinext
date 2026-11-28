@@ -36,6 +36,7 @@ import {
 import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import {
+  VINEXT_PAGES_NO_FALLBACK_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -250,6 +251,71 @@ describe("createPagesPageHandler — pre-render response headers", () => {
   });
 });
 
+describe("createPagesPageHandler — fallback: false marker", () => {
+  it("reports a rejection for a route pattern a header value cannot carry", async () => {
+    // `pages/日本/[slug].tsx`: the marker holds the pattern percent-encoded.
+    const route = makeRoute(
+      "/日本/:slug",
+      makePageModule({
+        getStaticPaths: async () => ({ paths: [], fallback: false }),
+        getStaticProps: async () => ({ props: {} }),
+      }),
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [route],
+        matchRoute: (_url, routes) => ({ route: routes[0], params: { slug: "unlisted" } }),
+      }),
+    );
+
+    const response = await handler(
+      makeRequest("/%E6%97%A5%E6%9C%AC/unlisted"),
+      "/%E6%97%A5%E6%9C%AC/unlisted",
+      null,
+      null,
+      { reportNoFallback: true },
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get(VINEXT_PAGES_NO_FALLBACK_HEADER)).toBe(
+      encodeURIComponent("/日本/:slug"),
+    );
+    // A cache in front of the Workers response stage must not keep it.
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("strips the internal marker from a response page code sets it on", async () => {
+    // Only the handler's own `fallback: false` rejection may carry the marker
+    // the request pipeline resumes routing on.
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async ({
+                res,
+              }: {
+                res: { setHeader(name: string, value: string): void };
+              }) => {
+                res.setHeader(VINEXT_PAGES_NO_FALLBACK_HEADER, "/");
+                return { notFound: true };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const response = await handler(makeRequest(), "/", null, null, { reportNoFallback: true });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.has(VINEXT_PAGES_NO_FALLBACK_HEADER)).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback
 // ---------------------------------------------------------------------------
@@ -302,6 +368,40 @@ describe("createPagesPageHandler — route miss", () => {
       expect(await response.text()).toBe("prebuilt 404");
     },
   );
+
+  it.each([
+    ["a route miss", "/missing"],
+    ["a rewrite to /404", "/404"],
+  ])("reads an ISR /404 entry for %s past a rejecting page", async (_name, routeUrl) => {
+    // A rewrite that resumed routing past a `fallback: false` page and reached
+    // no route, or `/404` itself, renders `/404` under its own identity.
+    const adapter = new DefaultCdnCacheAdapter();
+    const get = vi.spyOn(adapter, "get").mockResolvedValue({
+      lastModified: Date.now(),
+      cacheControl: { revalidate: 60 },
+      value: {
+        kind: "PAGES",
+        html: "stored 404",
+        pageData: {},
+        status: 404,
+        headers: undefined,
+      },
+    });
+    setCdnCacheAdapter(adapter);
+    const getStaticProps = vi.fn(async () => ({ props: {}, revalidate: 60 }));
+    const handler = createPagesPageHandler(
+      makeOpts({ pageRoutes: [makeRoute("/404", makePageModule({ getStaticProps }))] }),
+    );
+
+    const response = await handler(makeRequest("/missing"), routeUrl, null, null, {
+      noFallbackRoutes: ["/:slug"],
+    });
+
+    expect(get).toHaveBeenCalledWith(pagesIsrCacheKey("/404", "test-build-id"));
+    expect(getStaticProps).not.toHaveBeenCalled();
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("stored 404");
+  });
 
   it("returns default 404 when no custom 404 page and no _error page", async () => {
     const handler = createPagesPageHandler(makeOpts({ pageRoutes: [] }));

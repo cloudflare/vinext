@@ -11,6 +11,7 @@ import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protoc
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
+  beginRouteCacheability,
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
@@ -1397,7 +1398,7 @@ describe("beforeFiles rewrites", () => {
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
       "/rewrite-no-basePath",
-      undefined,
+      { reportNoFallback: true },
       expect.any(Headers),
     );
     expect(proxyExternal).not.toHaveBeenCalled();
@@ -2886,6 +2887,471 @@ describe("deferred error page re-render on 404", () => {
       expect.any(Headers),
     );
     expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/fallback-target?from=fallback");
+  });
+});
+
+// A `fallback: false` page that rejects the path hands routing on to the next
+// matching route, then to fallback rewrites, as Next.js does on
+// `NoFallbackError` (router-server.ts, resolve-routes.ts `invokedOutputs`).
+describe("fallback: false resumption", () => {
+  const SLUG = { route: { isDynamic: true, pattern: "/:slug" } };
+  const CATCH_ALL = { route: { isDynamic: true, pattern: "/:path*" } };
+  const ANOTHER = { route: { isDynamic: false, pattern: "/another" } };
+
+  type TestRoute = {
+    pattern: string;
+    isDynamic: boolean;
+    test: RegExp;
+    rejects?: boolean;
+    dataKind?: "server" | "static";
+  };
+
+  // Routes in match order, with a renderer that answers like the page handler:
+  // a rejecting `fallback: false` page reports a bodiless marked 404 when asked
+  // to, and renders its own 404 page otherwise.
+  function makeApp(routes: TestRoute[], status = 200) {
+    const match = (pathname: string, excluded?: ReadonlySet<string>) =>
+      routes.find((route) => route.test.test(pathname) && !excluded?.has(route.pattern));
+    const matchPageRoute = vi.fn(
+      (pathname: string, _request: Request, excluded?: ReadonlySet<string>) => {
+        const route = match(pathname, excluded);
+        return route
+          ? {
+              route: {
+                isDynamic: route.isDynamic,
+                pattern: route.pattern,
+                dataKind: route.dataKind,
+              },
+            }
+          : null;
+      },
+    );
+    const renderPage = vi.fn(
+      async (_req: Request, url: string, opts?: PagesRenderOptions, _staged?: Headers) => {
+        const route = match(url.split("?")[0], new Set(opts?.noFallbackRoutes));
+        if (!route) return new Response("missing", { status: 404 });
+        if (route.rejects) {
+          if (opts?.reportNoFallback && opts.noFallbackRejected !== route.pattern) {
+            return new Response(null, {
+              status: 404,
+              headers: { "x-vinext-pages-no-fallback": encodeURIComponent(route.pattern) },
+            });
+          }
+          return new Response(`404 page for ${route.pattern}`, { status: 404 });
+        }
+        return new Response(`rendered ${route.pattern} ${url}`, { status });
+      },
+    );
+    return { matchPageRoute, renderPage };
+  }
+
+  const slug: TestRoute = { pattern: "/:slug", isDynamic: true, test: /^\/[^/]+$/, rejects: true };
+  const catchAll: TestRoute = { pattern: "/:path*", isDynamic: true, test: /^\// };
+  const another: TestRoute = { pattern: "/another", isDynamic: false, test: /^\/another$/ };
+
+  it("renders the next matching route without the rejecting one", async () => {
+    const app = makeApp([slug, catchAll]);
+    const result = await runPagesRequest(
+      makeRequest("/unlisted"),
+      baseDeps({ isDataReq: true, ...app }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    await expect(result.response.text()).resolves.toBe("rendered /:path* /unlisted");
+    expect(result.response.headers.has("x-vinext-pages-no-fallback")).toBe(false);
+    // The client learns which route answered.
+    expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/[[...path]]");
+    expect(app.renderPage.mock.calls.map((call) => call[2])).toEqual([
+      { isDataReq: true, reportNoFallback: true },
+      { isDataReq: true, noFallbackRoutes: ["/:slug"], reportNoFallback: true },
+    ]);
+  });
+
+  it("resumes past a rejecting page whose pattern is not header-safe", async () => {
+    // `pages/日本/[slug].tsx`, reported with its pattern percent-encoded.
+    const japanese: TestRoute = {
+      pattern: "/日本/:slug",
+      isDynamic: true,
+      test: /^\/%E6%97%A5%E6%9C%AC\/[^/]+$/,
+      rejects: true,
+    };
+    const app = makeApp([japanese, catchAll]);
+    const result = await runPagesRequest(
+      makeRequest("/%E6%97%A5%E6%9C%AC/unlisted"),
+      baseDeps(app),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    await expect(result.response.text()).resolves.toBe(
+      "rendered /:path* /%E6%97%A5%E6%9C%AC/unlisted",
+    );
+    expect(app.renderPage.mock.calls[1]?.[2]).toMatchObject({ noFallbackRoutes: ["/日本/:slug"] });
+  });
+
+  it("renders the rejecting page's own 404 when no route remains", async () => {
+    const app = makeApp([slug]);
+    const result = await runPagesRequest(makeRequest("/unlisted"), baseDeps(app));
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(404);
+    await expect(result.response.text()).resolves.toBe("404 page for /:slug");
+    expect(result.response.headers.has("x-vinext-pages-no-fallback")).toBe(false);
+    expect(app.renderPage.mock.calls.map((call) => call[2])).toEqual([
+      { reportNoFallback: true },
+      { noFallbackRejected: "/:slug" },
+    ]);
+  });
+
+  it("ignores a marker header the rendered page did not report for itself", async () => {
+    const renderPage = vi.fn(
+      async () =>
+        new Response("user page", { headers: { "x-vinext-pages-no-fallback": "/:other" } }),
+    );
+    const result = await runPagesRequest(
+      makeRequest("/unlisted"),
+      baseDeps({ matchPageRoute: () => SLUG, renderPage }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    await expect(result.response.text()).resolves.toBe("user page");
+    expect(result.response.headers.has("x-vinext-pages-no-fallback")).toBe(false);
+    expect(renderPage).toHaveBeenCalledOnce();
+  });
+
+  it("drops a marker middleware or config headers stage", async () => {
+    const app = makeApp([slug, catchAll]);
+    const result = await runPagesRequest(
+      makeRequest("/unlisted"),
+      baseDeps({
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({
+          continue: true,
+          responseHeaders: new Headers({ "x-vinext-pages-no-fallback": "/:slug" }),
+        }),
+        configHeaders: [
+          {
+            source: "/:path*",
+            headers: [{ key: "X-Vinext-Pages-No-Fallback", value: "/:path*" }],
+          },
+        ],
+        ...app,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    await expect(result.response.text()).resolves.toBe("rendered /:path* /unlisted");
+    expect(result.response.headers.has("x-vinext-pages-no-fallback")).toBe(false);
+    for (const call of app.renderPage.mock.calls) {
+      expect(call[3]?.has("x-vinext-pages-no-fallback")).not.toBe(true);
+    }
+  });
+
+  it("does not reroute a successful page that sets the marker to its own pattern", async () => {
+    const renderPage = vi.fn(
+      async () =>
+        new Response("user page", { headers: { "x-vinext-pages-no-fallback": "/:slug" } }),
+    );
+    const result = await runPagesRequest(
+      makeRequest("/listed"),
+      baseDeps({
+        matchPageRoute: (_p, _r, excluded) => (excluded ? CATCH_ALL : SLUG),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    await expect(result.response.text()).resolves.toBe("user page");
+    expect(result.response.headers.has("x-vinext-pages-no-fallback")).toBe(false);
+    expect(renderPage).toHaveBeenCalledOnce();
+  });
+
+  // Ported from Next.js: test/e2e/fallback-false-rewrite/fallback-false-rewrite.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/fallback-false-rewrite/fallback-false-rewrite.test.ts
+  it("applies fallback rewrites once no page matches", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/unlisted"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [{ source: "/:path*", destination: "/another" }],
+        },
+        ...makeApp([another, slug]),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    await expect(result.response.text()).resolves.toBe("rendered /another /another?path=unlisted");
+  });
+
+  it("continues with the remaining fallback rewrites when a rewritten page rejects", async () => {
+    const dyn: TestRoute = {
+      pattern: "/dyn/:id",
+      isDynamic: true,
+      test: /^\/dyn\/[^/]+$/,
+      rejects: true,
+    };
+    const result = await runPagesRequest(
+      makeRequest("/unlisted"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [
+            { source: "/:path*", destination: "/dyn/x" },
+            { source: "/:path*", destination: "/another" },
+          ],
+        },
+        ...makeApp([another, dyn, slug]),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    await expect(result.response.text()).resolves.toMatch(/^rendered \/another /);
+  });
+
+  it("continues with the remaining afterFiles rewrites when a rewritten page rejects", async () => {
+    // Next.js reruns routing: the rewritten page is skipped once invoked, and
+    // the next afterFiles rule (`check: true`) applies to the rewritten path.
+    const dyn: TestRoute = {
+      pattern: "/dyn/:id",
+      isDynamic: true,
+      test: /^\/dyn\/[^/]+$/,
+      rejects: true,
+    };
+    const result = await runPagesRequest(
+      makeRequest("/start"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [
+            { source: "/start", destination: "/dyn/x" },
+            { source: "/dyn/:id", destination: "/another" },
+          ],
+          fallback: [],
+        },
+        ...makeApp([another, dyn]),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    await expect(result.response.text()).resolves.toMatch(/^rendered \/another /);
+  });
+
+  it("answers a route miss at the rewritten URL when a resumed rewrite reaches no route", async () => {
+    // Next.js keeps the rewritten `parsedUrl` once routing is exhausted, so the
+    // 404 renders for the rewrite destination rather than the rejecting page.
+    const dyn: TestRoute = {
+      pattern: "/dyn/:id",
+      isDynamic: true,
+      test: /^\/dyn\/[^/]+$/,
+      rejects: true,
+    };
+    const app = makeApp([dyn]);
+    const result = await runPagesRequest(
+      makeRequest("/dyn/x"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [{ source: "/dyn/:id", destination: "/still/missing" }],
+        },
+        ...app,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(404);
+    await expect(result.response.text()).resolves.toBe("missing");
+    expect(app.renderPage.mock.calls.map((call) => [call[1].split("?")[0], call[2]])).toEqual([
+      ["/dyn/x", { reportNoFallback: true }],
+      ["/still/missing", { noFallbackRoutes: ["/dyn/:id"] }],
+    ]);
+  });
+
+  it("skips a middleware prefetch when the resumed route has getServerSideProps", async () => {
+    // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+    // The retried request reaches the final route's prefetch guard (base-server.ts).
+    const app = makeApp([
+      { ...slug, dataKind: "static" },
+      { ...catchAll, dataKind: "server" },
+    ]);
+    const result = await runPagesRequest(
+      makeRequest("/unlisted", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        ...app,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(app.renderPage).toHaveBeenCalledOnce();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
+    expect(result.response.headers.get("x-matched-path")).toBe("/[[...path]]");
+    expect(await result.response.json()).toEqual({});
+  });
+
+  it("drops the rejecting page's route state when a fallback rewrite serves a file", async () => {
+    const state: RouteCacheabilityState = { captureDeadlineAt: Date.now() + 1_000, mode: "admit" };
+    const app = makeApp([slug]);
+    const renderPage: typeof app.renderPage = vi.fn(async (req, url, opts) => {
+      // The page handler starts classifying the route it renders.
+      beginRouteCacheability("pages-page", "/:slug");
+      return app.renderPage(req, url, opts);
+    });
+    const serveFilesystemRoute = vi.fn(async (pathname: string) => pathname === "/file.txt");
+    const context = { [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} };
+    const result = await runWithExecutionContext(context, () =>
+      runPagesRequest(
+        makeRequest("/unlisted"),
+        baseDeps({
+          configRewrites: {
+            beforeFiles: [],
+            afterFiles: [],
+            fallback: [{ source: "/:path*", destination: "/file.txt" }],
+          },
+          matchPageRoute: app.matchPageRoute,
+          renderPage,
+          serveFilesystemRoute,
+        }),
+      ),
+    );
+
+    expect(result.type).toBe("handled");
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(state.route).toBeUndefined();
+  });
+
+  it("leaves a render past a rejecting page to runtime during prerender", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      const resumed = await runPagesRequest(
+        makeRequest("/unlisted"),
+        baseDeps(makeApp([slug, catchAll])),
+      );
+      if (resumed.type !== "response") throw new Error("expected a response");
+      expect(resumed.response.headers.get("x-vinext-prerender-rewritten")).toBe("1");
+
+      // So are its getStaticProps redirect and `notFound`.
+      for (const status of [307, 404]) {
+        const terminal = await runPagesRequest(
+          makeRequest("/unlisted"),
+          baseDeps(makeApp([slug, catchAll], status)),
+        );
+        if (terminal.type !== "response") throw new Error("expected a response");
+        expect(terminal.response.headers.get("x-vinext-prerender-rewritten")).toBe("1");
+      }
+
+      // So does a status middleware sets on a continuing response.
+      const middlewareForbidden = await runPagesRequest(
+        makeRequest("/unlisted"),
+        baseDeps({
+          ...makeApp([slug, catchAll]),
+          runMiddleware: makeMiddleware({ continue: true, status: 403 }),
+        }),
+      );
+      if (middlewareForbidden.type !== "response") throw new Error("expected a response");
+      expect(middlewareForbidden.response.status).toBe(403);
+      expect(middlewareForbidden.response.headers.get("x-vinext-prerender-rewritten")).toBe("0");
+
+      // Any other status past the rejecting page still reaches the build.
+      for (const status of [403, 500]) {
+        const failed = await runPagesRequest(
+          makeRequest("/unlisted"),
+          baseDeps(makeApp([slug, catchAll], status)),
+        );
+        if (failed.type !== "response") throw new Error("expected a response");
+        expect(failed.response.status).toBe(status);
+        expect(failed.response.headers.get("x-vinext-prerender-rewritten")).toBe("0");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("resumes a dev render intent past the rejecting page", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/unlisted"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [{ source: "/:path*", destination: "/another" }],
+        },
+        matchPageRoute: (pathname, _request, excluded) =>
+          pathname === "/another"
+            ? excluded?.has("/another")
+              ? null
+              : ANOTHER
+            : excluded?.has("/:path*")
+              ? null
+              : excluded
+                ? CATCH_ALL
+                : SLUG,
+      }),
+    );
+    if (result.type !== "render" || !result.resumeAfterNoFallback) {
+      throw new Error("expected a resumable render intent");
+    }
+    expect(result.renderOptions).toBeUndefined();
+
+    const next = await result.resumeAfterNoFallback("/:slug");
+    if (next?.type !== "render") throw new Error("expected a render intent");
+    expect(next.resolvedUrl).toBe("/unlisted");
+    expect(next.renderOptions).toEqual({ noFallbackRoutes: ["/:slug"] });
+
+    const rewritten = await next.resumeAfterNoFallback?.("/:path*");
+    if (rewritten?.type !== "render") throw new Error("expected a render intent");
+    expect(rewritten.resolvedUrl).toBe("/another?path=unlisted");
+    expect(rewritten.renderOptions).toEqual({ noFallbackRoutes: ["/:slug", "/:path*"] });
+
+    // Fallback rewrites apply once; with nothing left the last 404 answers.
+    await expect(rewritten.resumeAfterNoFallback?.("/another")).resolves.toBeNull();
+  });
+  it("skips a dev middleware prefetch when the resumed route has getServerSideProps", async () => {
+    const app = makeApp([
+      { ...slug, dataKind: "static" },
+      { ...catchAll, dataKind: "server" },
+    ]);
+    const result = await runPagesRequest(
+      makeRequest("/unlisted", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: app.matchPageRoute,
+      }),
+    );
+    if (result.type !== "render" || !result.resumeAfterNoFallback) {
+      throw new Error("expected a resumable render intent");
+    }
+
+    const resumed = await result.resumeAfterNoFallback("/:slug");
+    if (resumed?.type !== "response") throw new Error("expected a prefetch skip response");
+    expect(resumed.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
+    expect(await resumed.response.json()).toEqual({});
   });
 });
 

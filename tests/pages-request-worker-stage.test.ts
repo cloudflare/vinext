@@ -61,7 +61,11 @@ const mocks = vi.hoisted(() => ({
       : null,
   ),
   matchPageRoute: vi.fn<
-    (url: string) => {
+    (
+      url: string,
+      request?: Request,
+      excludedPatterns?: ReadonlySet<string>,
+    ) => {
       route: { dataKind: string; isDynamic: boolean; pattern: string };
     } | null
   >((url: string) => ({
@@ -1056,6 +1060,198 @@ describe("Pages Worker request stage", () => {
     expect(response.headers.get("Link")).toBe(
       '</middleware.css>; rel="preload"; as="style", </framework.woff2>; rel="preload"; as="font"',
     );
+  });
+
+  it("classifies a render past a rejecting fallback: false page by the route it renders", async () => {
+    mocks.matchPageRoute.mockImplementation((_url, _request, excluded) =>
+      excluded?.has("/[slug]")
+        ? { route: { dataKind: "server", isDynamic: true, pattern: "/[[...path]]" } }
+        : { route: { dataKind: "static", isDynamic: true, pattern: "/[slug]" } },
+    );
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async (_request, props) => {
+      const rejected = props.kind === "pages-page" && !props.renderOptions?.noFallbackRoutes;
+      return new Response(rejected ? "rejected" : "catch-all", {
+        status: rejected ? 404 : 200,
+        headers: rejected ? { "x-vinext-pages-no-fallback": encodeURIComponent("/[slug]") } : {},
+      });
+    });
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/unlisted"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("catch-all");
+    expect(response.headers.has("x-vinext-pages-no-fallback")).toBe(false);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    const [first, second] = dispatch.mock.calls.map((call) => call[1]);
+    if (first?.kind !== "pages-page" || second?.kind !== "pages-page") {
+      throw new Error("expected page dispatches");
+    }
+    expect(first.renderOptions).toEqual({ reportNoFallback: true });
+    expect(first.stagedHeaders).toBeNull();
+    expect(second.renderOptions).toEqual({
+      noFallbackRoutes: ["/[slug]"],
+      reportNoFallback: true,
+    });
+    // The getServerSideProps catch-all keeps its request headers in the stage.
+    expect(second.stagedHeaders).not.toBeNull();
+  });
+
+  it("classifies a probe that resumes past a rejecting page to an external rewrite", async () => {
+    // The rejection is internal transport, so routing that then ends in this
+    // stage still answers the probe with its envelope.
+    mocks.matchPageRoute.mockImplementation((_url, _request, excluded) =>
+      excluded?.has("/[slug]")
+        ? null
+        : { route: { dataKind: "static", isDynamic: true, pattern: "/[slug]" } },
+    );
+    mocks.configRewrites.fallback.push({
+      source: "/en/unlisted",
+      destination: "https://upstream.example/unlisted",
+    });
+    const upstream = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response("upstream"));
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(
+      async () =>
+        new Response(null, {
+          status: 404,
+          headers: { "x-vinext-pages-no-fallback": encodeURIComponent("/[slug]") },
+        }),
+    );
+
+    try {
+      const response = await handleRequestStage(
+        new Request("https://example.com/unlisted?__vinext_cacheability_probe=one", {
+          headers: {
+            [VINEXT_CACHEABILITY_PROBE_HEADER]: "1",
+            [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: serializeWorkerCacheabilityProbeRoute({
+              kind: "pages-page",
+              pattern: "/[slug]",
+            }),
+            [VINEXT_PRERENDER_SECRET_HEADER]: "prerender-secret",
+          },
+        }),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(upstream).toHaveBeenCalledOnce();
+      await expect(response.json()).resolves.toMatchObject({
+        scope: "identity",
+        state: "dynamic",
+        status: 200,
+        version: 1,
+      });
+    } finally {
+      upstream.mockRestore();
+    }
+  });
+
+  it("keeps the rejecting page's policy off an external rewrite routing resumes to", async () => {
+    // proxyConfigRewrite() sends the upstream without the staged config
+    // headers; the rejection must not carry them in through the shared policy.
+    mocks.matchPageRoute.mockImplementation((_url, _request, excluded) =>
+      excluded?.has("/[slug]")
+        ? null
+        : { route: { dataKind: "static", isDynamic: true, pattern: "/[slug]" } },
+    );
+    mocks.configHeaders.push({
+      source: "/en/unlisted",
+      headers: [{ key: "Cache-Control", value: "private, no-store" }],
+    });
+    mocks.configRewrites.fallback.push({
+      source: "/en/unlisted",
+      destination: "https://upstream.example/unlisted",
+    });
+    const upstream = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        async () =>
+          new Response("upstream", { headers: { "Cache-Control": "public, max-age=300" } }),
+      );
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(
+      async () =>
+        new Response(null, {
+          status: 404,
+          headers: { "x-vinext-pages-no-fallback": encodeURIComponent("/[slug]") },
+        }),
+    );
+
+    try {
+      const response = await handleRequestStage(
+        new Request("https://example.com/unlisted"),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+      expect(upstream).toHaveBeenCalledOnce();
+      await expect(response.text()).resolves.toBe("upstream");
+      expect(response.headers.get("cache-control")).toBe("public, max-age=300");
+    } finally {
+      upstream.mockRestore();
+    }
+  });
+
+  it("drops a policy an earlier render captured once a page rejects the path", async () => {
+    // A route miss renders 404 and captures the config policy, a fallback
+    // rewrite reaches a rejecting page, and routing resumes to an external
+    // rewrite, which proxyConfigRewrite() sends without the staged config
+    // headers.
+    mocks.matchPageRoute.mockImplementation((url, _request, excluded) => {
+      if (String(url).includes("second")) {
+        return excluded?.has("/[slug]")
+          ? null
+          : { route: { dataKind: "static", isDynamic: true, pattern: "/[slug]" } };
+      }
+      return null;
+    });
+    mocks.configHeaders.push({
+      source: "/en/unlisted",
+      headers: [{ key: "Cache-Control", value: "private, no-store" }],
+    });
+    mocks.configRewrites.fallback.push(
+      { source: "/en/unlisted", destination: "/second" },
+      { source: "/:path*", destination: "https://upstream.example/unlisted" },
+    );
+    const upstream = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        async () =>
+          new Response("upstream", { headers: { "Cache-Control": "public, max-age=300" } }),
+      );
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async (_request, props) =>
+      props.kind === "pages-page" && String(props.resolvedUrl).includes("second")
+        ? new Response(null, {
+            status: 404,
+            headers: { "x-vinext-pages-no-fallback": encodeURIComponent("/[slug]") },
+          })
+        : new Response("missing", { status: 404 }),
+    );
+
+    try {
+      const response = await handleRequestStage(
+        new Request("https://example.com/unlisted"),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch).toHaveBeenCalledTimes(2);
+      expect(upstream).toHaveBeenCalledOnce();
+      await expect(response.text()).resolves.toBe("upstream");
+      expect(response.headers.get("cache-control")).toBe("public, max-age=300");
+    } finally {
+      upstream.mockRestore();
+    }
   });
 
   it("applies an outer private browser policy without changing shared Pages storage", async () => {

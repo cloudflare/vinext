@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vite-plus/test";
-import { buildRouteTrie, trieMatch } from "../packages/vinext/src/routing/route-trie.js";
+import {
+  buildRouteTrie,
+  buildRouteTrieExcluding,
+  trieMatch,
+} from "../packages/vinext/src/routing/route-trie.js";
 
 type TestRoute = {
   pattern: string;
@@ -533,5 +537,24 @@ describe("buildRouteTrie + trieMatch", () => {
       const trie = buildRouteTrie([r("/files/:name")]);
       expect(trieMatch(trie, ["files", "a%252Fb"])!.params).toEqual({ name: "a%2Fb" });
     });
+  });
+});
+
+describe("buildRouteTrieExcluding", () => {
+  const routes = [
+    { pattern: "/:slug", patternParts: [":slug"] },
+    { pattern: "/:path*", patternParts: [":path*"] },
+  ];
+
+  it("matches without the excluded routes", () => {
+    const trie = buildRouteTrieExcluding(routes, new Set(["/:slug"]));
+    expect(trieMatch(trie, ["unlisted"])?.route.pattern).toBe("/:path*");
+  });
+
+  it("reuses one trie per route table and exclusion set", () => {
+    const first = buildRouteTrieExcluding(routes, new Set(["/:slug", "/:path*"]));
+    expect(buildRouteTrieExcluding(routes, new Set(["/:path*", "/:slug"]))).toBe(first);
+    expect(buildRouteTrieExcluding([...routes], new Set(["/:slug", "/:path*"]))).not.toBe(first);
+    expect(trieMatch(first, ["unlisted"])).toBeNull();
   });
 });

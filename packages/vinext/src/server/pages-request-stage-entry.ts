@@ -42,6 +42,7 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
+  VINEXT_PAGES_NO_FALLBACK_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "./headers.js";
@@ -117,6 +118,16 @@ export type PagesWorkerExecutionContext = {
   passThroughOnException?(): void;
   cache?: unknown;
 } & VinextRequestStageContext;
+
+/** The page handler's `fallback: false` rejection, which routing resumes past. */
+function isPagesNoFallbackRejection(props: WorkerResponseStageProps, response: Response): boolean {
+  return (
+    props.kind === "pages-page" &&
+    props.renderOptions?.reportNoFallback === true &&
+    response.status === 404 &&
+    response.headers.has(VINEXT_PAGES_NO_FALLBACK_HEADER)
+  );
+}
 
 type PagesStageRuntimeDispatch = (
   request: Request,
@@ -384,8 +395,17 @@ async function handleRequestImpl(
       stageEnv,
       stageCtx,
     ) => {
-      responseStageDispatched = true;
-      return dispatchResponseStage(stageRequest, props, options, stageEnv, stageCtx);
+      const dispatched = dispatchResponseStage(stageRequest, props, options, stageEnv, stageCtx);
+      // A `fallback: false` rejection is internal transport: routing resumes
+      // and something else answers, which may never reach the response stage.
+      if (props.kind !== "pages-page" || !props.renderOptions?.reportNoFallback) {
+        responseStageDispatched = true;
+        return dispatched;
+      }
+      return dispatched.then((response) => {
+        if (!isPagesNoFallbackRejection(props, response)) responseStageDispatched = true;
+        return response;
+      });
     };
 
     if (!didValidateCdnRequest) {
@@ -566,8 +586,16 @@ async function handleRequestImpl(
           speculativeRenderRequest === req && req.body !== null && !req.bodyUsed
             ? attachRequestCfMetadata(req.clone(), req)
             : req;
+        // A render past a rejecting `fallback: false` page is classified by the
+        // route it renders.
         const matchedPage =
-          typeof matchPageRoute === "function" ? matchPageRoute(resolvedUrl, req) : null;
+          typeof matchPageRoute === "function"
+            ? matchPageRoute(
+                resolvedUrl,
+                req,
+                options?.noFallbackRoutes?.length ? new Set(options.noFallbackRoutes) : undefined,
+              )
+            : null;
         const cache =
           forceCacheBypass || probeMode
             ? "bypass"
@@ -639,6 +667,15 @@ async function handleRequestImpl(
           ctx,
         );
         const responsePromise = dispatched.then((response) => {
+          // The rejection carries the rejecting page's policy, which must not
+          // shape whatever answers once routing resumes.
+          if (isPagesNoFallbackRejection(props, response)) {
+            // Resumed routing answers with something else, which a policy an
+            // earlier speculative render captured must not shape either.
+            sharedResponseHeaders = null;
+            sharedOuterPolicyHeaders = null;
+            return response;
+          }
           const consumed = consumePagesResponseStagePolicyOwner(response);
           if (cache === "shared") {
             if (isSharedStaticPage && stagedHeaders) {

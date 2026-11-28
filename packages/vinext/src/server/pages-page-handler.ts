@@ -17,6 +17,7 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { matchRouteWithTrieRawPathnameExcluding } from "../routing/route-matching.js";
 import { extractLocaleFromUrl, markLocaleRedirect, resolvePagesI18nRequest } from "./pages-i18n.js";
 import { createPagesReqRes } from "./pages-node-compat.js";
 import {
@@ -34,6 +35,7 @@ import {
 } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
+import { pagesNoFallbackHeaderValue, withoutPagesNoFallbackHeader } from "./pages-no-fallback.js";
 import {
   applyPagesPrerenderRevalidateHeader,
   renderPagesPageResponse,
@@ -44,6 +46,7 @@ import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
   BROWSER_REVALIDATE_CACHE_CONTROL,
+  NEVER_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
@@ -94,6 +97,7 @@ import {
   NEXTJS_CACHE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_PAGES_NO_FALLBACK_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
@@ -422,6 +426,12 @@ type RenderPageOptions = {
   __notFoundSourceHeaders?: Record<string, string | number | boolean | string[]>;
   /** Internal recursion guard while a top-level on-demand request owns the batch. */
   __skipOnDemandCoalesce?: boolean;
+  /** Patterns of `fallback: false` routes that rejected this path; matching skips them. */
+  noFallbackRoutes?: readonly string[];
+  /** Mark a `fallback: false` rejection so the request pipeline can resume routing. */
+  reportNoFallback?: boolean;
+  /** Pattern of a `fallback: false` route already known to reject this path. */
+  noFallbackRejected?: string;
   err?: unknown;
 };
 
@@ -453,6 +463,8 @@ function buildI18nRenderContext(
  * The returned function is self-recursive for 404/500 fallback renders and
  * accepts the same options shape the generated entry always passed inline.
  */
+const PAGES_STATUS_PAGE_PATTERNS: ReadonlySet<string> = new Set(["/404", "/500", "/_error"]);
+
 export function createPagesPageHandler(
   opts: CreatePagesPageHandlerOptions,
 ): (
@@ -512,6 +524,9 @@ export function createPagesPageHandler(
     return (_router, pathname) =>
       pagesIsrCacheKey(pathname, buildId ?? undefined, i18nCacheVariant);
   }
+
+  // The handler's own `fallback: false` rejections (see the returned wrapper).
+  const noFallbackRejections = new WeakSet<Response>();
 
   // The recursive render function — defined inside so it can self-call for
   // fallback/error renders without leaking the `opts` closure to callers.
@@ -625,6 +640,14 @@ export function createPagesPageHandler(
       );
     }
 
+    const noFallbackRoutes = options?.noFallbackRoutes?.length
+      ? new Set(options.noFallbackRoutes)
+      : null;
+    const matchPageRoute = (pathname: string): PageRouteMatch | null =>
+      noFallbackRoutes
+        ? matchRouteWithTrieRawPathnameExcluding(pathname, pageRoutes, noFallbackRoutes)
+        : matchRoute(pathname, pageRoutes);
+
     // Internal error render path: caller has pinned a specific route to render.
     // Skip route matching so we don't accidentally double-route. Fixes #1458.
     let match =
@@ -634,7 +657,7 @@ export function createPagesPageHandler(
           // in Next.js, even where a top-level dynamic route would match it.
           isPrerenderNotFoundRequest(request) && isPrerenderNotFoundPathname(routeUrl.split("?")[0])
           ? null
-          : matchRoute(routeUrl, pageRoutes);
+          : matchPageRoute(routeUrl);
     let isRouteMissErrorRender = false;
 
     let renderStatusCodeOverride = statusCode;
@@ -673,7 +696,7 @@ export function createPagesPageHandler(
       options?.__forcedRoute === undefined &&
       cachePathname !== routePathname
     ) {
-      const cachePathRoute = matchRoute(cachePathname, pageRoutes)?.route;
+      const cachePathRoute = matchPageRoute(cachePathname)?.route;
       if (cachePathRoute !== match.route) {
         const cachePathModule = cachePathRoute?.module;
         if (
@@ -695,6 +718,14 @@ export function createPagesPageHandler(
           cacheIdentityDiverges = true;
         }
       }
+    }
+    // Pages ISR entries are keyed by pathname alone, but Next.js keys its
+    // response cache by the route that owns it (route-cache-key.ts). A render
+    // past a `fallback: false` page stays out of the ISR cache, so its entry
+    // never admits the path for the page that rejected it. A status page
+    // (a route miss's `/404`, or a rewrite to one) keeps its own identity.
+    if (noFallbackRoutes && !PAGES_STATUS_PAGE_PATTERNS.has(match.route.pattern)) {
+      cacheIdentityDiverges = true;
     }
 
     const { route, params } = match;
@@ -1165,6 +1196,7 @@ export function createPagesPageHandler(
 
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
+          knownNoFallbackRejection: options?.noFallbackRejected === route.pattern,
           err: err instanceof Error ? err : undefined,
           applyRequestContexts: applySSRContext,
           basePath: vinextConfig.basePath,
@@ -1266,6 +1298,29 @@ export function createPagesPageHandler(
           ifModifiedSince: request.headers.get("if-modified-since") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
         });
+
+        // Next.js throws `NoFallbackError` here, before rendering any error
+        // page, and routes the request on to the next matching route
+        // (pages-handler.ts, router-server.ts). Report the rejection alone; the
+        // pipeline asks for this page's 404 (`noFallbackRejected`) only when
+        // nothing else answers.
+        if (
+          options?.reportNoFallback &&
+          pageDataResult.kind !== "render" &&
+          pageDataResult.noFallback
+        ) {
+          const rejection = new Response(null, {
+            status: 404,
+            headers: {
+              [VINEXT_PAGES_NO_FALLBACK_HEADER]: pagesNoFallbackHeaderValue(route.pattern),
+              // Internal transport: a cache in front of the response stage
+              // must not keep it (Cloudflare caches a bare 404 by default).
+              "cache-control": NEVER_CACHE_CONTROL,
+            },
+          });
+          noFallbackRejections.add(rejection);
+          return rejection;
+        }
 
         if (pageDataResult.kind === "notFound") {
           const notFoundRoute = findNotFoundRoute();
@@ -1556,5 +1611,17 @@ export function createPagesPageHandler(
     return closeAfterResponseWithBody(settled.response, uCtx);
   }
 
-  return renderPage;
+  // The request pipeline resumes routing on this marker, so only the
+  // handler's own rejection may carry it. A copy that user code set (through
+  // getServerSideProps or getInitialProps response headers) is dropped.
+  return async (...args: Parameters<typeof renderPage>): Promise<Response> => {
+    const response = await renderPage(...args);
+    if (
+      noFallbackRejections.has(response) ||
+      !response.headers.has(VINEXT_PAGES_NO_FALLBACK_HEADER)
+    ) {
+      return response;
+    }
+    return withoutPagesNoFallbackHeader(response);
+  };
 }

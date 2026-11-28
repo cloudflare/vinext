@@ -12,6 +12,7 @@ import type {
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
+import { VINEXT_PAGES_NO_FALLBACK_HEADER } from "./headers.js";
 import {
   applyResponseStagePolicyHeaders,
   stripInheritedResponseStageCookies,
@@ -124,7 +125,13 @@ export async function renderPagesResponse(
   let runtimeDataKind: RuntimePagesDataKind | undefined;
   const runtimeDataKindIsRequestTime = (): boolean => {
     if (props.kind !== "pages-page") return false;
-    runtimeDataKind ??= pagesEntry.getRuntimePageDataKind(props.resolvedUrl, request);
+    // A render past a rejecting `fallback: false` page owns its policy.
+    const excluded = props.renderOptions?.noFallbackRoutes;
+    runtimeDataKind ??= pagesEntry.getRuntimePageDataKind(
+      props.resolvedUrl,
+      request,
+      excluded?.length ? new Set(excluded) : undefined,
+    );
     return runtimeDataKind === "server" || runtimeDataKind === "initial";
   };
   const render = async (cacheabilityContext: ExecutionContextLike): Promise<Response> => {
@@ -198,6 +205,14 @@ export async function renderPagesResponse(
       context: ctx,
       policyHeaders: props.cacheability.policyHeaders,
       policyHeadersAppliedBeforeRender: true,
+      // The page handler's `fallback: false` rejection goes back to the
+      // request stage, which resumes routing; only the route that answers is
+      // admitted or probed.
+      isInternalTransport:
+        props.kind === "pages-page" && props.renderOptions?.reportNoFallback
+          ? (rendered) =>
+              rendered.status === 404 && rendered.headers.has(VINEXT_PAGES_NO_FALLBACK_HEADER)
+          : undefined,
       probeMode: props.cacheability.probeMode,
       rawManifest: __cacheabilityManifest,
       registerCacheAdapters: () => registerConfiguredCacheAdapters(env),

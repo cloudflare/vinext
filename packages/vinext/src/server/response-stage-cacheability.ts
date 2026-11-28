@@ -37,6 +37,13 @@ export type ResponseStageCacheabilityOptions = {
    * stored params are its own.
    */
   keepsParamsHeader?: boolean;
+  /**
+   * A rendered response that is internal transport rather than the request's
+   * answer, such as a Pages `fallback: false` rejection the request stage
+   * resumes routing past. It skips cache policy, admission and probe
+   * finalization, which apply to the response that finally answers.
+   */
+  isInternalTransport?: (response: Response) => boolean;
   /** Generated adapter registration, deferred until the response stage executes. */
   registerCacheAdapters(): void;
   request: Request;
@@ -103,6 +110,7 @@ export async function withResponseStageCacheability(
     state.patternDynamicReason = 'dynamic = "force-dynamic"';
   }
   const renderedResponse = await render(context);
+  if (options.isInternalTransport?.(renderedResponse)) return renderedResponse;
   const rendered = stripsRequestScopedHeaders
     ? withoutRequestScopedHeaders(renderedResponse, options.keepsParamsHeader === true)
     : renderedResponse;
