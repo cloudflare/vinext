@@ -375,6 +375,35 @@ describe("response-stage cacheability", () => {
     });
   });
 
+  it("returns internal transport without probe finalization", async () => {
+    // A Pages `fallback: false` rejection goes back to the request stage, which
+    // resumes routing; only the route that answers is probed.
+    const rejection = new Response(null, {
+      status: 404,
+      headers: { "x-vinext-pages-no-fallback": "/:slug" },
+    });
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "bypass",
+        context: baseContext(),
+        isInternalTransport: (rendered) => rendered.headers.has("x-vinext-pages-no-fallback"),
+        probeMode: "probe",
+        rawManifest: null,
+        registerCacheAdapters: registerAdapter,
+        request: new Request("https://example.com/unlisted"),
+        resolvedRoutePathname: "/unlisted",
+      },
+      async (context) => {
+        contextState(context)!.route = { kind: "pages-page", pattern: "/:slug" };
+        return rejection;
+      },
+    );
+
+    expect(response).toBe(rejection);
+    expect(response.headers.get("x-vinext-pages-no-fallback")).toBe("/:slug");
+  });
+
   it("preserves a statically known force-dynamic segment during probing", async () => {
     const response = await withResponseStageCacheability(
       {

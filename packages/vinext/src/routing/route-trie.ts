@@ -123,6 +123,36 @@ export function buildRouteTrie<R extends { patternParts: readonly string[] }>(
   return root;
 }
 
+// Tries without the `fallback: false` routes that rejected a path, per route
+// table and exclusion set. Derived from the route table alone, like the full
+// trie; the cap only bounds memory for apps with many such chains.
+const excludingTries = new WeakMap<object, Map<string, TrieNode<unknown>>>();
+const EXCLUDING_TRIES_PER_TABLE = 64;
+
+/**
+ * The trie of `routes` without those whose pattern is in `excludedPatterns`.
+ *
+ * Next.js resumes routing this way when a `fallback: false` page rejects a
+ * path: router-server.ts handles the request again and resolve-routes.ts skips
+ * every page it already invoked (`invokedOutputs`).
+ */
+export function buildRouteTrieExcluding<
+  R extends { pattern: string; patternParts: readonly string[] },
+>(routes: readonly R[], excludedPatterns: ReadonlySet<string>): TrieNode<R> {
+  const key = [...excludedPatterns].sort().join("\0");
+  let tries = excludingTries.get(routes);
+  if (!tries) {
+    tries = new Map();
+    excludingTries.set(routes, tries);
+  }
+  const cached = tries.get(key);
+  if (cached) return cached as TrieNode<R>;
+  const trie = buildRouteTrie(routes.filter((route) => !excludedPatterns.has(route.pattern)));
+  if (tries.size >= EXCLUDING_TRIES_PER_TABLE) tries.clear();
+  tries.set(key, trie as TrieNode<unknown>);
+  return trie;
+}
+
 /**
  * Match a URL against the trie.
  *

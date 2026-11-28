@@ -126,6 +126,13 @@ export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life
 /** Prerender-only Pages marker: "0" confirms the page render used the requested URL. */
 export const VINEXT_PRERENDER_REWRITTEN_HEADER = "x-vinext-prerender-rewritten";
 
+/**
+ * Pages page handler → request pipeline marker naming the `fallback: false`
+ * route pattern that rejected the path. The pipeline strips it and resumes
+ * routing past that route, as Next.js does on `NoFallbackError`.
+ */
+export const VINEXT_PAGES_NO_FALLBACK_HEADER = "x-vinext-pages-no-fallback";
+
 /** Marks a local prerender-server 500 that originated from a thrown render error. */
 export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
 

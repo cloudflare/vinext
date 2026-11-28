@@ -215,7 +215,7 @@ export function __ensureInstrumentation(ctx) {
   return `
 import ${JSON.stringify(_serverGlobalsPath)};
 import { runGeneratedMiddleware as __runGeneratedMiddleware } from ${JSON.stringify(_middlewareRuntimePath)};
-import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
+import { buildRouteTrie as _buildRouteTrie, buildRouteTrieExcluding as _buildRouteTrieExcluding, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath } from ${JSON.stringify(_pagesDataRoutePath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_revalidationRequestPath)};
@@ -279,8 +279,13 @@ function resolveI18nRouteUrl(url, request) {
     : url;
 }
 
-export function matchPageRoute(url, request) {
-  return matchRoute(resolveI18nRouteUrl(url, request), pageRouteTrie);
+// \`excludedPatterns\` lists \`fallback: false\` pages that already rejected the
+// path; resumed routing matches without them.
+export function matchPageRoute(url, request, excludedPatterns) {
+  return matchRoute(
+    resolveI18nRouteUrl(url, request),
+    excludedPatterns?.size ? _buildRouteTrieExcluding(pageRoutes, excludedPatterns) : pageRouteTrie,
+  );
 }
 
 export function matchApiRoute(url, request) {
@@ -594,7 +599,7 @@ function _getFontOwners(routePattern) {
 import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};
 import { runWithExecutionContext as _runWithExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
 ${middlewareRuntimeImportCode}
-import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
+import { buildRouteTrie as _buildRouteTrie, buildRouteTrieExcluding as _buildRouteTrieExcluding, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
@@ -683,17 +688,23 @@ ${apiRouteEntries.join(",\n")}
 ];
 const _apiRouteTrie = _buildRouteTrie(apiRoutes);
 
-function matchRoute(url, routes) {
+function matchRoute(url, routes, excludedPatterns) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
   // Static route selection uses raw encoded identity (/%61bout must not
   // select /about). _trieMatch decodes dynamic captures exactly once.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
+  // \`excludedPatterns\` lists \`fallback: false\` pages that already rejected
+  // the path; resumed routing matches without them.
+  const trie = excludedPatterns?.size
+    ? _buildRouteTrieExcluding(routes, excludedPatterns)
+    : routes === pageRoutes
+      ? _pageRouteTrie
+      : _apiRouteTrie;
   return _trieMatch(trie, urlParts);
 }
 
-export function matchPageRoute(url, request) {
+export function matchPageRoute(url, request, excludedPatterns) {
   const routeUrl = i18nConfig && request
     ? resolvePagesI18nRequest(
         url,
@@ -704,11 +715,11 @@ export function matchPageRoute(url, request) {
         vinextConfig.trailingSlash,
       ).url
     : url;
-  return matchRoute(routeUrl, pageRoutes);
+  return matchRoute(routeUrl, pageRoutes, excludedPatterns);
 }
 
-export function getRuntimePageDataKind(url, request) {
-  const match = matchPageRoute(url, request);
+export function getRuntimePageDataKind(url, request, excludedPatterns) {
+  const match = matchPageRoute(url, request, excludedPatterns);
   if (!match) return "none";
   return __getRuntimePagesDataKind(match.route.module, AppComponent);
 }

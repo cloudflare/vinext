@@ -12,6 +12,8 @@ import {
   matchAppRoute,
 } from "../routing/app-router.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
+import { matchRouteWithTrieRawPathnameExcluding } from "../routing/route-matching.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import {
   normalizeStaticPathname,
   normalizeStaticPathsEntry,
@@ -67,6 +69,7 @@ import {
   normalizeDefaultLocalePathname,
   shouldRestoreLocaleRootTrailingSlash,
 } from "../server/pages-i18n.js";
+import { detectDomainLocale } from "../utils/domain-locale.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
 import { resolveBuiltPagesEntryPath, resolveBuiltRscEntryPath } from "./server-entry.js";
@@ -535,6 +538,8 @@ async function collectPagesPaths(options: {
 }): Promise<{
   dataPaths: string[];
   fallbackRoutePatterns: PrerenderRoutePattern[];
+  /** Paths each `fallback: false` route lists, by route pattern. */
+  noFallbackListings: Map<string, Set<string>>;
   nonDynamicPaths: string[];
   paths: string[];
 }> {
@@ -548,6 +553,7 @@ async function collectPagesPaths(options: {
   const dataPaths: string[] = [];
   const seenDataPaths = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
+  const noFallbackListings = new Map<string, Set<string>>();
   const nonDynamicPaths: string[] = [];
   const seenNonDynamicPaths = new Set<string>();
 
@@ -606,8 +612,12 @@ async function collectPagesPaths(options: {
         staticPathsFromJson(JSON.parse(text)),
         route.pattern,
       );
+      let listing: Set<string> | undefined;
       if (pathsResult.fallback !== false) {
         fallbackRoutePatterns.push({ kind: "pages-page", pattern: route.pattern });
+      } else {
+        listing = new Set();
+        noFallbackListings.set(route.pattern, listing);
       }
       for (const item of pathsResult.paths) {
         const validatedItem = validatePagesStaticPathsEntry(item, route.pattern);
@@ -643,6 +653,7 @@ async function collectPagesPaths(options: {
                 options.i18n,
               );
         addPath(paths, seen, pathname);
+        listing?.add(pagesListingKey(pathname, options.i18n));
         if (hasStaticProps) addPath(dataPaths, seenDataPaths, pathname);
       }
     } catch (error) {
@@ -650,7 +661,25 @@ async function collectPagesPaths(options: {
     }
   }
 
-  return { dataPaths, fallbackRoutePatterns, nonDynamicPaths, paths };
+  return { dataPaths, fallbackRoutePatterns, noFallbackListings, nonDynamicPaths, paths };
+}
+
+/**
+ * @internal A path in the space `matchesPagesStaticPath()` compares at
+ * runtime: the locale plus the locale-stripped, segment-normalized pathname,
+ * so `/en/foo` and `/foo` (default locale `en`) or `/foo/a` and `/foo/%61`
+ * agree. A listed path without a locale is in the global default locale; a
+ * request path without one is in its host's (`defaultLocale`).
+ */
+export function pagesListingKey(
+  pathname: string,
+  i18n: ResolvedNextConfig["i18n"],
+  defaultLocale = i18n?.defaultLocale,
+): string {
+  const { locale, url } = i18n
+    ? extractLocaleFromUrl(pathname, i18n, defaultLocale)
+    : { locale: "", url: pathname };
+  return `${locale}\0${normalizePathnameForRouteMatch(normalizeStaticPathname(url))}`;
 }
 
 async function excludePagesApiWarmPaths(options: {
@@ -669,35 +698,92 @@ async function excludePagesApiWarmPaths(options: {
   });
 }
 
-async function resolvePagesWarmRouteMetadata(options: {
+/** @internal */
+export async function resolvePagesWarmRouteMetadata(options: {
   i18n: ResolvedNextConfig["i18n"];
+  /** Host warm-up requests go to, whose i18n domain sets the default locale. */
+  requestHostname?: string;
   pagesDir: string;
   pageExtensions: readonly string[];
   paths: readonly string[];
+  /** Paths each `fallback: false` route lists, by route pattern. */
+  noFallbackListings: ReadonlyMap<string, ReadonlySet<string>>;
 }): Promise<{
   dataPaths: string[];
+  /**
+   * Paths every matching route rejects, in either representation, which
+   * runtime hands to fallback rewrites.
+   */
+  exhaustedPaths: Set<string>;
+  /**
+   * Unprefixed paths whose owner on the warm-up host differs from their data
+   * target's (route or exhaustion), which carries the global default locale.
+   */
+  localeDependentPaths: Set<string>;
+  /**
+   * The data target's owner for a locale-dependent path whose data target
+   * reaches another route, so its probe classifies that route.
+   */
+  dataRoutePatterns: Record<string, PrerenderRoutePattern>;
   routePatterns: Record<string, PrerenderRoutePattern>;
 }> {
   const pageRoutes = await pagesRouter(options.pagesDir, options.pageExtensions);
+  const exhaustedPaths = new Set<string>();
+  const localeDependentPaths = new Set<string>();
   const classifications = new Map<string, ReturnType<typeof classifyPagesRoute>>();
   const dataPaths: string[] = [];
   const routePatterns: Record<string, PrerenderRoutePattern> = {};
+  const dataRoutePatterns: Record<string, PrerenderRoutePattern> = {};
+  const requestDefaultLocale =
+    detectDomainLocale(options.i18n?.domains, options.requestHostname)?.defaultLocale ??
+    options.i18n?.defaultLocale;
   for (const pathname of options.paths) {
     const pagesPathname = options.i18n
       ? extractLocaleFromUrl(pathname, options.i18n).url
       : pathname;
-    const match = matchRoute(pagesPathname, pageRoutes);
-    if (!match) continue;
-    routePatterns[pathname] = { kind: "pages-page", pattern: match.route.pattern };
-    let classification = classifications.get(match.route.filePath);
+    const firstMatch = matchRoute(pagesPathname, pageRoutes);
+    if (!firstMatch) continue;
+    // A `fallback: false` route that does not list the path hands it to the
+    // next matching route at runtime, as in Next.js (NoFallbackError), so that
+    // route owns the warm path. With none left, the last rejecting route's 404 stays.
+    const resolveOwner = (defaultLocale: string | undefined) => {
+      let match = firstMatch;
+      const excluded = new Set<string>();
+      for (
+        let listing = options.noFallbackListings.get(match.route.pattern);
+        listing && !listing.has(pagesListingKey(pathname, options.i18n, defaultLocale));
+        listing = options.noFallbackListings.get(match.route.pattern)
+      ) {
+        excluded.add(match.route.pattern);
+        const next = matchRouteWithTrieRawPathnameExcluding(pagesPathname, pageRoutes, excluded);
+        if (!next) return { exhausted: true, match };
+        match = next;
+      }
+      return { exhausted: false, match };
+    };
+    const html = resolveOwner(requestDefaultLocale);
+    // The data target carries the global default locale.
+    const data =
+      requestDefaultLocale === options.i18n?.defaultLocale
+        ? html
+        : resolveOwner(options.i18n?.defaultLocale);
+    if (html.exhausted || data.exhausted) exhaustedPaths.add(pathname);
+    if (html.exhausted !== data.exhausted || html.match.route !== data.match.route) {
+      localeDependentPaths.add(pathname);
+    }
+    routePatterns[pathname] = { kind: "pages-page", pattern: html.match.route.pattern };
+    if (data.match.route !== html.match.route) {
+      dataRoutePatterns[pathname] = { kind: "pages-page", pattern: data.match.route.pattern };
+    }
+    let classification = classifications.get(data.match.route.filePath);
     if (!classification) {
-      classification = classifyPagesRoute(match.route.filePath);
-      classifications.set(match.route.filePath, classification);
+      classification = classifyPagesRoute(data.match.route.filePath);
+      classifications.set(data.match.route.filePath, classification);
     }
     const { hasServerSideProps, hasStaticProps } = classification;
     if (hasServerSideProps || hasStaticProps) dataPaths.push(pathname);
   }
-  return { dataPaths, routePatterns };
+  return { dataPaths, dataRoutePatterns, exhaustedPaths, localeDependentPaths, routePatterns };
 }
 
 /**
@@ -1585,6 +1671,8 @@ export async function discoverPrerenderPathManifest(
   const discoveredNonDynamicPathSet = new Set<string>();
   const appListedRoutePaths = new Set<string>();
   const candidateOnlyPathSet = new Set<string>();
+  // Paths each Pages `fallback: false` route lists, from path discovery.
+  let pagesNoFallbackListings: ReadonlyMap<string, ReadonlySet<string>> = new Map();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   let metadataRoutes = new Map<string, MetadataWarmRoute>();
   await withPrerenderEndpoints(async () => {
@@ -1701,6 +1789,7 @@ export async function discoverPrerenderPathManifest(
           discoveredNonDynamicPathSet.add(pathname);
         }
         fallbackRoutePatterns.push(...pagesPathResult.fallbackRoutePatterns);
+        pagesNoFallbackListings = pagesPathResult.noFallbackListings;
       }
       prodServer?.assertHealthy();
     } finally {
@@ -1774,9 +1863,42 @@ export async function discoverPrerenderPathManifest(
         pagesDir,
         pageExtensions: config.pageExtensions,
         paths: resolvedPagesWarmPaths,
+        noFallbackListings: pagesNoFallbackListings,
+        requestHostname: options.pathDiscoveryTarget?.baseUrl
+          ? new URL(options.pathDiscoveryTarget.baseUrl).hostname
+          : undefined,
       })
-    : { dataPaths: [], routePatterns: {} };
+    : {
+        dataPaths: [],
+        dataRoutePatterns: {},
+        exhaustedPaths: new Set<string>(),
+        localeDependentPaths: new Set<string>(),
+        routePatterns: {},
+      };
+  // Discovered paths win dynamic matching before `fallback` rewrites, except
+  // a path every matching `fallback: false` route rejects: runtime then goes
+  // on to the fallback rewrites (Next.js `NoFallbackError`). Hybrid apps keep
+  // the rejecting page's 404.
+  const fallbackRewriteCanReplaceWarmPath = (
+    pathname: string,
+    include: (rewrite: NextRewrite) => boolean,
+  ): boolean =>
+    !appDir &&
+    pagesWarmMetadata.exhaustedPaths.has(pathname) &&
+    configuredRulesAffectWarmPath(
+      pathname,
+      config.rewrites.fallback.filter(include),
+      warmPathMatchConfig(config, metadataRoutes.has(pathname)),
+    );
+  if (options.responseVary && !hasStagedRequestRouting) {
+    for (const pathname of pagesWarmMetadata.exhaustedPaths) {
+      if (fallbackRewriteCanReplaceWarmPath(pathname, () => true)) {
+        delete pagesWarmMetadata.routePatterns[pathname];
+      }
+    }
+  }
   for (const pathname of pagesWarmMetadata.dataPaths) {
+    if (pagesWarmMetadata.routePatterns[pathname] === undefined) continue;
     addPath(discoveredPagesDataPaths, seenPagesDataPaths, pathname);
   }
   const discoveredPagesDataPathSet = new Set(discoveredPagesDataPaths);
@@ -1832,10 +1954,20 @@ export async function discoverPrerenderPathManifest(
               discoveredNonDynamicPathSet.has(pathname),
               warmPathMatchConfig(config, metadataRoutes.has(pathname)),
               (rewrite) => !isExternalUrl(rewrite.destination),
-            ),
+            ) ||
+            fallbackRewriteCanReplaceWarmPath(
+              pathname,
+              (rewrite) => !isExternalUrl(rewrite.destination),
+            ) ||
+            // The HTML path and its data target can reach different routes.
+            (!appDir && pagesWarmMetadata.localeDependentPaths.has(pathname)),
         )
       : [],
   );
+  // A rewritten path a `fallback: false` page rejects goes on to the fallback
+  // rewrites, which can end in request routing, so any rewrite may then do so.
+  const rewritesMayReachFallbackRewrites =
+    !appDir && pagesNoFallbackListings.size > 0 && config.rewrites.fallback.length > 0;
   const requestStageMayTerminateWarmPathSet = new Set(
     hasStagedRequestRouting
       ? routedWarmPaths.filter((pathname) => {
@@ -1848,8 +1980,11 @@ export async function discoverPrerenderPathManifest(
               config.rewrites,
               discoveredNonDynamicPathSet.has(pathname),
               pathConfig,
-              (rewrite) => isExternalUrl(rewrite.destination),
-            )
+              (rewrite) => rewritesMayReachFallbackRewrites || isExternalUrl(rewrite.destination),
+            ) ||
+            // Even an internal fallback rewrite can end in request routing,
+            // on a public file or a missing build asset's 404.
+            fallbackRewriteCanReplaceWarmPath(pathname, () => true)
           );
         })
       : [],
@@ -1914,12 +2049,18 @@ export async function discoverPrerenderPathManifest(
   for (let index = 0; index < resolvedPagesDataWarmPaths.length; index++) {
     const route = routePatterns[resolvedPagesDataWarmPaths[index]];
     if (route) {
+      const dataRoute =
+        route.kind === "pages-page"
+          ? pagesWarmMetadata.dataRoutePatterns[resolvedPagesDataWarmPaths[index]]
+          : undefined;
       const htmlPathname =
         resolvedPagesDataWarmPaths[index] === "/"
           ? config.basePath || "/"
           : `${config.basePath}${resolvedPagesDataWarmPaths[index]}`;
+      // A data target another route owns is probed in that route's group.
       routePatterns[pagesDataPaths[index]] = {
         ...route,
+        ...(dataRoute ? { pattern: dataRoute.pattern } : {}),
         cacheabilityProbe: {
           ...route.cacheabilityProbe!,
           concretePathname: htmlPathname,

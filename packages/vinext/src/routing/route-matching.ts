@@ -8,7 +8,7 @@
  * just calls `matchRouteWithTrie(url, routes)`.
  */
 import { normalizePathnameForRouteMatch } from "./utils.js";
-import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
+import { buildRouteTrie, buildRouteTrieExcluding, trieMatch, type TrieNode } from "./route-trie.js";
 
 // Trie cache — keyed by route array identity (same array = same trie).
 // Each caller gets its own cache via `createRouteTrieCache()`, so different
@@ -74,4 +74,26 @@ export function matchRouteWithTrieRawPathname<R extends { patternParts: string[]
   const urlParts = normalizedUrl.split("/").filter(Boolean);
   const trie = getOrBuildTrie(cache, routes);
   return trieMatch(trie, urlParts);
+}
+
+/**
+ * {@link matchRouteWithTrieRawPathname} among the routes whose pattern is not
+ * in `excludedPatterns`.
+ *
+ * Next.js resumes routing this way when a `fallback: false` page rejects a
+ * path: the page throws `NoFallbackError`, router-server.ts handles the
+ * request again, and resolve-routes.ts skips every page it already invoked
+ * (`invokedOutputs`), so the next matching route renders.
+ */
+export function matchRouteWithTrieRawPathnameExcluding<
+  R extends { pattern: string; patternParts: string[] },
+>(
+  url: string,
+  routes: readonly R[],
+  excludedPatterns: ReadonlySet<string>,
+): { route: R; params: Record<string, string | string[]> } | null {
+  const pathname = url.split("?")[0];
+  const normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+  const urlParts = normalizedUrl.split("/").filter(Boolean);
+  return trieMatch(buildRouteTrieExcluding(routes, excludedPatterns), urlParts);
 }

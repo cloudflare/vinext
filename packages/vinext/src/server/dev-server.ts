@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
+import { matchRouteWithTrieRawPathnameExcluding } from "../routing/route-matching.js";
 import type { ModuleImporter } from "./instrumentation.js";
 import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
@@ -735,30 +736,45 @@ export function createSSRHandler(
      */
     isDataReq: boolean = false,
     originalUrl: string = url,
+    noFallback?: {
+      /** Patterns of `fallback: false` routes that rejected this path; matching skips them. */
+      excludedPatterns?: readonly string[];
+      /**
+       * Called when a `fallback: false` page rejects the path, before anything
+       * is written. Resolves true once routing went on to answer the request.
+       */
+      resume?: (pattern: string) => Promise<boolean>;
+    },
   ): Promise<void> => {
+    const noFallbackRoutes = noFallback?.excludedPatterns?.length
+      ? new Set(noFallback.excludedPatterns)
+      : null;
     const _reqStart = now();
     let _compileEnd: number | undefined;
     let _renderEnd: number | undefined;
-    attachPagesRequestCookies(req);
-
-    res.on("finish", () => {
-      const totalMs = now() - _reqStart;
-      const compileMs = _compileEnd !== undefined ? Math.round(_compileEnd - _reqStart) : undefined;
-      // renderMs = time from end of compile to end of stream.
-      // _renderEnd is set just after streamPageToResponse resolves.
-      const renderMs =
-        _renderEnd !== undefined && _compileEnd !== undefined
-          ? Math.round(_renderEnd - _compileEnd)
-          : undefined;
-      logRequest({
-        method: req.method ?? "GET",
-        url,
-        status: res.statusCode,
-        totalMs,
-        compileMs,
-        renderMs,
+    // A `fallback: false` retry continues the request its first pass set up.
+    if (!noFallbackRoutes) {
+      attachPagesRequestCookies(req);
+      res.on("finish", () => {
+        const totalMs = now() - _reqStart;
+        const compileMs =
+          _compileEnd !== undefined ? Math.round(_compileEnd - _reqStart) : undefined;
+        // renderMs = time from end of compile to end of stream.
+        // _renderEnd is set just after streamPageToResponse resolves.
+        const renderMs =
+          _renderEnd !== undefined && _compileEnd !== undefined
+            ? Math.round(_renderEnd - _compileEnd)
+            : undefined;
+        logRequest({
+          method: req.method ?? "GET",
+          url,
+          status: res.statusCode,
+          totalMs,
+          compileMs,
+          renderMs,
+        });
       });
-    });
+    }
 
     // --- i18n: extract locale from URL prefix ---
     let locale: string | undefined;
@@ -801,7 +817,9 @@ export function createSSRHandler(
       requestPathname: new URL(originalUrl, "http://vinext.local").pathname,
     };
 
-    const match = matchRoute(localeStrippedUrl, routes);
+    const match = noFallbackRoutes
+      ? matchRouteWithTrieRawPathnameExcluding(localeStrippedUrl, routes, noFallbackRoutes)
+      : matchRoute(localeStrippedUrl, routes);
 
     if (!match) {
       if (isDataReq) {
@@ -1080,6 +1098,10 @@ export function createSSRHandler(
           );
 
           if (fallback === false && !isValidPath && requestPreviewData === false) {
+            // Next.js throws `NoFallbackError` here and routes the request on
+            // to the next matching route (router-server.ts). This page's 404
+            // answers only when the request pipeline finds none.
+            if (await noFallback?.resume?.(route.pattern)) return;
             if (isDataReq) {
               // Data requests get Next.js's canonical notFound JSON so the
               // client router can render the 404 route without parsing HTML.

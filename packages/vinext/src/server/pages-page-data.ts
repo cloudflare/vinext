@@ -307,6 +307,12 @@ export type ResolvePagesPageDataOptions = {
    */
   revalidateOnlyGenerated?: boolean;
   /**
+   * This `fallback: false` page already rejected the path during this request,
+   * and routing found nothing else to answer it. Return the rejection without
+   * calling `getStaticPaths()` again.
+   */
+  knownNoFallbackRejection?: boolean;
+  /**
    * Set when a cache adapter regenerates an entry it stores for this build.
    * The stored entry proves the path was admitted, so `getStaticPaths()` is
    * skipped as it is for an entry read through `isrGet`.
@@ -414,10 +420,19 @@ type ResolvePagesPageDataResponseResult = {
   response: Response;
   /** False when an on-demand request must be reported as a failed revalidation. */
   onDemandRevalidateSuccess?: boolean;
+  /** See {@link ResolvePagesPageDataNotFoundResult.noFallback}. */
+  noFallback?: true;
 };
 
 type ResolvePagesPageDataNotFoundResult = {
   kind: "notFound";
+  /**
+   * The path is not one of this `fallback: false` page's static paths. Next.js
+   * throws `NoFallbackError` here and routes the request to the next matching
+   * dynamic route (pages-handler.ts, router-server.ts); this 404 answers only
+   * when no other route matches.
+   */
+  noFallback?: true;
   /** Headers set by getServerSideProps before it returned notFound. */
   responseHeaders?: Record<string, string | number | boolean | string[]>;
   /** Current getStaticProps cache lifetime, when this is an SSG result. */
@@ -1255,10 +1270,12 @@ export async function resolvePagesPageData(
       ...options.i18n,
       defaultLocale: options.staticPathsDefaultLocale ?? options.i18n.defaultLocale,
     };
-    const pathsResult = await options.pageModule.getStaticPaths({
-      locales: options.i18n.locales ?? [],
-      defaultLocale: staticPathsI18n.defaultLocale ?? "",
-    });
+    const pathsResult = options.knownNoFallbackRejection
+      ? { paths: [], fallback: false as const }
+      : await options.pageModule.getStaticPaths({
+          locales: options.i18n.locales ?? [],
+          defaultLocale: staticPathsI18n.defaultLocale ?? "",
+        });
     const fallback = pathsResult?.fallback ?? false;
     const paths = pathsResult?.paths ?? [];
     const routeParams = getPagesRouteParams(options.routePattern);
@@ -1278,12 +1295,13 @@ export async function resolvePagesPageData(
           kind: "response",
           response: new Response("This page could not be found", { status: 404 }),
           onDemandRevalidateSuccess: false,
+          noFallback: true,
         };
       }
       // For data requests (`/_next/data/...json`), return a JSON-shaped 404
       // so the client router can `res.json()` without blowing up — matches
       // Next.js' behavior. HTML navigations still get the configured 404 page.
-      return buildPagesNotFoundResult(options);
+      return { ...buildPagesNotFoundResult(options), noFallback: true };
     }
 
     // Render the fallback shell for unlisted paths under `fallback: true`.

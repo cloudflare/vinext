@@ -69,10 +69,22 @@ import {
   notFoundStaticAssetResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
-import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
+import {
+  markRouteCacheabilityDynamic,
+  resetRouteCacheability,
+} from "vinext/shims/cacheability-classification";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
-import { setFrameworkRequestRoute } from "./request-tracing.js";
-import { VINEXT_PRERENDER_NOT_FOUND_HEADER, VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
+import {
+  replaceFrameworkRequestRoute,
+  resetFrameworkRequestRoute,
+  setFrameworkRequestRoute,
+} from "./request-tracing.js";
+import {
+  VINEXT_PAGES_NO_FALLBACK_HEADER,
+  VINEXT_PRERENDER_NOT_FOUND_HEADER,
+  VINEXT_PRERENDER_REWRITTEN_HEADER,
+} from "./headers.js";
+import { pagesNoFallbackHeaderValue, withoutPagesNoFallbackHeader } from "./pages-no-fallback.js";
 import { isPrerenderNotFoundPathname, isPrerenderNotFoundRequest } from "./prerender-not-found.js";
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
@@ -103,6 +115,23 @@ export type PagesRenderOptions = {
   isDataReq?: boolean;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
+  /**
+   * Patterns of `fallback: false` routes that rejected this path. Route
+   * matching skips them, as Next.js's resolve-routes.ts skips `invokedOutputs`.
+   */
+  noFallbackRoutes?: string[];
+  /**
+   * Answer a `fallback: false` rejection with only a bodiless 404 marked with
+   * {@link VINEXT_PAGES_NO_FALLBACK_HEADER}, so the pipeline can resume routing
+   * past the rejecting route before any error page renders.
+   */
+  reportNoFallback?: boolean;
+  /**
+   * Pattern of a `fallback: false` route that already rejected this path when
+   * nothing else answers it: that page renders its 404 without calling
+   * `getStaticPaths()` again.
+   */
+  noFallbackRejected?: string;
 };
 
 export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";
@@ -298,7 +327,14 @@ export type PagesPipelineDeps = {
   authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
-  matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
+  /** `excludedPatterns` lists `fallback: false` routes that already rejected the path. */
+  matchPageRoute?:
+    | ((
+        pathname: string,
+        request: Request,
+        excludedPatterns?: ReadonlySet<string>,
+      ) => PageRouteMatch | null)
+    | null;
   /**
    * Return the matching Pages (or hybrid App) API route, if one exists.
    *
@@ -426,6 +462,12 @@ export type PagesPipelineResult =
       requestHeaders: Headers;
       middlewareStatus: number | undefined;
       isDataReq: boolean;
+      /**
+       * Resume routing when the rendered page is `fallback: false` and rejects
+       * the path (dev only). Returns the next result, or null when no route
+       * remains and that page's own 404 answers.
+       */
+      resumeAfterNoFallback?: (pattern: string) => Promise<PagesPipelineResult | null>;
     }
   | {
       type: "api";
@@ -824,6 +866,11 @@ export async function runPagesRequest(
       recordCacheability: deps.recordCacheability,
     });
   }
+  // Only the page handler's own `fallback: false` rejection carries this
+  // internal marker; a copy middleware or config headers staged is dropped
+  // here, so it never reaches the page render or any response produced after
+  // this point (middleware's own terminal responses returned earlier).
+  delete middlewareHeaders[VINEXT_PAGES_NO_FALLBACK_HEADER];
 
   // Next.js proxies a next.config external rewrite without the config and
   // middleware headers it staged (resolve-routes returns no resHeaders for
@@ -970,6 +1017,82 @@ export async function runPagesRequest(
   const apiResult = await handleResolvedApiRoute();
   if (apiResult) return apiResult;
 
+  const refreshDataRewriteHeader = () => {
+    if (
+      (isDataReq || isDataRequest) &&
+      resolvedUrl !== originalResolvedUrl &&
+      !isExternalUrl(resolvedUrl)
+    ) {
+      middlewareHeaders["x-nextjs-rewrite"] = resolvedUrl;
+    } else {
+      delete middlewareHeaders["x-nextjs-rewrite"];
+    }
+  };
+
+  // Patterns of `fallback: false` pages that rejected the path, which later
+  // matching skips (Next.js resolve-routes.ts `invokedOutputs`).
+  const noFallbackRoutes: string[] = [];
+  // Only a dynamic route with a known pattern can report a `fallback: false`
+  // rejection the pipeline can resume past.
+  const reportsNoFallback = (match: PageRouteMatch | null): boolean =>
+    match?.route.isDynamic === true && match.route.pattern !== undefined;
+  const matchPage = (candidatePathname: string): PageRouteMatch | null => {
+    if (!deps.matchPageRoute) return null;
+    return noFallbackRoutes.length > 0
+      ? deps.matchPageRoute(candidatePathname, request, new Set(noFallbackRoutes))
+      : deps.matchPageRoute(candidatePathname, request);
+  };
+
+  // afterFiles and fallback rules already applied. Resumed routing continues
+  // with the rest: Next.js's rerun skips the page a rewrite reached once it was
+  // invoked and moves on to the following rules (`check: true`).
+  type RewriteCursor = { phase: "afterFiles" | "fallback"; rules: NextRewrite[]; next: number };
+  const afterFilesCursor: RewriteCursor = {
+    phase: "afterFiles",
+    rules: configRewrites.afterFiles ?? [],
+    next: 0,
+  };
+  const fallbackCursor: RewriteCursor = {
+    phase: "fallback",
+    rules: configRewrites.fallback ?? [],
+    next: 0,
+  };
+  // Apply a phase's remaining rewrites until one resolves a page. `undefined`
+  // means no rule matched; `{ match: null }` that rules rewrote the path to no page.
+  const applyRewriteRules = async (
+    cursor: RewriteCursor,
+  ): Promise<{ result: PagesPipelineResult } | { match: PageRouteMatch | null } | undefined> => {
+    let outcome: { match: PageRouteMatch | null } | undefined;
+    while (cursor.next < cursor.rules.length) {
+      const rewrite = cursor.rules[cursor.next++];
+      const rewritten = matchRewrite(
+        configSourcePathname(),
+        [rewrite],
+        rewriteRequestContext(),
+        currentBasePathState(),
+        configSourcePathname(),
+        conditionalRewriteCacheability,
+      );
+      if (!rewritten) continue;
+      if (isExternalUrl(rewritten)) {
+        return { result: await proxyConfigRewrite(rewritten) };
+      }
+      resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+      resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+      resolvedPathnameIsRequestPathname = false;
+      resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
+      configRewriteFired = true;
+      const filesystemResult = await serveFilesystemRoute(resolvedPathname, cursor.phase);
+      if (filesystemResult) return { result: filesystemResult };
+      const apiResult = await handleResolvedApiRoute();
+      if (apiResult) return { result: apiResult };
+      outcome = { match: matchPage(resolvedPathname) };
+      refreshDataRewriteHeader();
+      if (outcome.match) break;
+    }
+    return outcome;
+  };
+
   // Step 12: afterFiles rewrites
   // The prerender step's request for the 404 page is a route miss, as in
   // Next.js, even where a top-level dynamic route would match it. The page
@@ -984,48 +1107,59 @@ export async function runPagesRequest(
   // actually rewrote resolvedPathname (the common case leaves it unchanged).
   let resolvedPathnameChanged = false;
   if (!pageMatch || pageMatch.route.isDynamic) {
-    for (const rewrite of configRewrites.afterFiles ?? []) {
-      const rewritten = matchRewrite(
-        configSourcePathname(),
-        [rewrite],
-        rewriteRequestContext(),
-        currentBasePathState(),
-        configSourcePathname(),
-        conditionalRewriteCacheability,
-      );
-      if (rewritten) {
-        if (isExternalUrl(rewritten)) return proxyConfigRewrite(rewritten);
-        resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
-        resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
-        resolvedPathnameIsRequestPathname = false;
-        resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
-        configRewriteFired = true;
-        resolvedPathnameChanged = true;
-        const afterFilesFilesystemResult = await serveFilesystemRoute(
-          resolvedPathname,
-          "afterFiles",
-        );
-        if (afterFilesFilesystemResult) return afterFilesFilesystemResult;
-        const afterFilesApiResult = await handleResolvedApiRoute();
-        if (afterFilesApiResult) return afterFilesApiResult;
-        pageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
-        if (pageMatch) break;
-      }
+    const outcome = await applyRewriteRules(afterFilesCursor);
+    if (outcome && "result" in outcome) return outcome.result;
+    if (outcome) {
+      pageMatch = outcome.match;
+      resolvedPathnameChanged = true;
     }
   }
-
-  const refreshDataRewriteHeader = () => {
-    if (
-      (isDataReq || isDataRequest) &&
-      resolvedUrl !== originalResolvedUrl &&
-      !isExternalUrl(resolvedUrl)
-    ) {
-      middlewareHeaders["x-nextjs-rewrite"] = resolvedUrl;
-    } else {
-      delete middlewareHeaders["x-nextjs-rewrite"];
-    }
-  };
   refreshDataRewriteHeader();
+
+  /**
+   * Continue routing past a `fallback: false` page that rejected the path.
+   * Next.js throws `NoFallbackError` there and router-server.ts handles the
+   * request again, skipping the pages it already invoked: the next matching
+   * route renders, then the remaining afterFiles and fallback rewrites apply.
+   * `{ match: null }` means a rewrite reached no route, so the request is a
+   * route miss at the rewritten URL (Next.js keeps the rewritten `parsedUrl`).
+   * Returns null when nothing else applies, so the rejecting page's own 404
+   * answers.
+   */
+  const resumePastNoFallback = async (
+    pattern: string,
+  ): Promise<{ result: PagesPipelineResult } | { match: PageRouteMatch | null } | null> => {
+    noFallbackRoutes.push(pattern);
+    let match = matchPage(resolvedPathname);
+    let rewrote = false;
+    const cursors = [afterFilesCursor, fallbackCursor].filter(
+      (cursor) => cursor.next < cursor.rules.length,
+    );
+    if (!match && cursors.length > 0) {
+      // The rejecting page no longer owns the request, so a public file, API
+      // route or proxy a rewrite reaches is classified and traced as itself.
+      resetRouteCacheability();
+      resetFrameworkRequestRoute();
+      for (const cursor of cursors) {
+        const outcome = await applyRewriteRules(cursor);
+        if (outcome && "result" in outcome) return outcome;
+        if (outcome) {
+          rewrote = true;
+          match = outcome.match;
+        }
+        if (match) break;
+      }
+    }
+    if (!match) {
+      if (rewrote) return { match: null };
+      // No rule moved the request: the rejecting page answers with its own 404.
+      replaceFrameworkRequestRoute(matchedPathnameForRoute(pattern));
+      return null;
+    }
+    resetRouteCacheability();
+    replaceFrameworkRequestRoute(matchedPathnameForRoute(match.route.pattern));
+    return { match };
+  };
 
   // Step 13: Render + fallback rewrites
   if (typeof deps.renderPage === "function") {
@@ -1036,32 +1170,9 @@ export async function runPagesRequest(
       !renderPageMatch &&
       configRewrites.fallback?.length
     ) {
-      for (const rewrite of configRewrites.fallback) {
-        const fallbackRewrite = matchRewrite(
-          configSourcePathname(),
-          [rewrite],
-          rewriteRequestContext(),
-          currentBasePathState(),
-          configSourcePathname(),
-          conditionalRewriteCacheability,
-        );
-        if (!fallbackRewrite) continue;
-        if (isExternalUrl(fallbackRewrite)) return proxyConfigRewrite(fallbackRewrite);
-        resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
-        resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
-        resolvedPathnameIsRequestPathname = false;
-        resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
-        configRewriteFired = true;
-        const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
-        if (fallbackFilesystemResult) return fallbackFilesystemResult;
-        const fallbackApiResult = await handleResolvedApiRoute();
-        if (fallbackApiResult) return fallbackApiResult;
-        renderPageMatch = deps.matchPageRoute
-          ? deps.matchPageRoute(resolvedPathname, request)
-          : null;
-        refreshDataRewriteHeader();
-        if (renderPageMatch) break;
-      }
+      const outcome = await applyRewriteRules(fallbackCursor);
+      if (outcome && "result" in outcome) return outcome.result;
+      if (outcome) renderPageMatch = outcome.match;
     }
     const prefetchSkipResult = buildMiddlewarePrefetchSkipResult(renderPageMatch);
     if (prefetchSkipResult) return prefetchSkipResult;
@@ -1070,16 +1181,21 @@ export async function runPagesRequest(
     // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
       !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
+    // Only a dynamic route can be a `fallback: false` page.
     const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss
       ? { renderErrorPageOnMiss: false }
-      : isDataReq
-        ? { isDataReq: true }
-        : undefined;
+      : reportsNoFallback(renderPageMatch)
+        ? isDataReq
+          ? { isDataReq: true, reportNoFallback: true }
+          : { reportNoFallback: true }
+        : isDataReq
+          ? { isDataReq: true }
+          : undefined;
 
     // Convert staged middleware headers to a Web Headers object for renderPage.
     // Adapters that need to inject per-request values (e.g. CSP nonces) into the
     // rendered HTML can access them via this argument.
-    const stagedHeaders = headersFromRecord(middlewareHeaders);
+    let stagedHeaders = headersFromRecord(middlewareHeaders);
 
     if (renderPageMatch) {
       setFrameworkRequestRoute(matchedPathnameForRoute(renderPageMatch.route.pattern));
@@ -1088,8 +1204,9 @@ export async function runPagesRequest(
 
     // Fallback rewrites if 404 + deferred
     let matchedFallbackRewrite = false;
-    if (response.status === 404 && shouldDeferErrorPageOnMiss && configRewrites.fallback?.length) {
-      for (const rewrite of configRewrites.fallback) {
+    if (response.status === 404 && shouldDeferErrorPageOnMiss && fallbackCursor.rules.length) {
+      while (fallbackCursor.next < fallbackCursor.rules.length) {
+        const rewrite = fallbackCursor.rules[fallbackCursor.next++];
         const fallbackRewrite = matchRewrite(
           configSourcePathname(),
           [rewrite],
@@ -1115,10 +1232,67 @@ export async function runPagesRequest(
         if (renderPageMatch) {
           setFrameworkRequestRoute(matchedPathnameForRoute(renderPageMatch.route.pattern));
         }
-        response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+        response = await deps.renderPage(
+          request,
+          resolvedUrl,
+          reportsNoFallback(renderPageMatch) ? { reportNoFallback: true } : undefined,
+          stagedHeaders,
+        );
         matchedFallbackRewrite = true;
-        if (response.status !== 404) break;
+        if (response.status !== 404 || response.headers.has(VINEXT_PAGES_NO_FALLBACK_HEADER)) {
+          break;
+        }
       }
+    }
+
+    let resumedPastNoFallback = false;
+    for (;;) {
+      const marker = response.headers.get(VINEXT_PAGES_NO_FALLBACK_HEADER);
+      if (marker === null) break;
+      response = withoutPagesNoFallbackHeader(response);
+      // Only the page just rendered can reject the path, once, and only with
+      // the handler's bodiless 404. Anything else is a copy of the header from
+      // user code, which is ignored.
+      const rejected = renderPageMatch?.route.pattern;
+      if (
+        response.status !== 404 ||
+        rejected === undefined ||
+        marker !== pagesNoFallbackHeaderValue(rejected) ||
+        noFallbackRoutes.includes(rejected)
+      ) {
+        break;
+      }
+      const rejectingRenderOptions: PagesRenderOptions = {
+        ...(isDataReq ? { isDataReq: true } : {}),
+        ...(noFallbackRoutes.length > 0 ? { noFallbackRoutes: [...noFallbackRoutes] } : {}),
+      };
+      // The rejection carries no body; this discards it best-effort.
+      response.body?.cancel().catch(() => {});
+      const resumed = await resumePastNoFallback(rejected);
+      if (resumed && "result" in resumed) return resumed.result;
+      if (resumed) {
+        // Next.js's retried request reaches the final route's prefetch guard.
+        // A rewrite to no route leaves a route miss (`match: null`).
+        const resumedPrefetchSkip = buildMiddlewarePrefetchSkipResult(resumed.match);
+        if (resumedPrefetchSkip) return resumedPrefetchSkip;
+        renderPageMatch = resumed.match;
+        resumedPastNoFallback = true;
+      }
+      stagedHeaders = headersFromRecord(middlewareHeaders);
+      response = await deps.renderPage(
+        request,
+        resolvedUrl,
+        resumed
+          ? {
+              ...(isDataReq ? { isDataReq: true } : {}),
+              noFallbackRoutes: [...noFallbackRoutes],
+              ...(reportsNoFallback(resumed.match) ? { reportNoFallback: true } : {}),
+            }
+          : // Nothing else answers: the rejecting page renders its own 404.
+            { ...rejectingRenderOptions, noFallbackRejected: rejected },
+        stagedHeaders,
+      );
+      if (!resumed) break;
     }
 
     // Only an unmatched resolved asset path gets the static-file response.
@@ -1169,8 +1343,15 @@ export async function runPagesRequest(
       // A build request can satisfy a request-conditional rewrite that real
       // visitors may not. Only an unrewritten page render may become a snapshot;
       // earlier filesystem, API, and proxy returns never carry this confirmation.
+      // A page reached past a `fallback: false` page that rejected the path is
+      // left to runtime like a rewrite, including its getStaticProps redirect
+      // or `notFound`; any other status still surfaces to the build.
+      // The public status, as `mergeHeaders` sets it.
+      const status = response.status === 304 ? 304 : (middlewareStatus ?? response.status);
+      const resumedResultForRuntime =
+        resumedPastNoFallback && ((status >= 200 && status < 400) || status === 404);
       matchedPathHeaders[VINEXT_PRERENDER_REWRITTEN_HEADER] =
-        resolvedUrl === originalResolvedUrl ? "0" : "1";
+        resolvedUrl === originalResolvedUrl && !resumedResultForRuntime ? "0" : "1";
     }
     const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
@@ -1197,29 +1378,9 @@ export async function runPagesRequest(
         : null
       : pageMatch;
   if (!devPageMatch && configRewrites.fallback?.length) {
-    for (const rewrite of configRewrites.fallback) {
-      const fallbackRewrite = matchRewrite(
-        configSourcePathname(),
-        [rewrite],
-        rewriteRequestContext(),
-        currentBasePathState(),
-        configSourcePathname(),
-        conditionalRewriteCacheability,
-      );
-      if (!fallbackRewrite) continue;
-      if (isExternalUrl(fallbackRewrite)) return proxyConfigRewrite(fallbackRewrite);
-      resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
-      resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
-      resolvedPathnameIsRequestPathname = false;
-      resolvedPathnameHasBasePath = !basePath || rewrite.basePath !== false;
-      configRewriteFired = true;
-      const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
-      if (fallbackFilesystemResult) return fallbackFilesystemResult;
-      const fallbackApiResult = await handleResolvedApiRoute();
-      if (fallbackApiResult) return fallbackApiResult;
-      devPageMatch = deps.matchPageRoute?.(resolvedPathname, request) ?? null;
-      if (devPageMatch) break;
-    }
+    const outcome = await applyRewriteRules(fallbackCursor);
+    if (outcome && "result" in outcome) return outcome.result;
+    if (outcome) devPageMatch = outcome.match;
   }
   const prefetchSkipResult = buildMiddlewarePrefetchSkipResult(devPageMatch);
   if (prefetchSkipResult) return prefetchSkipResult;
@@ -1227,13 +1388,26 @@ export async function runPagesRequest(
   refreshDataRewriteHeader();
   if (devPageMatch) setFrameworkRequestRoute(matchedPathnameForRoute(devPageMatch.route.pattern));
 
-  return {
+  const devRenderIntent = (): PagesPipelineResult => ({
     type: "render",
     resolvedUrl,
-    renderOptions: isDataReq ? { isDataReq: true } : undefined,
-    stagedHeaders: middlewareHeaders,
+    renderOptions:
+      noFallbackRoutes.length > 0
+        ? { ...(isDataReq ? { isDataReq: true } : {}), noFallbackRoutes: [...noFallbackRoutes] }
+        : isDataReq
+          ? { isDataReq: true }
+          : undefined,
+    // A resumed intent's headers replace the flushed ones, so keep each set.
+    stagedHeaders: { ...middlewareHeaders },
     requestHeaders: request.headers,
     middlewareStatus,
     isDataReq,
-  };
+    resumeAfterNoFallback: async (pattern) => {
+      const resumed = await resumePastNoFallback(pattern);
+      if (!resumed) return null;
+      if ("result" in resumed) return resumed.result;
+      return buildMiddlewarePrefetchSkipResult(resumed.match) ?? devRenderIntent();
+    },
+  });
+  return devRenderIntent();
 }

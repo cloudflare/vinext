@@ -681,7 +681,7 @@ describe("pages page data", () => {
       }),
     );
 
-    expect(result).toEqual({ kind: "notFound" });
+    expect(result).toEqual({ kind: "notFound", noFallback: true });
   });
 
   it.each([
@@ -910,7 +910,7 @@ describe("pages page data", () => {
       }),
     );
 
-    expect(result).toEqual({ kind: "notFound" });
+    expect(result).toEqual({ kind: "notFound", noFallback: true });
   });
 
   it("accepts mixed required and empty optional catch-all params", async () => {
@@ -965,7 +965,7 @@ describe("pages page data", () => {
       }),
     );
 
-    expect(result).toEqual({ kind: "notFound" });
+    expect(result).toEqual({ kind: "notFound", noFallback: true });
   });
 
   it("runs page getInitialProps with the original request URL and asPath", async () => {

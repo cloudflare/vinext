@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { handleResponseStage } from "../packages/vinext/src/server/pages-response-stage-entry.js";
 import {
+  isPagesResponseStageProps,
   PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
 } from "../packages/vinext/src/server/worker-stages.js";
@@ -22,7 +23,9 @@ import { finalizePagesPreviewResponse } from "../packages/vinext/src/server/page
 const stages = vi.hoisted(() => ({
   api: vi.fn(),
   ensureInstrumentation: vi.fn(),
-  getRuntimePageDataKind: vi.fn(() => "none"),
+  getRuntimePageDataKind: vi.fn(
+    (_url: string, _request: Request, _excluded?: ReadonlySet<string>): string => "none",
+  ),
   registerCacheAdapters: vi.fn(),
   registerImageOptimizer: vi.fn(),
   renderPage: vi.fn(),
@@ -65,6 +68,68 @@ describe("Pages Worker response stage", () => {
     stages.registerCacheAdapters.mockReset();
     stages.registerImageOptimizer.mockReset();
     stages.renderPage.mockReset();
+  });
+
+  it("owns the policy of a render past a rejecting fallback: false page by that render's route", async () => {
+    stages.getRuntimePageDataKind.mockImplementation((_url, _request, excluded) =>
+      excluded?.has("/[slug]") ? "server" : "static",
+    );
+    stages.renderPage.mockResolvedValue(new Response("catch-all"));
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/unlisted"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/unlisted" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: { noFallbackRoutes: ["/[slug]"], reportNoFallback: true },
+        resolvedUrl: "/unlisted",
+        sharedAcrossHosts: false,
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get(PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER)).toBe("request-time");
+  });
+
+  it("returns a fallback: false rejection to the request stage while probing", async () => {
+    // The request stage resumes routing on the rejection, so the probe
+    // envelope belongs to the route that answers, not the rejecting page.
+    stages.renderPage.mockResolvedValue(
+      new Response(null, { status: 404, headers: { "x-vinext-pages-no-fallback": "/[slug]" } }),
+    );
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/unlisted"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: "probe",
+          resolvedRoutePathname: "/unlisted",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: { reportNoFallback: true },
+        resolvedUrl: "/unlisted",
+        sharedAcrossHosts: false,
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-vinext-pages-no-fallback")).toBe("/[slug]");
   });
 
   it("stamps trusted request-time policy ownership from loaded Pages modules", async () => {
@@ -874,5 +939,28 @@ describe("Pages Worker response stage", () => {
     const reconstructed = stages.renderPage.mock.calls[0]?.[4] as Headers;
     expect(reconstructed.get("content-security-policy")).toBe("script-src 'nonce-stage'");
     expect(reconstructed.getSetCookie()).toEqual(["first=one; Path=/", "second=two; Path=/"]);
+  });
+});
+
+describe("Pages response stage props", () => {
+  const props = (renderOptions: Record<string, unknown>) => ({
+    buildId: "test-build",
+    cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/unlisted" },
+    kind: "pages-page",
+    protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+    requestHost: "example.com",
+    renderOptions,
+    resolvedUrl: "/unlisted",
+    sharedAcrossHosts: false,
+    stagedHeaders: null,
+  });
+
+  it("carries the fallback: false routes a render resumes past", () => {
+    expect(
+      isPagesResponseStageProps(props({ noFallbackRoutes: ["/[slug]"], reportNoFallback: true })),
+    ).toBe(true);
+    expect(isPagesResponseStageProps(props({ noFallbackRoutes: [1] }))).toBe(false);
+    expect(isPagesResponseStageProps(props({ noFallbackRoutes: "/[slug]" }))).toBe(false);
+    expect(isPagesResponseStageProps(props({ reportNoFallback: "yes" }))).toBe(false);
   });
 });

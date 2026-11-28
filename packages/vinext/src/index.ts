@@ -35,6 +35,7 @@ import {
   invalidateRouteCache,
   matchRoute,
 } from "./routing/pages-router.js";
+import { matchRouteWithTrieRawPathnameExcluding } from "./routing/route-matching.js";
 import {
   generatePagesRequestEntry as _generatePagesRequestEntry,
   generatePagesResponseEntry as _generatePagesResponseEntry,
@@ -228,6 +229,7 @@ import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadat
 import {
   runPagesRequest,
   type PagesPipelineDeps,
+  type PagesPipelineResult,
   type MiddlewareResult,
 } from "./server/pages-request-pipeline.js";
 import {
@@ -7806,7 +7808,7 @@ export const loadServerActionClient = ${
                   const devAppRoutes = await getDevAppRoutes();
                   return matchAppRoute(apiUrl, devAppRoutes);
                 },
-                matchPageRoute: (resolvedPathname, request) => {
+                matchPageRoute: (resolvedPathname, request, excludedPatterns) => {
                   const routeUrl = nextConfig?.i18n
                     ? resolvePagesI18nRequest(
                         resolvedPathname,
@@ -7817,7 +7819,13 @@ export const loadServerActionClient = ${
                         nextConfig.trailingSlash ?? false,
                       ).url
                     : resolvedPathname;
-                  const m = matchRoute(routeUrl, devPageRoutes);
+                  const m = excludedPatterns
+                    ? matchRouteWithTrieRawPathnameExcluding(
+                        routeUrl,
+                        devPageRoutes,
+                        excludedPatterns,
+                      )
+                    : matchRoute(routeUrl, devPageRoutes);
                   return m
                     ? {
                         route: {
@@ -7906,236 +7914,284 @@ export const loadServerActionClient = ${
                 // handleApi and renderPage are omitted — pipeline emits intents
               };
 
-              const pipelineResult = await runPagesRequest(webRequest, pipelineDeps);
-
-              if (pipelineResult.type === "response") {
-                await writeWebResponseToNodeRes(res, pipelineResult.response);
-                return;
-              }
-
-              if (pipelineResult.type === "next") {
-                return next();
-              }
-
-              // `handled` means an adapter wrote the response directly, including
-              // Vite's filesystem middleware for rewritten public/static files.
-              if (pipelineResult.type === "handled") {
-                return;
-              }
-
-              // For render/api intents: flush staged middleware headers and
-              // apply request header mutations before calling SSR/API handlers.
-              const forEachStagedHeader = (visit: (key: string, value: string) => void) => {
-                for (const [key, value] of Object.entries(pipelineResult.stagedHeaders)) {
-                  if (Array.isArray(value)) {
-                    for (const item of value) visit(key, item);
-                  } else {
-                    visit(key, value);
-                  }
+              const handlePipelineResult = async (
+                pipelineResult: PagesPipelineResult,
+              ): Promise<void> => {
+                if (pipelineResult.type === "response") {
+                  await writeWebResponseToNodeRes(res, pipelineResult.response);
+                  return;
                 }
-              };
 
-              const flushStagedHeaders = () => {
-                forEachStagedHeader((key, value) => res.appendHeader(key, value));
-              };
+                if (pipelineResult.type === "next") {
+                  return next();
+                }
 
-              // Apply post-middleware request headers to req.headers so the
-              // SSR/API handler sees middleware-modified cookies/headers.
-              const flushRequestHeaders = () => {
-                applyRequestHeadersToNodeRequest(pipelineResult.requestHeaders);
-              };
+                // `handled` means an adapter wrote the response directly, including
+                // Vite's filesystem middleware for rewritten public/static files.
+                if (pipelineResult.type === "handled") {
+                  return;
+                }
 
-              const forwardInternalApiRewriteToApp = (apiUrl: string) => {
-                const responseHeaders: [string, string][] = [];
-                forEachStagedHeader((key, value) => responseHeaders.push([key, value]));
-                const requestHeaders = new Headers();
-                encodeMiddlewareRequestHeaders(requestHeaders, pipelineResult.requestHeaders);
+                // For render/api intents: flush staged middleware headers and
+                // apply request header mutations before calling SSR/API handlers.
+                const forEachStagedHeader = (visit: (key: string, value: string) => void) => {
+                  for (const [key, value] of Object.entries(pipelineResult.stagedHeaders)) {
+                    if (Array.isArray(value)) {
+                      for (const item of value) visit(key, item);
+                    } else {
+                      visit(key, value);
+                    }
+                  }
+                };
 
-                // The Pages pipeline already ran middleware and evaluated the
-                // fallback rule against its request-header overrides. Carry
-                // both pieces of state into the App RSC plugin: reapplying the
-                // rule from the original request can lose its has/missing
-                // match, while mutating req.url would lose the public URL that
-                // App route handlers expose through request.url.
-                flushRequestHeaders();
-                setForwardedMiddlewareContext(
-                  req,
-                  devForwardedMiddlewareContextKey,
-                  JSON.stringify({
-                    h: responseHeaders,
-                    q: [...requestHeaders],
-                    s: pipelineResult.middlewareStatus ?? null,
-                    r: apiUrl,
-                  }),
-                );
-              };
+                const flushStagedHeaders = () => {
+                  forEachStagedHeader((key, value) => res.appendHeader(key, value));
+                };
 
-              if (pipelineResult.type === "api") {
-                const devApiRoutes = await getDevApiRoutes();
-                // Only flush staged middleware headers / mutate req.headers when a
-                // pages API route actually matches — mirroring the original
-                // `if (apiMatch)` gate. On a miss we must NOT touch res or req.headers
-                // before falling through to next(): an unconditional flushRequestHeaders()
-                // deletes all req.headers and repopulates them from the body-less pipeline
-                // request, wiping the hybrid app+pages middleware context
-                // (VINEXT_MW_CTX_HEADER) that the app RSC plugin reads.
-                const apiMatch = matchRoute(pipelineResult.apiUrl, devApiRoutes);
-                if (apiMatch && hasAppDir && appDir) {
-                  const devAppRoutes = await getDevAppRoutes();
-                  const appMatch = matchAppRoute(pipelineResult.apiUrl, devAppRoutes);
-                  if (
-                    appMatch &&
-                    !pagesRouteHasPriorityOverAppRoute(apiMatch.route, appMatch.route)
-                  ) {
+                // Apply post-middleware request headers to req.headers so the
+                // SSR/API handler sees middleware-modified cookies/headers.
+                const flushRequestHeaders = () => {
+                  applyRequestHeadersToNodeRequest(pipelineResult.requestHeaders);
+                };
+
+                const forwardInternalApiRewriteToApp = (apiUrl: string) => {
+                  const responseHeaders: [string, string][] = [];
+                  forEachStagedHeader((key, value) => responseHeaders.push([key, value]));
+                  const requestHeaders = new Headers();
+                  encodeMiddlewareRequestHeaders(requestHeaders, pipelineResult.requestHeaders);
+
+                  // The Pages pipeline already ran middleware and evaluated the
+                  // fallback rule against its request-header overrides. Carry
+                  // both pieces of state into the App RSC plugin: reapplying the
+                  // rule from the original request can lose its has/missing
+                  // match, while mutating req.url would lose the public URL that
+                  // App route handlers expose through request.url.
+                  flushRequestHeaders();
+                  setForwardedMiddlewareContext(
+                    req,
+                    devForwardedMiddlewareContextKey,
+                    JSON.stringify({
+                      h: responseHeaders,
+                      q: [...requestHeaders],
+                      s: pipelineResult.middlewareStatus ?? null,
+                      r: apiUrl,
+                    }),
+                  );
+                };
+
+                if (pipelineResult.type === "api") {
+                  const devApiRoutes = await getDevApiRoutes();
+                  // Only flush staged middleware headers / mutate req.headers when a
+                  // pages API route actually matches — mirroring the original
+                  // `if (apiMatch)` gate. On a miss we must NOT touch res or req.headers
+                  // before falling through to next(): an unconditional flushRequestHeaders()
+                  // deletes all req.headers and repopulates them from the body-less pipeline
+                  // request, wiping the hybrid app+pages middleware context
+                  // (VINEXT_MW_CTX_HEADER) that the app RSC plugin reads.
+                  const apiMatch = matchRoute(pipelineResult.apiUrl, devApiRoutes);
+                  if (apiMatch && hasAppDir && appDir) {
+                    const devAppRoutes = await getDevAppRoutes();
+                    const appMatch = matchAppRoute(pipelineResult.apiUrl, devAppRoutes);
+                    if (
+                      appMatch &&
+                      !pagesRouteHasPriorityOverAppRoute(apiMatch.route, appMatch.route)
+                    ) {
+                      return next();
+                    }
+                  }
+                  if (apiMatch) {
+                    flushStagedHeaders();
+                    flushRequestHeaders();
+                    if (pipelineResult.middlewareStatus !== undefined) {
+                      req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
+                    }
+                  }
+                  const handled = await handleApiRoute(
+                    getPagesRunner(),
+                    req,
+                    res,
+                    pipelineResult.apiUrl,
+                    devApiRoutes,
+                    {
+                      basePath: nextConfig?.basePath,
+                      i18n: nextConfig?.i18n,
+                      trustedRevalidateOrigin: getTrustedDevRevalidateOrigin(),
+                      allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
+                      trailingSlash: nextConfig?.trailingSlash,
+                      skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
+                      requestPathname: originalUrlHadBasePath
+                        ? restoreBasePath(routeUrl.split("?")[0], bp)
+                        : routeUrl.split("?")[0],
+                    },
+                  );
+                  if (handled) return;
+
+                  // No API route matched — if app dir exists, let the RSC plugin handle it
+                  // (app/api/* route handlers live there). Otherwise hard-404.
+                  if (hasAppDir) {
+                    // Only a next.config rewrite should override App's route
+                    // resolution. Locale stripping is API lookup normalization,
+                    // not an internal rewrite to forward to the RSC plugin.
+                    if (pipelineResult.configRewriteFired) {
+                      forwardInternalApiRewriteToApp(pipelineResult.apiUrl);
+                    }
                     return next();
                   }
+
+                  res.statusCode = 404;
+                  res.end("404 - API route not found");
+                  return;
                 }
-                if (apiMatch) {
+
+                // pipelineResult.type === "render"
+                {
+                  const routes = await pagesRouter(
+                    pagesDir,
+                    nextConfig?.pageExtensions,
+                    fileMatcher,
+                  );
+                  // Hybrid app+pages dev: if the resolved URL matches no pages route
+                  // and an app/ dir exists, defer to the RSC plugin (app routes live
+                  // there). If both routers match, apply Next.js's merged route
+                  // precedence before choosing which plugin owns the request.
+                  const resolvedPathname = pipelineResult.resolvedUrl
+                    .split("#", 1)[0]
+                    .split("?", 1)[0];
+                  // Routes a `fallback: false` page rejected stay out of the match.
+                  const noFallbackRoutes = pipelineResult.renderOptions?.noFallbackRoutes;
+                  const renderMatch = noFallbackRoutes?.length
+                    ? matchRouteWithTrieRawPathnameExcluding(
+                        resolvedPathname,
+                        routes,
+                        new Set(noFallbackRoutes),
+                      )
+                    : matchRoute(resolvedPathname, routes);
+                  if (hasAppDir && appDir) {
+                    if (!renderMatch) {
+                      return next();
+                    }
+                    const appRoutes = await appRouter(
+                      appDir,
+                      nextConfig?.pageExtensions,
+                      fileMatcher,
+                    );
+                    const appMatch = matchAppRoute(resolvedPathname, appRoutes);
+                    if (
+                      appMatch &&
+                      !pagesRouteHasPriorityOverAppRoute(renderMatch.route, appMatch.route)
+                    ) {
+                      return next();
+                    }
+                  }
+                  // Hybrid requests have already been handed to App routing above.
+                  // Only an unmatched resolved static path gets the canonical 404.
+                  if (
+                    !renderMatch &&
+                    isNextStaticPath(
+                      resolvedPathname,
+                      "",
+                      assetPrefixPathname(nextConfig?.assetPrefix ?? ""),
+                    )
+                  ) {
+                    const headers = new Headers();
+                    forEachStagedHeader((key, value) => headers.append(key, value));
+                    await writeWebResponseToNodeRes(res, notFoundStaticAssetResponse(headers));
+                    return;
+                  }
+                  if (!cachedSSRHandler || cachedSSRHandler.routes !== routes) {
+                    cachedSSRHandler = {
+                      routes,
+                      handler: createSSRHandler(
+                        server,
+                        getPagesRunner(),
+                        routes,
+                        pagesDir,
+                        nextConfig?.i18n,
+                        fileMatcher,
+                        nextConfig?.basePath ?? "",
+                        nextConfig?.trailingSlash ?? false,
+                        middlewarePath !== null,
+                        (nextConfig?.rewrites.beforeFiles.length ?? 0) > 0 ||
+                          (nextConfig?.rewrites.afterFiles.length ?? 0) > 0 ||
+                          (nextConfig?.rewrites.fallback.length ?? 0) > 0,
+                        nextConfig?.clientTraceMetadata,
+                        nextConfig?.htmlLimitedBots,
+                        nextConfig?.reactStrictMode === true,
+                        nextConfig?.expireTime,
+                        nextConfig?.crossOrigin,
+                        devBuildId,
+                        middlewarePath
+                          ? compileClientMiddlewareMatchers(
+                              extractMiddlewareMatcherConfig(middlewarePath),
+                            )
+                          : undefined,
+                        classifyDevPageRoute,
+                        (files) => {
+                          const environment = server.environments["ssr"];
+                          if (!environment) return Promise.resolve(null);
+                          // No module has loaded a font, so none is any page's:
+                          // skip the walk on each request.
+                          if (fontOwnerKeys.size === 0) return Promise.resolve([]);
+                          return collectDevPagesFontOwners(environment, files, {
+                            canonicalizeModuleId: canonicalize,
+                            isOwner: (id) => fontOwnerKeys.has(fontOwnerKey(root, id)),
+                            ownerKey: (id) => fontOwnerKey(root, id),
+                          });
+                        },
+                      ),
+                    };
+                  }
+                  const resumeAfterNoFallback = pipelineResult.resumeAfterNoFallback;
+                  // Values other connect middleware set before the staged
+                  // headers, which a resumed result keeps. Copied, because
+                  // appendHeader() grows a stored array in place.
+                  const headersBeforeFlush = resumeAfterNoFallback
+                    ? Object.keys(pipelineResult.stagedHeaders).map((key) => {
+                        const value = res.getHeader(key);
+                        return [key, Array.isArray(value) ? [...value] : value] as const;
+                      })
+                    : undefined;
                   flushStagedHeaders();
                   flushRequestHeaders();
                   if (pipelineResult.middlewareStatus !== undefined) {
                     req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
                   }
-                }
-                const handled = await handleApiRoute(
-                  getPagesRunner(),
-                  req,
-                  res,
-                  pipelineResult.apiUrl,
-                  devApiRoutes,
-                  {
-                    basePath: nextConfig?.basePath,
-                    i18n: nextConfig?.i18n,
-                    trustedRevalidateOrigin: getTrustedDevRevalidateOrigin(),
-                    allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
-                    trailingSlash: nextConfig?.trailingSlash,
-                    skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
-                    requestPathname: originalUrlHadBasePath
-                      ? restoreBasePath(routeUrl.split("?")[0], bp)
-                      : routeUrl.split("?")[0],
-                  },
-                );
-                if (handled) return;
-
-                // No API route matched — if app dir exists, let the RSC plugin handle it
-                // (app/api/* route handlers live there). Otherwise hard-404.
-                if (hasAppDir) {
-                  // Only a next.config rewrite should override App's route
-                  // resolution. Locale stripping is API lookup normalization,
-                  // not an internal rewrite to forward to the RSC plugin.
-                  if (pipelineResult.configRewriteFired) {
-                    forwardInternalApiRewriteToApp(pipelineResult.apiUrl);
-                  }
-                  return next();
-                }
-
-                res.statusCode = 404;
-                res.end("404 - API route not found");
-                return;
-              }
-
-              // pipelineResult.type === "render"
-              {
-                const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
-                // Hybrid app+pages dev: if the resolved URL matches no pages route
-                // and an app/ dir exists, defer to the RSC plugin (app routes live
-                // there). If both routers match, apply Next.js's merged route
-                // precedence before choosing which plugin owns the request.
-                const resolvedPathname = pipelineResult.resolvedUrl
-                  .split("#", 1)[0]
-                  .split("?", 1)[0];
-                const renderMatch = matchRoute(resolvedPathname, routes);
-                if (hasAppDir && appDir) {
-                  if (!renderMatch) {
-                    return next();
-                  }
-                  const appRoutes = await appRouter(
-                    appDir,
-                    nextConfig?.pageExtensions,
-                    fileMatcher,
+                  // Update req.url to the resolved URL so SSR sees the post-mw path
+                  req.url = pipelineResult.resolvedUrl;
+                  await cachedSSRHandler.handler(
+                    req,
+                    res,
+                    pipelineResult.resolvedUrl,
+                    req.__vinextMiddlewareStatus,
+                    pipelineResult.isDataReq,
+                    originalRequestUrl,
+                    {
+                      excludedPatterns: pipelineResult.renderOptions?.noFallbackRoutes,
+                      // Hybrid dev keeps the rejecting page's 404, like the
+                      // hybrid production bridge.
+                      resume:
+                        resumeAfterNoFallback && !hasAppDir
+                          ? async (pattern) => {
+                              // The next result flushes its own headers, and
+                              // may answer before this returns.
+                              for (const [key, value] of headersBeforeFlush ?? []) {
+                                if (value === undefined) res.removeHeader(key);
+                                else res.setHeader(key, value);
+                              }
+                              const resumed = await resumeAfterNoFallback(pattern);
+                              if (!resumed) {
+                                flushStagedHeaders();
+                                return false;
+                              }
+                              await handlePipelineResult(resumed);
+                              return true;
+                            }
+                          : undefined,
+                    },
                   );
-                  const appMatch = matchAppRoute(resolvedPathname, appRoutes);
-                  if (
-                    appMatch &&
-                    !pagesRouteHasPriorityOverAppRoute(renderMatch.route, appMatch.route)
-                  ) {
-                    return next();
-                  }
                 }
-                // Hybrid requests have already been handed to App routing above.
-                // Only an unmatched resolved static path gets the canonical 404.
-                if (
-                  !renderMatch &&
-                  isNextStaticPath(
-                    resolvedPathname,
-                    "",
-                    assetPrefixPathname(nextConfig?.assetPrefix ?? ""),
-                  )
-                ) {
-                  const headers = new Headers();
-                  forEachStagedHeader((key, value) => headers.append(key, value));
-                  await writeWebResponseToNodeRes(res, notFoundStaticAssetResponse(headers));
-                  return;
-                }
-                if (!cachedSSRHandler || cachedSSRHandler.routes !== routes) {
-                  cachedSSRHandler = {
-                    routes,
-                    handler: createSSRHandler(
-                      server,
-                      getPagesRunner(),
-                      routes,
-                      pagesDir,
-                      nextConfig?.i18n,
-                      fileMatcher,
-                      nextConfig?.basePath ?? "",
-                      nextConfig?.trailingSlash ?? false,
-                      middlewarePath !== null,
-                      (nextConfig?.rewrites.beforeFiles.length ?? 0) > 0 ||
-                        (nextConfig?.rewrites.afterFiles.length ?? 0) > 0 ||
-                        (nextConfig?.rewrites.fallback.length ?? 0) > 0,
-                      nextConfig?.clientTraceMetadata,
-                      nextConfig?.htmlLimitedBots,
-                      nextConfig?.reactStrictMode === true,
-                      nextConfig?.expireTime,
-                      nextConfig?.crossOrigin,
-                      devBuildId,
-                      middlewarePath
-                        ? compileClientMiddlewareMatchers(
-                            extractMiddlewareMatcherConfig(middlewarePath),
-                          )
-                        : undefined,
-                      classifyDevPageRoute,
-                      (files) => {
-                        const environment = server.environments["ssr"];
-                        if (!environment) return Promise.resolve(null);
-                        // No module has loaded a font, so none is any page's:
-                        // skip the walk on each request.
-                        if (fontOwnerKeys.size === 0) return Promise.resolve([]);
-                        return collectDevPagesFontOwners(environment, files, {
-                          canonicalizeModuleId: canonicalize,
-                          isOwner: (id) => fontOwnerKeys.has(fontOwnerKey(root, id)),
-                          ownerKey: (id) => fontOwnerKey(root, id),
-                        });
-                      },
-                    ),
-                  };
-                }
-                flushStagedHeaders();
-                flushRequestHeaders();
-                if (pipelineResult.middlewareStatus !== undefined) {
-                  req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
-                }
-                // Update req.url to the resolved URL so SSR sees the post-mw path
-                req.url = pipelineResult.resolvedUrl;
-                await cachedSSRHandler.handler(
-                  req,
-                  res,
-                  pipelineResult.resolvedUrl,
-                  req.__vinextMiddlewareStatus,
-                  pipelineResult.isDataReq,
-                  originalRequestUrl,
-                );
-              }
+              };
+              await handlePipelineResult(await runPagesRequest(webRequest, pipelineDeps));
             } catch (e) {
               return next(e);
             }
