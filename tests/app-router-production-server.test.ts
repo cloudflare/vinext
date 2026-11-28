@@ -668,6 +668,12 @@ describe("App Router Production server (startProdServer)", () => {
     expect(await res.text()).toContain('data-testid="cjs-mixed-esm">esm</div>');
   });
 
+  it("does not load require() in a branch the NEXT_RUNTIME define makes dead", async () => {
+    const res = await fetch(`${baseUrl}/cjs/dead-require`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('data-testid="cjs-dead-require">nodejs</div>');
+  });
+
   it("serves static asset byte ranges from the identity representation", async () => {
     const html = await (await fetch(`${baseUrl}/`)).text();
     const href = html.match(/["'](\/_next\/static\/[^"']+\.(?:js|css))["']/)?.[1];
