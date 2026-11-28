@@ -50,6 +50,13 @@ const NON_IMPORTING_IMPORT_META_RE = /\s*\.\s*(?:url|env)\b/y;
 export type ConsumerEnvironmentReplacements = {
   typeofWindow?: WindowType;
   processBrowser?: boolean;
+  /**
+   * Compile-time `process.env.NEXT_RUNTIME` value (`""` for client bundles,
+   * `"nodejs"` for server bundles). Folding its comparisons before
+   * vite-plugin-commonjs hoists `require()` calls keeps requires in dead
+   * runtime branches out of the module graph, as webpack's DefinePlugin does.
+   */
+  nextRuntime?: string;
   pruneUnreachableImports?: boolean;
   /**
    * Return null without walking the AST when folding cannot change the module's
@@ -175,58 +182,150 @@ function evaluateProcessBrowserCondition(
   return node.operator === "==" || node.operator === "===" ? equal : !equal;
 }
 
+function isNextRuntimeMember(node: ESTree.Node, scope: AstScope): boolean {
+  const candidate = node.type === "ChainExpression" ? node.expression : node;
+  if (candidate.type !== "MemberExpression") return false;
+  const env =
+    candidate.object.type === "ChainExpression" ? candidate.object.expression : candidate.object;
+  if (env.type !== "MemberExpression") return false;
+  return (
+    (candidate.computed
+      ? stringLiteralValue(candidate.property) === "NEXT_RUNTIME"
+      : isIdentifierNamed(candidate.property, "NEXT_RUNTIME")) &&
+    (env.computed
+      ? stringLiteralValue(env.property) === "env"
+      : isIdentifierNamed(env.property, "env")) &&
+    isIdentifierNamed(env.object, "process") &&
+    !hasAstBinding(scope, "process")
+  );
+}
+
+function evaluateNextRuntimeComparison(
+  node: ESTree.Node,
+  replacement: string,
+  scope: AstScope,
+  isTest: boolean,
+): boolean | null {
+  // A bare read is truthy unless the inlined value is "" (the client). Only
+  // a test observes just its truthiness; elsewhere it yields the string.
+  if (isNextRuntimeMember(node, scope)) return isTest ? replacement !== "" : null;
+  if (node.type === "UnaryExpression" && node.operator === "!") {
+    const value = evaluateNextRuntimeComparison(node.argument, replacement, scope, true);
+    return value === null ? null : !value;
+  }
+  if (node.type !== "BinaryExpression") return null;
+  if (!["==", "===", "!=", "!=="].includes(String(node.operator))) return null;
+
+  const comparedValue = isNextRuntimeMember(node.left, scope)
+    ? stringLiteralValue(node.right)
+    : isNextRuntimeMember(node.right, scope)
+      ? stringLiteralValue(node.left)
+      : null;
+  if (comparedValue === null) return null;
+
+  const equal = replacement === comparedValue;
+  return node.operator === "==" || node.operator === "===" ? equal : !equal;
+}
+
 type EvaluatedCondition = {
   value: boolean;
   effects: ESTree.Node[];
+  /** Whether an environment condition decided the value, not only literals. */
+  environment: boolean;
 };
 
+function combineConditions(
+  left: EvaluatedCondition,
+  right: EvaluatedCondition,
+): EvaluatedCondition {
+  return {
+    value: right.value,
+    effects: [...left.effects, ...right.effects],
+    environment: left.environment || right.environment,
+  };
+}
+
+/**
+ * Evaluates `node` when the consumer environment decides it. `isTest` is true
+ * where only the result's truthiness is observed (an `if` or ternary test,
+ * and the `&&`/`||` operands within one).
+ */
 function evaluateConsumerCondition(
   node: ESTree.Node,
   replacements: ConsumerEnvironmentReplacements,
   scope: AstScope,
+  isTest: boolean,
 ): EvaluatedCondition | null {
   if (node.type === "LogicalExpression") {
-    const left = evaluateConsumerCondition(node.left, replacements, scope);
+    const left = evaluateConsumerCondition(node.left, replacements, scope, isTest);
     if (node.operator === "&&") {
       if (left?.value === false) return left;
       if (left?.value === true) {
-        const right = evaluateConsumerCondition(node.right, replacements, scope);
-        return right ? { value: right.value, effects: [...left.effects, ...right.effects] } : null;
+        const right = evaluateConsumerCondition(node.right, replacements, scope, isTest);
+        return right ? combineConditions(left, right) : null;
       }
-      const right = evaluateConsumerCondition(node.right, replacements, scope);
+      const right = evaluateConsumerCondition(node.right, replacements, scope, isTest);
       if (
         replacements.pruneUnreachableImports &&
         right?.value === false &&
+        right.environment &&
         right.effects.length === 0
       ) {
-        return { value: false, effects: [node.left] };
+        return { value: false, effects: [node.left], environment: true };
       }
     } else if (node.operator === "||") {
       if (left?.value === true) return left;
       if (left?.value === false) {
-        const right = evaluateConsumerCondition(node.right, replacements, scope);
-        return right ? { value: right.value, effects: [...left.effects, ...right.effects] } : null;
+        const right = evaluateConsumerCondition(node.right, replacements, scope, isTest);
+        return right ? combineConditions(left, right) : null;
       }
-      const right = evaluateConsumerCondition(node.right, replacements, scope);
+      const right = evaluateConsumerCondition(node.right, replacements, scope, isTest);
       if (
         replacements.pruneUnreachableImports &&
         right?.value === true &&
+        right.environment &&
         right.effects.length === 0
       ) {
-        return { value: true, effects: [node.left] };
+        return { value: true, effects: [node.left], environment: true };
       }
     } else if (node.operator === "??" && left !== null) {
       return left;
     }
     return null;
   }
+  if (node.type === "Literal" && typeof node.value === "boolean") {
+    return { value: node.value, effects: [], environment: false };
+  }
   if (replacements.typeofWindow !== undefined) {
     const result = evaluateTypeofWindowComparison(node, replacements.typeofWindow, scope);
-    if (result !== null) return { value: result, effects: [] };
+    if (result !== null) return { value: result, effects: [], environment: true };
+  }
+  if (replacements.nextRuntime !== undefined) {
+    const result = evaluateNextRuntimeComparison(node, replacements.nextRuntime, scope, isTest);
+    if (result !== null) return { value: result, effects: [], environment: true };
   }
   if (replacements.processBrowser === undefined) return null;
   const result = evaluateProcessBrowserCondition(node, replacements.processBrowser, scope);
-  return result === null ? null : { value: result, effects: [] };
+  return result === null ? null : { value: result, effects: [], environment: true };
+}
+
+/** A `var` declaration of the bindings a discarded branch hoists, or "". */
+function hoistedVarDeclaration(discarded: ESTree.Node | null | undefined): string {
+  if (!discarded) return "";
+  const scope = createAstScope(null);
+  collectVarScopeBindings(discarded, scope, false);
+  return scope.bindings.size === 0 ? "" : `var ${[...scope.bindings].join(", ")}; `;
+}
+
+/** Like {@link evaluateConsumerCondition}, but only results the environment decided. */
+function evaluateEnvironmentCondition(
+  node: ESTree.Node,
+  replacements: ConsumerEnvironmentReplacements,
+  scope: AstScope,
+  isTest: boolean,
+): EvaluatedCondition | null {
+  const result = evaluateConsumerCondition(node, replacements, scope, isTest);
+  return result?.environment ? result : null;
 }
 
 /**
@@ -274,7 +373,9 @@ export function replaceConsumerEnvironmentConditions(
   const mayContainProcessBrowser =
     replacements.processBrowser !== undefined &&
     ((/\bprocess\b/.test(code) && /\bbrowser\b/.test(code)) || sourceEscapePattern.test(code));
-  if (!mayContainTypeofWindow && !mayContainProcessBrowser) return null;
+  const mayContainNextRuntime =
+    replacements.nextRuntime !== undefined && /\bNEXT_RUNTIME\b/.test(code);
+  if (!mayContainTypeofWindow && !mayContainProcessBrowser && !mayContainNextRuntime) return null;
 
   const extension = path.extname(stripViteModuleQuery(id));
   const lang =
@@ -342,14 +443,17 @@ export function replaceConsumerEnvironmentConditions(
     const scope = createChildScope(node, parentScope) ?? parentScope;
 
     if (node.type === "IfStatement") {
-      const result = evaluateConsumerCondition(node.test, replacements, scope);
+      const result = evaluateEnvironmentCondition(node.test, replacements, scope, true);
       if (result !== null) {
         const selected = result.value ? node.consequent : node.alternate;
+        // A discarded branch's `var` bindings are hoisted out of it, so they
+        // stay declared.
+        const hoisted = hoistedVarDeclaration(result.value ? node.alternate : node.consequent);
         if (result.effects.length > 0) {
           const effects = result.effects;
           for (const effect of effects) visit(effect, scope);
           if (selected) visit(selected, scope);
-          overwriteGap(node.start, effects[0].start, "{ (");
+          overwriteGap(node.start, effects[0].start, `{ ${hoisted}(`);
           for (let index = 1; index < effects.length; index++) {
             overwriteGap(effects[index - 1].end, effects[index].start, "); (");
           }
@@ -360,12 +464,19 @@ export function replaceConsumerEnvironmentConditions(
           } else {
             overwriteGap(lastEffect.end, node.end, "); }");
           }
-        } else if (selected) {
+        } else if (selected?.type === "BlockStatement" && hoisted === "") {
           output.remove(node.start, selected.start);
           output.remove(selected.end, node.end);
           visit(selected, scope);
+        } else if (selected) {
+          // A block keeps a selected statement such as a string expression
+          // out of its parent's directive prologue. The selected branch is
+          // folded first, so the closing brace outlasts its own edits.
+          visit(selected, scope);
+          overwriteGap(node.start, selected.start, `{ ${hoisted}`);
+          overwriteGap(selected.end, node.end, " }");
         } else {
-          output.overwrite(node.start, node.end, ";");
+          output.overwrite(node.start, node.end, hoisted === "" ? ";" : hoisted.trimEnd());
         }
         changed = true;
         return;
@@ -373,7 +484,7 @@ export function replaceConsumerEnvironmentConditions(
     }
 
     if (node.type === "ConditionalExpression") {
-      const result = evaluateConsumerCondition(node.test, replacements, scope);
+      const result = evaluateEnvironmentCondition(node.test, replacements, scope, true);
       const selected = result?.value ? node.consequent : node.alternate;
       if (result !== null) {
         if (result.effects.length > 0) {
@@ -401,7 +512,7 @@ export function replaceConsumerEnvironmentConditions(
     }
 
     if (node.type === "LogicalExpression") {
-      const result = evaluateConsumerCondition(node, replacements, scope);
+      const result = evaluateEnvironmentCondition(node, replacements, scope, false);
       if (result !== null) {
         const effects = result.effects;
         if (effects.length > 0) {

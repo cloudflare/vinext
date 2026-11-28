@@ -5,8 +5,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { createBuilder, parseAst, type ESTree } from "vite";
+import { createBuilder, parseAst, type ESTree, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { forEachAstChild } from "../packages/vinext/src/plugins/ast-utils.js";
 import {
@@ -493,6 +494,149 @@ function check(process) {
     expect(result?.code).not.toContain("globalBrowserOnly");
     expect(result?.code).toContain("if (process.browser) localBrowserOnly()");
     expect(result?.code).toContain("console.log(process.browser)");
+  });
+
+  // Ported from Next.js: test/e2e/instrumentation-hook/instrumentation-hook.test.ts
+  // https://github.com/vercel/next.js/blob/v16.4.6/test/e2e/instrumentation-hook/instrumentation-hook.test.ts
+  // Every fixture's register() ends in `else { await require('this should fail') }`.
+  it("folds process.env.NEXT_RUNTIME comparisons before require() hoisting", () => {
+    const source = `export async function register() {
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    console.log('edge')
+  } else if (process.env['NEXT_RUNTIME'] == 'nodejs') {
+    console.log('nodejs')
+  } else {
+    await require('this should fail')
+  }
+  const kind = process.env?.NEXT_RUNTIME !== '' ? 'server' : require('client-only-dep')
+}`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).toContain("console.log('nodejs')");
+    expect(server?.code).toContain("'server'");
+    expect(server?.code).not.toContain("console.log('edge')");
+    expect(server?.code).not.toContain("this should fail");
+    expect(server?.code).not.toContain("client-only-dep");
+
+    const client = replaceConsumerEnvironmentConditions(source, { nextRuntime: "" });
+    expect(client?.code).toContain("client-only-dep");
+    expect(client?.code).not.toContain("console.log('nodejs')");
+    expect(client?.code).toContain("this should fail");
+  });
+
+  it("folds negated and bare NEXT_RUNTIME conditions", () => {
+    const source = `if (!(process.env.NEXT_RUNTIME === "nodejs")) require("not-nodejs-dep")
+if (process.env.NEXT_RUNTIME) server(); else require("client-dep")
+if (!process.env.NEXT_RUNTIME) require("no-runtime-dep")`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).not.toContain("not-nodejs-dep");
+    expect(server?.code).not.toContain("client-dep");
+    expect(server?.code).not.toContain("no-runtime-dep");
+    expect(server?.code).toContain("server()");
+
+    const client = replaceConsumerEnvironmentConditions(source, { nextRuntime: "" });
+    expect(client?.code).toContain("not-nodejs-dep");
+    expect(client?.code).toContain("client-dep");
+    expect(client?.code).toContain("no-runtime-dep");
+    expect(client?.code).not.toContain("server()");
+  });
+
+  it("keeps bare NEXT_RUNTIME reads whose value is used", () => {
+    const source = `const runtime = process.env.NEXT_RUNTIME ?? "fallback"
+const name = process.env.NEXT_RUNTIME || "none"
+const either = process.env.NEXT_RUNTIME && "set"`;
+
+    for (const nextRuntime of ["nodejs", ""]) {
+      const result = replaceConsumerEnvironmentConditions(source, { nextRuntime });
+      expect(result?.code ?? source).toBe(source);
+    }
+  });
+
+  it("folds NEXT_RUNTIME conditions composed with boolean literals", () => {
+    const source = `if (process.env.NEXT_RUNTIME === "nodejs" && true) server(); else require("not-nodejs-dep")
+if (false || process.env.NEXT_RUNTIME === "edge") require("edge-dep")
+const literalOnly = true && false`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).toContain("server()");
+    expect(server?.code).not.toContain("not-nodejs-dep");
+    expect(server?.code).not.toContain("edge-dep");
+    expect(server?.code).toContain("const literalOnly = true && false");
+  });
+
+  it("keeps the var bindings a discarded NEXT_RUNTIME branch hoists", () => {
+    // After DefinePlugin replacement the edge branch never runs, so edgeOnly
+    // is declared but undefined.
+    const source = `function main(server) {
+  if (process.env.NEXT_RUNTIME === "edge") { var edgeOnly = 1; var [a, { b }] = [2, {}] }
+  if (process.env.NEXT_RUNTIME === "edge") var unbraced = 1
+  if (process.env.NEXT_RUNTIME === "nodejs") server(); else { var nodejsElse = 1 }
+  return [typeof edgeOnly, a, b, unbraced, nodejsElse, server()]
+}`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).not.toContain("= 1");
+    const main = vm.runInNewContext(`${server!.code}\nmain`) as (server: () => string) => unknown;
+    expect(main(() => "server")).toEqual([
+      "undefined",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "server",
+    ]);
+  });
+
+  it("keeps a selected NEXT_RUNTIME statement out of the directive prologue", () => {
+    const source = `function sloppy() { if (process.env.NEXT_RUNTIME === "nodejs") "use strict"; return this }`;
+
+    const server = replaceConsumerEnvironmentConditions(source, { nextRuntime: "nodejs" });
+    expect(server?.code).not.toContain("process.env");
+    const context = vm.createContext();
+    const sloppy = vm.runInContext(`${server!.code}\nsloppy`, context) as () => unknown;
+    // Still sloppy: `this` is the global object, not undefined.
+    expect(sloppy.call(undefined)).toBe(vm.runInContext("globalThis", context));
+  });
+
+  it("preserves NEXT_RUNTIME reads on locally bound process", () => {
+    const result = replaceConsumerEnvironmentConditions(
+      `function check(process) {
+  if (process.env.NEXT_RUNTIME === "edge") require("local-edge")
+}
+if (process.env.NEXT_RUNTIME === "edge") require("global-edge")`,
+      { nextRuntime: "nodejs" },
+    );
+
+    expect(result?.code).toContain('require("local-edge")');
+    expect(result?.code).not.toContain("global-edge");
+  });
+
+  it("folds NEXT_RUNTIME before vite-plugin-commonjs hoists require() calls", async () => {
+    const plugins = (vinext() as Plugin[]).flat(Infinity) as Plugin[];
+    const foldIndex = plugins.findIndex((plugin) => plugin?.name === "vinext:next-runtime-fold");
+    const commonjsIndex = plugins.findIndex((plugin) => plugin?.name === "vite-plugin-commonjs");
+    expect(foldIndex).toBeGreaterThanOrEqual(0);
+    expect(commonjsIndex).toBeGreaterThan(foldIndex);
+    const fold = plugins[foldIndex];
+    expect(fold.enforce).toBe("pre");
+
+    const handler = (fold.transform as { handler: unknown }).handler as (
+      this: unknown,
+      code: string,
+      id: string,
+    ) => { code: string } | null;
+    const source = `if (process.env.NEXT_RUNTIME === "nodejs") server(); else require("edge-only")`;
+    const run = (consumer: "client" | "server") =>
+      handler.call(
+        { environment: { name: consumer === "client" ? "client" : "ssr", config: { consumer } } },
+        source,
+        "/app/instrumentation.ts",
+      );
+
+    expect(run("server")?.code).not.toContain("edge-only");
+    expect(run("client")?.code).toContain("edge-only");
+    expect(run("client")?.code).not.toContain("server()");
   });
 
   it("removes nested dead branches in the selected branch", () => {
